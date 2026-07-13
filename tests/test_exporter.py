@@ -78,6 +78,35 @@ class ExporterTests(unittest.TestCase):
             image_source = next(item for item in exported["sources"] if item["name"] == "Image")
             self.assertEqual(image_source["filters"][0]["settings"]["lookup_file"], str((result.package_path / "other resources" / "colour.cube").resolve()))
 
+    def test_packs_full_local_browser_overlay_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            browser_root = root / "browser"
+            (browser_root / "assets").mkdir(parents=True)
+            (browser_root / "index.html").write_text('<link rel="stylesheet" href="style.css">', encoding="utf-8")
+            (browser_root / "style.css").write_text('body { background: url("assets/bg.png"); }', encoding="utf-8")
+            (browser_root / "script.js").write_text('console.log("overlay")', encoding="utf-8")
+            (browser_root / "assets" / "bg.png").write_bytes(b"image")
+            collection_path = root / "Browser.json"
+            data = collection(browser_root / "index.html", browser_root / "index.html", browser_root / "index.html")
+            data["sources"] = [
+                {"name": "Browser", "id": "browser_source", "settings": {"local_file": str(browser_root / "index.html")}}
+            ]
+            data["scene_order"] = []
+            collection_path.write_text(json.dumps(data), encoding="utf-8")
+            destination = root / "exports"
+            destination.mkdir()
+
+            result = export_scene_collection(collection_path, destination)
+
+            self.assertTrue(result.success, result.error)
+            target_root = result.package_path / "browser overlays" / "browser"
+            self.assertTrue((target_root / "index.html").is_file())
+            self.assertTrue((target_root / "style.css").is_file())
+            self.assertTrue((target_root / "script.js").is_file())
+            self.assertTrue((target_root / "assets" / "bg.png").is_file())
+            exported = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            self.assertEqual(exported["sources"][0]["settings"]["local_file"], str((target_root / "index.html").resolve()))
     def test_lists_collections_and_prefers_obs_active_collection(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

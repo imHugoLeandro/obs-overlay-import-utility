@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added enabled-by-default post-import device setup for Streamlabs and Automatic imports, mapping camera/audio/display/custom device sources to compatible locally configured OBS sources.
+- Added full local browser-overlay packing: HTML browser sources now retain their recursive dependency folders on export.
 - Added Auto Resizer with collection, scene, and source scopes; Stretch or Scale Ratio modes; active-profile or custom target sizes; in-window logs; and undoable overwrite backups.
 - Added Export Overlay: selects OBS's active scene collection by default, packages referenced local resources into organized folders, rewrites paths in an OBS JSON export, and retains custom plugin/filter configuration.
 - Reworked Import Overlay into three expandable in-window methods with a shared Run button and console output; Method 1 now auto-detects the OBS export from the selected folder.

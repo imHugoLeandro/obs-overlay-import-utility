@@ -116,6 +116,41 @@ def _next_package_directory(destination: Path, collection_name: str) -> Path:
     return candidate
 
 
+def _next_browser_directory(parent: Path, source_directory: Path) -> Path:
+    base_name = " ".join(source_directory.name.split()).strip() or "browser overlay"
+    candidate = parent / base_name
+    number = 2
+    while candidate.exists():
+        candidate = parent / f"{base_name} {number}"
+        number += 1
+    return candidate
+
+
+def _copy_browser_overlay_directory(
+    source_file: Path, package_path: Path, copied_paths: dict[Path, Path]
+) -> tuple[Path, int]:
+    """Copy a local browser overlay directory so relative web dependencies remain valid."""
+    source_root = source_file.parent.resolve()
+    target_root = _next_browser_directory(package_path / "browser overlays", source_root)
+    copied = 0
+    for current, directories, files in os.walk(source_root, followlinks=False):
+        directories[:] = [name for name in directories if not Path(current, name).is_symlink()]
+        relative_directory = Path(current).relative_to(source_root)
+        destination_directory = target_root / relative_directory
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        for filename in files:
+            source = Path(current, filename)
+            if source.is_symlink():
+                continue
+            destination = destination_directory / filename
+            shutil.copy2(source, destination)
+            copied_paths[source.resolve()] = destination.resolve()
+            copied += 1
+    target_file = copied_paths.get(source_file.resolve())
+    if target_file is None:
+        raise UtilityError("Could not include the local browser overlay file.")
+    return target_file, copied
+
 def _next_asset_path(folder: Path, source: Path) -> Path:
     candidate = folder / source.name
     number = 2
@@ -152,7 +187,10 @@ def export_scene_collection(collection_path: Path, destination: Path) -> ExportR
                 result.skipped_references.append(f"{reference.source_name}: {reference.value}")
                 continue
             target = copied_paths.get(source)
-            if target is None:
+            if target is None and source.suffix.casefold() in {".htm", ".html"}:
+                target, copied = _copy_browser_overlay_directory(source, package_path, copied_paths)
+                result.copied_files += copied
+            elif target is None:
                 target_folder = package_path / _resource_folder(source)
                 target_folder.mkdir(parents=True, exist_ok=True)
                 target = _next_asset_path(target_folder, source)

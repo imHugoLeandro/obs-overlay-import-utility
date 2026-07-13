@@ -65,6 +65,7 @@ Settings are saved per user at:
 ```text
 src/obs_overlay_import_utility/core.py       Conversion and discovery engine
 src/obs_overlay_import_utility/exporter.py   Portable OBS package export engine
+src/obs_overlay_import_utility/device_setup.py Device-source detection and post-import setup
 src/obs_overlay_import_utility/resizer.py    Undoable OBS transform resize engine
 src/obs_overlay_import_utility/paths.py      Cross-platform path matching
 src/obs_overlay_import_utility/ui.py         Tkinter UI, navigation, themes, scaling
@@ -137,6 +138,12 @@ When changing Import Overlay or Export Overlay, treat the complete OBS collectio
 - Export must recursively inspect the entire collection for absolute local file paths, copy existing files with arbitrary extensions, rewrite only those copied references, and report missing files instead of silently guessing.
 - Never claim that an exported pack installs plugins, fonts, device sources, credentials, or remote services. Preserve their configuration in JSON and clearly report that the destination OBS installation still needs the relevant plugin or manual setup.
 - Keep duplicate handling conservative: preserve one copied target per original file, but avoid overwriting a package asset when two different source files share a name.
+## Device setup and browser-packer rules for future AI work
+
+- Methods 2 and 3 expose an enabled-by-default device setup wizard, but it must appear only after a successful import whose resulting collection contains device-like sources.
+- Do not invent operating-system device IDs. The wizard maps imported sources to compatible device sources already configured in the user's local OBS collections, copying their verified OBS settings. If there is no match, allow the user to keep the imported setting, disable the source, or configure it later in OBS.
+- Continue to detect built-in camera/audio/display/capture sources and custom/plugin sources that contain device, monitor, or window settings. Preserve filters and every other source field when applying a device choice.
+- Full browser-overlay export must retain a local HTML file's recursive folder structure so relative HTML, CSS, JavaScript, fonts, images, and media links remain valid. Do not follow symlinks during this copy.
 ## Auto Resizer rules for future AI work
 
 - Auto Resizer intentionally overwrites the selected OBS collection because the user explicitly requested live-compatible editing. Always create and atomically save an undo backup before writing the new collection.

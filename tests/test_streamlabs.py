@@ -84,7 +84,9 @@ class StreamlabsImportTests(unittest.TestCase):
             self.assertEqual(converted["scene_order"], [{"name": "Starting Soon"}])
             image_source = next(source for source in converted["sources"] if source["id"] == "image_source")
             self.assertEqual(image_source["settings"]["file"], str((root / "Demo overlay" / "background.png").resolve()))
-            self.assertEqual(first.skipped_sources, ["Camera: WebcamNode source"])
+            self.assertEqual(first.skipped_sources, [])
+            camera_source = next(source for source in converted["sources"] if source["id"] == "av_capture_input")
+            self.assertEqual(camera_source["settings"], {"device_id": ""})
 
     def test_uses_active_obs_profile_canvas_and_nested_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

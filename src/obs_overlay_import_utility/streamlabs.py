@@ -189,6 +189,12 @@ def _source_settings(content: dict[str, Any], assets: _AssetIndex) -> tuple[str,
         settings["local_file"] = _asset_path(content.get("filename"), assets)
         settings["is_local_file"] = True
         return "ffmpeg_source", settings
+    if node_type in {"WebcamNode", "CameraNode"}:
+        return "av_capture_input", {"device_id": ""}
+    if node_type in {"AudioInputNode", "MicNode", "MicrophoneNode"}:
+        return "wasapi_input_capture", {"device_id": "default"}
+    if node_type in {"AudioOutputNode", "DesktopAudioNode"}:
+        return "wasapi_output_capture", {"device_id": "default"}
     if node_type == "TextNode":
         return "text_gdiplus_v2", settings
     if node_type == "WidgetNode":

@@ -1,0 +1,159 @@
+"""Detect and configure portable OBS device sources after collection import."""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .core import atomic_write_json, is_obs_scene_collection_data, load_json
+from .exporter import list_obs_scene_collections
+from .models import UtilityError
+
+
+VIDEO_SOURCE_IDS = frozenset({"av_capture_input", "dshow_input", "decklink-input", "v4l2_input"})
+AUDIO_SOURCE_IDS = frozenset(
+    {
+        "wasapi_input_capture",
+        "wasapi_output_capture",
+        "coreaudio_input_capture",
+        "coreaudio_output_capture",
+        "pulse_input_capture",
+        "pulse_output_capture",
+        "jack_input_capture",
+    }
+)
+DISPLAY_SOURCE_IDS = frozenset(
+    {
+        "monitor_capture",
+        "display_capture",
+        "window_capture",
+        "game_capture",
+        "macos_screen_capture",
+        "xshm_input",
+    }
+)
+
+
+@dataclass(frozen=True)
+class DeviceRequirement:
+    key: str
+    name: str
+    source_id: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class DeviceCandidate:
+    label: str
+    source_id: str
+    kind: str
+    settings: dict[str, Any]
+
+
+def device_kind(source_id: Any, settings: Any = None) -> str | None:
+    """Classify the portable device sources supported by this setup wizard."""
+    if not isinstance(source_id, str):
+        return None
+    normalized = source_id.casefold()
+    if normalized in VIDEO_SOURCE_IDS:
+        return "Camera or capture device"
+    if normalized in AUDIO_SOURCE_IDS:
+        return "Audio device"
+    if normalized in DISPLAY_SOURCE_IDS:
+        return "Display, window, or game capture"
+    if isinstance(settings, dict) and any(
+        key in settings for key in ("device_id", "device_name", "device", "monitor", "window")
+    ):
+        return "Other device source"
+    return None
+
+
+def device_requirements(data: Any) -> list[DeviceRequirement]:
+    """Find imported sources that need a device-specific setup on this computer."""
+    if not is_obs_scene_collection_data(data):
+        return []
+    requirements: list[DeviceRequirement] = []
+    for index, source in enumerate(data.get("sources", [])):
+        if not isinstance(source, dict):
+            continue
+        kind = device_kind(source.get("id"), source.get("settings"))
+        name = source.get("name")
+        if not kind or not isinstance(name, str):
+            continue
+        uuid = source.get("uuid")
+        key = str(uuid) if isinstance(uuid, str) and uuid else f"{index}:{name}"
+        requirements.append(DeviceRequirement(key=key, name=name, source_id=source["id"], kind=kind))
+    return requirements
+
+
+def collection_device_requirements(collection_path: Path) -> list[DeviceRequirement]:
+    """Load one imported collection and return its configurable device sources."""
+    try:
+        return device_requirements(load_json(collection_path))
+    except UtilityError:
+        return []
+
+
+def available_device_candidates(
+    obs_scenes_directory: Path, *, exclude_collection: Path | None = None
+) -> dict[str, list[DeviceCandidate]]:
+    """Collect reusable local OBS device settings grouped by compatible kind."""
+    candidates: dict[str, list[DeviceCandidate]] = {}
+    excluded = exclude_collection.expanduser().resolve() if exclude_collection else None
+    for collection_label, collection_path in list_obs_scene_collections(obs_scenes_directory).items():
+        if excluded and collection_path == excluded:
+            continue
+        try:
+            data = load_json(collection_path)
+        except UtilityError:
+            continue
+        for source in data.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            kind = device_kind(source.get("id"), source.get("settings"))
+            name = source.get("name")
+            settings = source.get("settings")
+            if not kind or not isinstance(name, str) or not isinstance(settings, dict):
+                continue
+            label = f"{name} — {collection_label}"
+            candidates.setdefault(kind, []).append(
+                DeviceCandidate(label=label, source_id=source["id"], kind=kind, settings=copy.deepcopy(settings))
+            )
+    for entries in candidates.values():
+        entries.sort(key=lambda candidate: candidate.label.casefold())
+    return candidates
+
+
+def apply_device_choices(
+    collection_path: Path, choices: dict[str, DeviceCandidate | None | str]
+) -> str | None:
+    """Apply selected local-device settings to an imported collection atomically."""
+    try:
+        collection_path = collection_path.expanduser().resolve()
+        data = load_json(collection_path)
+        if not is_obs_scene_collection_data(data):
+            raise UtilityError("The imported collection is not a recognized OBS scene collection.")
+        for index, source in enumerate(data.get("sources", [])):
+            if not isinstance(source, dict):
+                continue
+            uuid = source.get("uuid")
+            name = source.get("name")
+            key = str(uuid) if isinstance(uuid, str) and uuid else f"{index}:{name}"
+            choice = choices.get(key)
+            if choice is None:
+                continue
+            if choice == "disable":
+                source["enabled"] = False
+                continue
+            if not isinstance(choice, DeviceCandidate):
+                continue
+            source["id"] = choice.source_id
+            source["versioned_id"] = choice.source_id
+            source["settings"] = copy.deepcopy(choice.settings)
+            source["enabled"] = True
+        atomic_write_json(collection_path, data)
+        return None
+    except (OSError, UtilityError) as exc:
+        return str(exc) if isinstance(exc, UtilityError) else f"Could not apply device setup: {exc}"

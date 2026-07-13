@@ -16,6 +16,12 @@ from tkinter import filedialog, messagebox, ttk
 from .automatic import AutomaticImportResult, automatically_import_overlay
 from .constants import APP_TITLE, __version__
 from .core import convert_collection, find_scene_collections, load_json
+from .device_setup import (
+    DeviceCandidate,
+    apply_device_choices,
+    available_device_candidates,
+    collection_device_requirements,
+)
 from .exporter import (
     ExportResult,
     active_obs_scene_collection,
@@ -107,6 +113,7 @@ class ImportUtilityApp:
         self.strict_var = tk.BooleanVar(value=self.settings.strict_validation)
         self.case_var = tk.BooleanVar(value=self.settings.case_sensitive_matching)
         self.streamlabs_file_var = tk.StringVar()
+        self.device_setup_var = tk.BooleanVar(value=True)
         self.automatic_folder_var = tk.StringVar(value=initial_folder)
         self.export_collection_var = tk.StringVar()
         self.export_destination_var = tk.StringVar()
@@ -333,6 +340,13 @@ class ImportUtilityApp:
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.streamlabs_device_setup_check = ttk.Checkbutton(
+            streamlabs_options,
+            text="Run device setup wizard after import",
+            variable=self.device_setup_var,
+        )
+        self.streamlabs_device_setup_check.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.method_controls.append(self.streamlabs_device_setup_check)
 
         automatic_card = ttk.LabelFrame(methods, text="Method 3 — Automatic Scene Collection", padding=10)
         automatic_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -378,6 +392,13 @@ class ImportUtilityApp:
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.automatic_device_setup_check = ttk.Checkbutton(
+            automatic_options,
+            text="Run device setup wizard after import",
+            variable=self.device_setup_var,
+        )
+        self.automatic_device_setup_check.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.method_controls.append(self.automatic_device_setup_check)
         run_row = ttk.Frame(frame)
         run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         run_row.columnconfigure(0, weight=1)
@@ -1187,6 +1208,91 @@ class ImportUtilityApp:
             executable = self.detected_obs_path
         return default_obs_scenes_directory(executable)
 
+    def _maybe_open_device_setup_wizard(self, collection_path: Path | None) -> None:
+        if not self.device_setup_var.get() or collection_path is None:
+            return
+        requirements = collection_device_requirements(collection_path)
+        if not requirements:
+            return
+        candidates = available_device_candidates(
+            self._configured_obs_scenes_directory(), exclude_collection=collection_path
+        )
+        self._open_device_setup_wizard(collection_path, requirements, candidates)
+
+    def _open_device_setup_wizard(
+        self,
+        collection_path: Path,
+        requirements: list,
+        candidates_by_kind: dict[str, list[DeviceCandidate]],
+    ) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Overlay Device Setup")
+        window.transient(self.root)
+        window.minsize(620, 260)
+        window.columnconfigure(0, weight=1)
+        content = ttk.Frame(window, padding=18)
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(1, weight=1)
+        ttk.Label(content, text="Overlay Device Setup", font=("Segoe UI", 15, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(
+            content,
+            text=(
+                "Choose a compatible device source already configured in your OBS collections. "
+                "This copies its local OBS device settings into the imported collection."
+            ),
+            wraplength=560,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
+
+        choice_vars: dict[str, tk.StringVar] = {}
+        choice_maps: dict[str, dict[str, DeviceCandidate | str | None]] = {}
+        for row, requirement in enumerate(requirements, start=2):
+            ttk.Label(content, text=f"{requirement.name} ({requirement.kind})").grid(
+                row=row, column=0, sticky="w", padx=(0, 12), pady=4
+            )
+            options: dict[str, DeviceCandidate | str | None] = {
+                "Keep imported setting": None,
+                "Disable this source": "disable",
+            }
+            for candidate in candidates_by_kind.get(requirement.kind, []):
+                label = candidate.label
+                number = 2
+                while label in options:
+                    label = f"{candidate.label} ({number})"
+                    number += 1
+                options[label] = candidate
+            variable = tk.StringVar(value="Keep imported setting")
+            combo = ttk.Combobox(content, textvariable=variable, values=list(options), state="readonly")
+            combo.grid(row=row, column=1, sticky="ew", pady=4)
+            choice_vars[requirement.key] = variable
+            choice_maps[requirement.key] = options
+
+        has_candidates = any(candidates_by_kind.get(item.kind) for item in requirements)
+        if not has_candidates:
+            ttk.Label(
+                content,
+                text="No compatible local device sources were found. Keep the placeholder or disable it, then configure it in OBS.",
+                style="Muted.TLabel",
+                wraplength=560,
+            ).grid(row=len(requirements) + 2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        actions = ttk.Frame(content)
+        actions.grid(row=len(requirements) + 3, column=0, columnspan=2, sticky="e", pady=(16, 0))
+
+        def apply_setup() -> None:
+            choices = {
+                key: choice_maps[key][variable.get()]
+                for key, variable in choice_vars.items()
+            }
+            error = apply_device_choices(collection_path, choices)
+            if error:
+                messagebox.showerror(APP_TITLE, error, parent=window)
+                return
+            self._append_import_results("\n\nDevice setup choices were applied to the imported collection.")
+            window.destroy()
+
+        ttk.Button(actions, text="Skip for now", command=window.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(actions, text="Apply Setup", command=apply_setup).grid(row=0, column=1)
     def _refresh_export_collections(self) -> None:
         if self.busy:
             return
@@ -1655,6 +1761,7 @@ class ImportUtilityApp:
             lines.extend(f"• {item}" for item in result.skipped_sources)
         self._write_results("\n".join(lines))
         self._set_busy(False, "Streamlabs package imported into OBS successfully.")
+        self._maybe_open_device_setup_wizard(result.collection_path)
 
     def _finish_automatic(self, result: AutomaticImportResult) -> None:
         if result.error:
@@ -1685,6 +1792,7 @@ class ImportUtilityApp:
         lines.extend(("", "Restart OBS if it was already open, then select the new collection from Scene Collection."))
         self._write_results("\n".join(lines))
         self._set_busy(False, "Scene collection detected and imported into OBS successfully.")
+        self._maybe_open_device_setup_wizard(result.collection_path)
     def _set_busy(self, busy: bool, status: str) -> None:
         self.busy = busy
         self.status_var.set(status)
@@ -1705,6 +1813,10 @@ class ImportUtilityApp:
         self.run_button.configure(
             state="disabled" if busy else "normal"
         )
+    def _append_import_results(self, text: str) -> None:
+        self.results.configure(state="normal")
+        self.results.insert("end", text)
+        self.results.configure(state="disabled")
     def _write_resize_results(self, text: str) -> None:
         self.resize_results.configure(state="normal")
         self.resize_results.delete("1.0", "end")

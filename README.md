@@ -23,7 +23,7 @@ The original collection is never changed. **Advanced options** is collapsed by d
 2. Choose the Streamlabs `.overlay` package.
 3. Click **Run** in the same Import Overlay window.
 
-The utility extracts every package file beside the archive into a new `name overlay` folder, recursively matches asset references by exact relative path and then by a unique filename, converts supported Streamlabs Desktop sources, and writes a new collection into OBS's scenes folder. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
+The utility extracts every package file beside the archive into a new `name overlay` folder, recursively matches asset references by exact relative path and then by a unique filename, converts supported Streamlabs Desktop sources, and writes a new collection into OBS's scenes folder. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them to matching sources already configured in local OBS collections. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
 
 ### Method 3 — Automatic Scene Collection
 
@@ -31,7 +31,7 @@ The utility extracts every package file beside the archive into a new `name over
 2. Choose the folder containing the scene collection pack.
 3. Click **Run**.
 
-The utility recursively searches the selected folder for all supported pack files and asset folders. It prioritizes exactly one OBS scene collection export when both that export and a Streamlabs `.overlay` package are present; otherwise it uses exactly one `.overlay` package. It matches local assets safely, sizes the imported collection to the active OBS profile's base canvas, installs it without overwriting an existing collection, and reports what it detected. If several candidates of the preferred format are found, it stops safely and asks you to use the specific method instead.
+The utility recursively searches the selected folder for all supported pack files and asset folders. **Run device setup wizard after import** is enabled by default and appears only when the detected collection includes device sources that can be mapped locally. It prioritizes exactly one OBS scene collection export when both that export and a Streamlabs `.overlay` package are present; otherwise it uses exactly one `.overlay` package. It matches local assets safely, sizes the imported collection to the active OBS profile's base canvas, installs it without overwriting an existing collection, and reports what it detected. If several candidates of the preferred format are found, it stops safely and asks you to use the specific method instead.
 
 ## Export Overlay workflow
 
@@ -40,7 +40,7 @@ The utility recursively searches the selected folder for all supported pack file
 3. Choose an export destination folder.
 4. Click **Run**.
 
-The utility creates a new package folder named after the collection. It copies direct local files into **images**, **videos**, **audio**, and **other resources**, then writes an OBS-compatible JSON with the copied paths. It traverses the full collection JSON, including nested plugin-source and filter settings, so existing absolute local files with arbitrary extensions are preserved rather than limiting export to built-in OBS source types. Missing local paths are reported in the console for manual review.
+The utility creates a new package folder named after the collection. It copies direct local files into **images**, **videos**, **audio**, and **other resources**, then writes an OBS-compatible JSON with the copied paths. A local HTML browser overlay is exported as a complete recursive **browser overlays** folder so its relative CSS, JavaScript, fonts, images, and other dependencies remain intact. It traverses the full collection JSON, including nested plugin-source and filter settings, so existing absolute local files with arbitrary extensions are preserved rather than limiting export to built-in OBS source types. Missing local paths are reported in the console for manual review.
 
 Exporting does not bundle OBS plugins, fonts, device sources, credentials, or web-hosted resources; those must be installed or configured on the destination computer.
 ## Auto Resizer workflow
