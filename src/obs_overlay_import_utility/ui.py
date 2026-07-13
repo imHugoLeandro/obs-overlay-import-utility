@@ -8,6 +8,8 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
+from fractions import Fraction
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -59,6 +61,8 @@ class ImportUtilityApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"{APP_TITLE} {__version__}")
+        self.root.minsize(720, 600)
+        self.root.geometry("820x700")
         self.default_tk_scaling = float(self.root.tk.call("tk", "scaling"))
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
@@ -101,10 +105,15 @@ class ImportUtilityApp:
         self.navigation_buttons: list[ttk.Radiobutton] = []
         self.logo_source: tk.PhotoImage | None = None
         self.logo_image: tk.PhotoImage | None = None
+        self.logo_label: ttk.Label | None = None
+        self.base_named_font_sizes: dict[str, int] = {}
+        self.scaled_widget_fonts: list[tuple[tkfont.Font, int]] = []
+        self.scaled_widget_paddings: list[tuple[tk.Widget, tuple[int, ...]]] = []
 
-        self._apply_ui_scale(self.settings.ui_scale, resize_window=True)
         self._apply_theme()
         self._build_interface()
+        self._capture_scalable_ui()
+        self._apply_ui_scale(self.settings.ui_scale)
         self._apply_theme()
         self._update_custom_path_states()
         self.root.after(100, self._process_events)
@@ -134,8 +143,8 @@ class ImportUtilityApp:
         logo_path = bundled_asset("social-space-logo.png")
         try:
             self.logo_source = tk.PhotoImage(file=logo_path)
-            self.logo_image = self.logo_source.subsample(2, 2)
-            ttk.Label(navigation, image=self.logo_image).grid(
+            self.logo_label = ttk.Label(navigation)
+            self.logo_label.grid(
                 row=0,
                 column=len(self.SECTIONS) + 2,
                 sticky="e",
@@ -438,15 +447,22 @@ class ImportUtilityApp:
             text_background = "SystemWindow" if sys.platform.startswith("win") else "#ffffff"
             text_foreground = "SystemWindowText" if sys.platform.startswith("win") else "#111111"
             selection = "SystemHighlight" if sys.platform.startswith("win") else "#3478c7"
+            self.root.option_add("*TCombobox*Listbox.background", text_background)
+            self.root.option_add("*TCombobox*Listbox.foreground", text_foreground)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", selection)
         else:
             style.theme_use("clam")
             if theme == "dark":
-                background = "#1e1e1e"
-                surface = "#292929"
-                foreground = "#f2f2f2"
-                muted = "#b5b5b5"
-                field = "#353535"
+                background = "#151515"
+                surface = "#252525"
+                foreground = "#f7f7f7"
+                muted = "#c2c2c2"
+                field = "#202020"
                 selection = "#f42425"
+                accent_hover = "#ff4b4c"
+                border = "#713335"
+                trough = "#3b181a"
+                disabled = "#343434"
             else:
                 background = "#f5f5f5"
                 surface = "#ffffff"
@@ -454,28 +470,67 @@ class ImportUtilityApp:
                 muted = "#5f5f5f"
                 field = "#ffffff"
                 selection = "#d91f20"
+                accent_hover = "#f42425"
+                border = "#c7c7c7"
+                trough = "#f5caca"
+                disabled = "#e5e5e5"
             text_background = field
             text_foreground = foreground
             style.configure(".", background=background, foreground=foreground)
             style.configure("TFrame", background=background)
             style.configure("TLabel", background=background, foreground=foreground)
-            style.configure("TLabelframe", background=background, foreground=foreground)
+            style.configure(
+                "TLabelframe",
+                background=background,
+                foreground=foreground,
+                bordercolor=border,
+                lightcolor=border,
+                darkcolor=border,
+                borderwidth=1,
+            )
             style.configure(
                 "TLabelframe.Label", background=background, foreground=foreground
             )
-            style.configure("TButton", background=surface, foreground=foreground)
+            style.configure(
+                "TButton",
+                background=surface,
+                foreground=foreground,
+                bordercolor=border,
+                focuscolor=selection,
+                lightcolor=border,
+                darkcolor=border,
+            )
             style.map(
                 "TButton",
-                background=[("active", selection)],
+                background=[("pressed", selection), ("active", accent_hover)],
                 foreground=[("active", "#ffffff")],
             )
-            style.configure("TCheckbutton", background=background, foreground=foreground)
-            style.map("TCheckbutton", background=[("active", background)])
+            style.configure(
+                "TCheckbutton",
+                background=background,
+                foreground=foreground,
+                indicatorcolor=field,
+                bordercolor=border,
+                focuscolor=selection,
+            )
+            style.map(
+                "TCheckbutton",
+                background=[("active", background)],
+                indicatorcolor=[
+                    ("selected", selection),
+                    ("active", accent_hover),
+                    ("disabled", disabled),
+                ],
+            )
             style.configure(
                 "TEntry",
                 fieldbackground=field,
                 foreground=foreground,
                 insertcolor=foreground,
+                bordercolor=border,
+                focuscolor=selection,
+                lightcolor=border,
+                darkcolor=border,
             )
             style.configure(
                 "TCombobox",
@@ -483,19 +538,51 @@ class ImportUtilityApp:
                 background=surface,
                 foreground=foreground,
                 arrowcolor=foreground,
+                bordercolor=border,
+                focuscolor=selection,
+                lightcolor=border,
+                darkcolor=border,
             )
             style.map(
                 "TCombobox",
-                fieldbackground=[("readonly", field), ("disabled", surface)],
+                fieldbackground=[("readonly", field), ("disabled", disabled)],
                 foreground=[("readonly", foreground), ("disabled", muted)],
+                bordercolor=[("focus", selection)],
             )
-            style.configure("Horizontal.TScale", background=background)
-            style.configure("Toolbutton", background=surface, foreground=foreground)
+            style.configure(
+                "Horizontal.TScale",
+                background=selection,
+                troughcolor=trough,
+                bordercolor=border,
+                lightcolor=selection,
+                darkcolor=selection,
+                troughrelief="flat",
+            )
+            style.map(
+                "Horizontal.TScale",
+                background=[("active", accent_hover), ("disabled", disabled)],
+                lightcolor=[("active", accent_hover)],
+                darkcolor=[("active", accent_hover)],
+            )
+            style.configure(
+                "Toolbutton",
+                background=surface,
+                foreground=foreground,
+                bordercolor=border,
+                focuscolor=selection,
+            )
             style.map(
                 "Toolbutton",
-                background=[("selected", selection), ("active", selection)],
+                background=[
+                    ("selected", selection),
+                    ("pressed", selection),
+                    ("active", accent_hover),
+                ],
                 foreground=[("selected", "#ffffff"), ("active", "#ffffff")],
             )
+            self.root.option_add("*TCombobox*Listbox.background", field)
+            self.root.option_add("*TCombobox*Listbox.foreground", foreground)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", selection)
 
         style.configure("Muted.TLabel", foreground=muted)
         self.root.configure(background=background)
@@ -508,24 +595,100 @@ class ImportUtilityApp:
                 selectforeground="#ffffff",
             )
 
+    def _capture_scalable_ui(self) -> None:
+        named_fonts = set(tkfont.names(self.root))
+        for name in named_fonts:
+            try:
+                size = int(tkfont.nametofont(name, root=self.root).cget("size"))
+            except tk.TclError:
+                continue
+            if size:
+                self.base_named_font_sizes[name] = size
+
+        def descendants(widget: tk.Misc) -> list[tk.Misc]:
+            items: list[tk.Misc] = []
+            for child in widget.winfo_children():
+                items.append(child)
+                items.extend(descendants(child))
+            return items
+
+        for widget in descendants(self.root):
+            try:
+                font_value = str(widget.cget("font"))
+            except tk.TclError:
+                font_value = ""
+            if font_value and font_value not in named_fonts:
+                try:
+                    font = tkfont.Font(root=self.root, font=font_value)
+                    base_size = int(font.cget("size"))
+                    widget.configure(font=font)
+                    self.scaled_widget_fonts.append((font, base_size))
+                except tk.TclError:
+                    pass
+
+            try:
+                raw_padding = widget.cget("padding")
+                parts = self.root.tk.splitlist(raw_padding)
+                padding = tuple(int(float(part)) for part in parts)
+            except (tk.TclError, TypeError, ValueError):
+                padding = ()
+            if padding:
+                self.scaled_widget_paddings.append((widget, padding))
+
     def _on_scale_changed(self, value: str) -> None:
-        self._apply_ui_scale(float(value), resize_window=True)
+        self._apply_ui_scale(float(value))
 
     def _set_scale(self, value: int) -> None:
         self.ui_scale_var.set(value)
-        self._apply_ui_scale(value, resize_window=True)
+        self._apply_ui_scale(value)
 
-    def _apply_ui_scale(self, value: float, *, resize_window: bool) -> None:
+    def _apply_ui_scale(self, value: float) -> None:
         percent = int(round(float(value) / 5.0) * 5)
         percent = max(MIN_UI_SCALE, min(MAX_UI_SCALE, percent))
         self.ui_scale_label_var.set(f"{percent}%")
         if round(self.ui_scale_var.get()) != percent:
             self.ui_scale_var.set(percent)
         factor = percent / 100.0
-        self.root.tk.call("tk", "scaling", self.default_tk_scaling * factor)
-        self.root.minsize(round(720 * factor), round(600 * factor))
-        if resize_window:
-            self.root.geometry(f"{round(820 * factor)}x{round(700 * factor)}")
+        for name, base_size in self.base_named_font_sizes.items():
+            scaled_size = max(1, round(abs(base_size) * factor))
+            if base_size < 0:
+                scaled_size = -scaled_size
+            try:
+                tkfont.nametofont(name, root=self.root).configure(size=scaled_size)
+            except tk.TclError:
+                pass
+        for font, base_size in self.scaled_widget_fonts:
+            scaled_size = max(1, round(abs(base_size) * factor))
+            font.configure(size=-scaled_size if base_size < 0 else scaled_size)
+        for widget, padding in self.scaled_widget_paddings:
+            try:
+                widget.configure(
+                    padding=tuple(max(0, round(item * factor)) for item in padding)
+                )
+            except tk.TclError:
+                pass
+
+        style = ttk.Style(self.root)
+        style.configure(
+            "TButton",
+            padding=(max(3, round(8 * factor)), max(2, round(4 * factor))),
+        )
+        style.configure(
+            "Horizontal.TScale",
+            sliderlength=max(12, round(22 * factor)),
+            sliderthickness=max(10, round(16 * factor)),
+        )
+        self._update_logo_scale(percent)
+        self.root.update_idletasks()
+
+    def _update_logo_scale(self, percent: int) -> None:
+        if not self.logo_source or not self.logo_label:
+            return
+        ratio = Fraction(percent, 400).limit_denominator(16)
+        self.logo_image = self.logo_source.zoom(
+            ratio.numerator, ratio.numerator
+        ).subsample(ratio.denominator, ratio.denominator)
+        self.logo_label.configure(image=self.logo_image)
 
     def _update_custom_path_states(self) -> None:
         python_state = "normal" if self.use_custom_python_var.get() else "disabled"

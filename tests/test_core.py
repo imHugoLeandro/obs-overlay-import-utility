@@ -54,7 +54,7 @@ class CoreTests(unittest.TestCase):
             (root / "collection_ImportReady.json").write_text(json.dumps(valid), encoding="utf-8")
             (root / "metadata.json").write_text('{"name":"not OBS"}', encoding="utf-8")
             found = core.find_scene_collections(root)
-            self.assertEqual(found, [root / "collection.json"])
+            self.assertEqual(found, [(root / "collection.json").resolve()])
 
     def test_conversion_updates_paths_and_preserves_original(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -78,7 +78,10 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
             converted = json.loads(result.output_path.read_text(encoding="utf-8"))
             values = [item["value"] for item in converted["sources"][0]["settings"]["playlist"]]
-            self.assertEqual(values, [str(assets / name) for name in ("image.png", "sound.ogg", "widget.html")])
+            self.assertEqual(
+                values,
+                [str((assets / name).resolve()) for name in ("image.png", "sound.ogg", "widget.html")],
+            )
 
     def test_missing_file_prevents_output_in_strict_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -126,7 +129,10 @@ class CoreTests(unittest.TestCase):
             result = core.convert_collection(source, root)
             self.assertTrue(result.success)
             converted = json.loads(result.output_path.read_text(encoding="utf-8"))
-            self.assertEqual(converted["sources"][0]["settings"]["playlist"][0]["value"], str(expected / "same.png"))
+            self.assertEqual(
+                converted["sources"][0]["settings"]["playlist"][0]["value"],
+                str((expected / "same.png").resolve()),
+            )
 
     def test_case_sensitive_matching_respects_folder_case(self) -> None:
         first = r"C:\one\Parent\Media\same.png"
@@ -158,7 +164,7 @@ class CoreTests(unittest.TestCase):
             converted = json.loads(result.output_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 converted["sources"][0]["settings"]["third_party_plugin_asset"],
-                str(asset),
+                str(asset.resolve()),
             )
 
     def test_output_name_never_overwrites(self) -> None:
