@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from obs_overlay_import_utility import core  # noqa: E402
+from obs_overlay_import_utility.models import FileIndex  # noqa: E402
+from obs_overlay_import_utility.paths import find_file_match, is_local_media_path  # noqa: E402
+
+
+def scene_data(*paths: str) -> dict:
+    return {
+        "current_scene": "Main",
+        "scene_order": [{"name": "Main"}],
+        "sources": [
+            {
+                "name": "Overlay source",
+                "settings": {"playlist": [{"value": path} for path in paths]},
+            }
+        ],
+    }
+
+
+class CoreTests(unittest.TestCase):
+    def test_recognizes_supported_local_paths(self) -> None:
+        for path in (
+            r"C:\Creator\Overlay\image.png",
+            r"C:\Creator\Overlay\sound.flac",
+            "/home/creator/overlay/video.webm",
+            r"D:\Overlay\widget.html",
+        ):
+            self.assertTrue(is_local_media_path(path), path)
+
+    def test_ignores_urls_and_unrelated_text(self) -> None:
+        self.assertFalse(is_local_media_path("https://example.com/image.png"))
+        self.assertFalse(is_local_media_path("data:image/png;base64,abc"))
+        self.assertFalse(is_local_media_path("image.png"))
+        self.assertFalse(is_local_media_path(r"C:\notes\instructions.txt"))
+
+    def test_scans_full_large_json_and_filters_generated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            valid = scene_data(r"C:\old\image.png")
+            valid["padding"] = "x" * 12000
+            (root / "collection.json").write_text(json.dumps(valid), encoding="utf-8")
+            (root / "collection_ImportReady.json").write_text(json.dumps(valid), encoding="utf-8")
+            (root / "metadata.json").write_text('{"name":"not OBS"}', encoding="utf-8")
+            found = core.find_scene_collections(root)
+            self.assertEqual(found, [root / "collection.json"])
+
+    def test_conversion_updates_paths_and_preserves_original(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            assets = root / "Overlay" / "media"
+            assets.mkdir(parents=True)
+            for name in ("image.png", "sound.ogg", "widget.html"):
+                (assets / name).write_bytes(b"asset")
+            source = root / "My Collection.json"
+            original = scene_data(
+                r"E:\Seller\Package\media\image.png",
+                r"E:\Seller\Package\media\sound.ogg",
+                r"E:\Seller\Package\media\widget.html",
+            )
+            source.write_text(json.dumps(original), encoding="utf-8")
+
+            result = core.convert_collection(source, root)
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(result.changed, 3)
+            self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
+            converted = json.loads(result.output_path.read_text(encoding="utf-8"))
+            values = [item["value"] for item in converted["sources"][0]["settings"]["playlist"]]
+            self.assertEqual(values, [str(assets / name) for name in ("image.png", "sound.ogg", "widget.html")])
+
+    def test_missing_file_prevents_output_in_strict_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8")
+            result = core.convert_collection(source, root)
+            self.assertFalse(result.success)
+            self.assertEqual(len(result.missing), 1)
+            self.assertFalse((root / "collection_ImportReady.json").exists())
+
+    def test_non_strict_mode_can_write_with_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8")
+            result = core.convert_collection(source, root, strict=False)
+            self.assertTrue(result.success)
+            self.assertEqual(len(result.missing), 1)
+
+    def test_ambiguous_file_prevents_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "one").mkdir()
+            (root / "two").mkdir()
+            (root / "one" / "same.png").write_bytes(b"1")
+            (root / "two" / "same.png").write_bytes(b"2")
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\old\same.png")), encoding="utf-8")
+            result = core.convert_collection(source, root)
+            self.assertFalse(result.success)
+            self.assertEqual(len(result.ambiguous), 1)
+
+    def test_matching_uses_trailing_folder_to_resolve_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            expected = root / "package" / "media"
+            other = root / "alternate" / "images"
+            expected.mkdir(parents=True)
+            other.mkdir(parents=True)
+            (expected / "same.png").write_bytes(b"1")
+            (other / "same.png").write_bytes(b"2")
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\seller\media\same.png")), encoding="utf-8")
+            result = core.convert_collection(source, root)
+            self.assertTrue(result.success)
+            converted = json.loads(result.output_path.read_text(encoding="utf-8"))
+            self.assertEqual(converted["sources"][0]["settings"]["playlist"][0]["value"], str(expected / "same.png"))
+
+    def test_case_sensitive_matching_respects_folder_case(self) -> None:
+        first = r"C:\one\Parent\Media\same.png"
+        second = r"C:\two\parent\Media\same.png"
+        index = FileIndex(
+            by_name={"same.png": [first, second]},
+            by_folder={"Media": {"same.png": [first, second]}},
+            file_count=2,
+        )
+        match, ambiguous = find_file_match(
+            r"D:\seller\parent\Media\same.png", index, case_sensitive=True
+        )
+        self.assertEqual(match, second)
+        self.assertEqual(ambiguous, ())
+
+    def test_unknown_plugin_path_key_is_also_relinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            asset = root / "plugin-texture.png"
+            asset.write_bytes(b"x")
+            source = root / "collection.json"
+            data = scene_data()
+            data["sources"][0]["settings"] = {
+                "third_party_plugin_asset": r"C:\creator\plugin-texture.png"
+            }
+            source.write_text(json.dumps(data), encoding="utf-8")
+            result = core.convert_collection(source, root)
+            self.assertTrue(result.success)
+            converted = json.loads(result.output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                converted["sources"][0]["settings"]["third_party_plugin_asset"],
+                str(asset),
+            )
+
+    def test_output_name_never_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "image.png").write_bytes(b"x")
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8")
+            first = core.convert_collection(source, root)
+            second = core.convert_collection(source, root)
+            self.assertEqual(first.output_path.name, "collection_ImportReady.json")
+            self.assertEqual(second.output_path.name, "collection_ImportReady_2.json")
+
+    def test_atomic_failure_leaves_no_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "result.json"
+            with mock.patch("obs_overlay_import_utility.core.os.replace", side_effect=OSError("blocked")):
+                with self.assertRaises(core.UtilityError):
+                    core.atomic_write_json(target, {"ok": True})
+            self.assertFalse(target.exists())
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_index_walks_overlay_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "image.png").write_bytes(b"x")
+            source = root / "collection.json"
+            source.write_text(json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8")
+            real_walk = os.walk
+            with mock.patch("obs_overlay_import_utility.core.os.walk", wraps=real_walk) as walk:
+                result = core.convert_collection(source, root)
+            self.assertTrue(result.success)
+            self.assertEqual(walk.call_count, 1)
+
+    def test_source_has_no_obs_plugin_or_embedded_binary_dependency(self) -> None:
+        source = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py"))
+        self.assertNotIn("obspython", source.casefold())
+        self.assertNotIn("base64", source.casefold())
+
+
+if __name__ == "__main__":
+    unittest.main()

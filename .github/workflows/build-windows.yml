@@ -1,0 +1,36 @@
+name: Build Windows portable app
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e ".[build]"
+      - run: python -m unittest discover -s tests -v
+      - shell: pwsh
+        run: >-
+          python -m PyInstaller
+          --noconfirm --clean --onefile --windowed
+          --name "OBS Overlay Import Utility"
+          --paths src
+          --distpath dist
+          --workpath build
+          --specpath .
+          tools/launcher.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OBS-Overlay-Import-Utility-Windows
+          path: dist/OBS Overlay Import Utility.exe
+          if-no-files-found: error
