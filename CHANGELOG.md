@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added top-level tool navigation for Import Overlay, Export Overlay, Auto Resizer, and Settings.
+- Added placeholder pages for the three planned tools while keeping Import Overlay fully functional.
+
 ## 2.0.0 — 2026-07-13
 
 - Rebuilt the utility as a standalone, portable Tkinter application.

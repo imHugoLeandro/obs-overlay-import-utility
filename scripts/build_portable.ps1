@@ -30,6 +30,17 @@ Assert-LastExit "Updating pip"
 Assert-LastExit "Installing build dependencies"
 & $Python -m unittest discover -s (Join-Path $Root "tests") -v
 Assert-LastExit "Automated tests"
+
+$PortableApp = Join-Path $Root "dist\OBS Overlay Import Utility.exe"
+if (Test-Path $PortableApp) {
+    try {
+        Remove-Item -LiteralPath $PortableApp -Force -ErrorAction Stop
+    }
+    catch {
+        throw "Close OBS Overlay Import Utility before rebuilding it. The current executable is still in use."
+    }
+}
+
 & $Python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -44,4 +55,4 @@ Assert-LastExit "Automated tests"
 Assert-LastExit "Portable application build"
 
 Write-Host "Portable app created at:"
-Write-Host (Join-Path $Root "dist\OBS Overlay Import Utility.exe")
+Write-Host $PortableApp

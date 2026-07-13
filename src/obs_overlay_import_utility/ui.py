@@ -17,32 +17,84 @@ from .models import ConversionResult, UtilityError
 
 
 class ImportUtilityApp:
+    SECTIONS = (
+        ("import", "Import Overlay"),
+        ("export", "Export Overlay"),
+        ("resizer", "Auto Resizer"),
+        ("settings", "Settings"),
+    )
+
+    PLACEHOLDER_COPY = {
+        "export": (
+            "Export Overlay",
+            "Package an OBS overlay for customers. This tool is planned for a future release.",
+        ),
+        "resizer": (
+            "Auto Resizer",
+            "Resize overlay assets and scene layouts automatically. This tool is planned for a future release.",
+        ),
+        "settings": (
+            "Settings",
+            "Application preferences will be available here in a future release.",
+        ),
+    }
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"{APP_TITLE} {__version__}")
-        self.root.minsize(720, 560)
-        self.root.geometry("820x650")
+        self.root.minsize(720, 600)
+        self.root.geometry("820x700")
 
         self.folder_var = tk.StringVar()
         self.collection_var = tk.StringVar()
         self.strict_var = tk.BooleanVar(value=True)
         self.case_var = tk.BooleanVar(value=False)
+        self.section_var = tk.StringVar(value="import")
+        self.placeholder_title_var = tk.StringVar()
+        self.placeholder_description_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Choose the extracted overlay folder to begin.")
         self.collections: dict[str, Path] = {}
         self.last_output: Path | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
+        self.navigation_buttons: list[ttk.Radiobutton] = []
 
         self._build_interface()
         self.root.after(100, self._process_events)
 
     def _build_interface(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        frame = ttk.Frame(self.root, padding=22)
+        self.root.rowconfigure(1, weight=1)
+
+        navigation = ttk.Frame(self.root, padding=(18, 12))
+        navigation.grid(row=0, column=0, sticky="ew")
+        ttk.Label(navigation, text="Tools", font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, padx=(0, 12)
+        )
+        for column, (section, label) in enumerate(self.SECTIONS, start=1):
+            button = ttk.Radiobutton(
+                navigation,
+                text=label,
+                value=section,
+                variable=self.section_var,
+                command=self._show_section,
+                style="Toolbutton",
+                padding=(12, 7),
+            )
+            button.grid(row=0, column=column, padx=(0, 6))
+            self.navigation_buttons.append(button)
+        ttk.Separator(self.root).grid(row=0, column=0, sticky="sew")
+
+        self.page_container = ttk.Frame(self.root)
+        self.page_container.grid(row=1, column=0, sticky="nsew")
+        self.page_container.columnconfigure(0, weight=1)
+        self.page_container.rowconfigure(0, weight=1)
+
+        frame = ttk.Frame(self.page_container, padding=22)
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(8, weight=1)
+        self.import_page = frame
 
         ttk.Label(frame, text=APP_TITLE, font=("Segoe UI", 18, "bold")).grid(
             row=0, column=0, sticky="w"
@@ -112,6 +164,54 @@ class ImportUtilityApp:
             text="Your original collection is never changed. A new _ImportReady.json file is created.",
             foreground="#555555",
         ).grid(row=9, column=0, sticky="w", pady=(12, 0))
+
+        placeholder = ttk.Frame(self.page_container, padding=40)
+        placeholder.columnconfigure(0, weight=1)
+        placeholder.rowconfigure(0, weight=1)
+        content = ttk.Frame(placeholder)
+        content.grid(row=0, column=0)
+        ttk.Label(
+            content,
+            textvariable=self.placeholder_title_var,
+            font=("Segoe UI", 22, "bold"),
+            anchor="center",
+        ).grid(row=0, column=0)
+        ttk.Label(
+            content,
+            textvariable=self.placeholder_description_var,
+            justify="center",
+            anchor="center",
+            wraplength=520,
+        ).grid(row=1, column=0, pady=(12, 22))
+        ttk.Label(content, text="Coming soon", foreground="#666666").grid(row=2, column=0)
+        ttk.Button(
+            content,
+            text="Back to Import Overlay",
+            command=lambda: self._select_section("import"),
+        ).grid(row=3, column=0, pady=(24, 0))
+        self.placeholder_page = placeholder
+
+        self._show_section()
+
+    def _select_section(self, section: str) -> None:
+        self.section_var.set(section)
+        self._show_section()
+
+    def _show_section(self) -> None:
+        section = self.section_var.get()
+        self.import_page.grid_remove()
+        self.placeholder_page.grid_remove()
+        if section == "import":
+            self.import_page.grid(row=0, column=0, sticky="nsew")
+            return
+
+        title, description = self.PLACEHOLDER_COPY.get(
+            section,
+            ("Coming Soon", "This tool is planned for a future release."),
+        )
+        self.placeholder_title_var.set(title)
+        self.placeholder_description_var.set(description)
+        self.placeholder_page.grid(row=0, column=0, sticky="nsew")
 
     def _browse(self) -> None:
         selected = filedialog.askdirectory(title="Choose the extracted overlay folder")
@@ -243,6 +343,8 @@ class ImportUtilityApp:
         self.case_check.configure(state=state)
         self.convert_button.configure(state=state)
         self.collection_combo.configure(state="disabled" if busy else "readonly")
+        for button in self.navigation_buttons:
+            button.configure(state="disabled" if busy else "normal")
         if busy:
             self.open_button.configure(state="disabled")
         elif self.last_output:
