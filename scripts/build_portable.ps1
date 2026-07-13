@@ -48,6 +48,7 @@ if (Test-Path $PortableApp) {
     --windowed `
     --name "OBS Overlay Import Utility" `
     --paths (Join-Path $Root "src") `
+    --collect-data "obs_overlay_import_utility" `
     --distpath (Join-Path $Root "dist") `
     --workpath (Join-Path $Root "build") `
     --specpath $Root `

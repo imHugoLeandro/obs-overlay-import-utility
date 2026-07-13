@@ -25,6 +25,7 @@ jobs:
           --noconfirm --clean --onefile --windowed
           --name "OBS Overlay Import Utility"
           --paths src
+          --collect-data obs_overlay_import_utility
           --distpath dist
           --workpath build
           --specpath .

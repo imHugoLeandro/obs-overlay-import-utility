@@ -4,6 +4,8 @@ A small, open-source Windows desktop utility that repairs local file paths in ex
 
 The portable build has no installer and does not require Python.
 
+The Settings page supports the Windows default, white, and dark themes; adjustable UI scaling; remembered overlay folders; import defaults; and optional custom OBS/Python locations. Settings are saved per Windows user in `%APPDATA%\OBS Overlay Import Utility\settings.json`.
+
 ## Customer workflow
 
 1. Extract the complete overlay download to a normal folder.

@@ -34,3 +34,6 @@ Issues = "https://github.com/imhugoleandro/obs-overlay-import-utility/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+obs_overlay_import_utility = ["assets/*.png", "assets/*.svg"]
