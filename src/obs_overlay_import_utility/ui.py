@@ -13,9 +13,34 @@ from fractions import Fraction
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .automatic import AutomaticImportResult, automatically_import_overlay
 from .constants import APP_TITLE, __version__
-from .core import convert_collection, find_scene_collections
+from .core import convert_collection, find_scene_collections, load_json
+from .exporter import (
+    ExportResult,
+    active_obs_scene_collection,
+    export_scene_collection,
+    list_obs_scene_collections,
+)
 from .models import ConversionResult, UtilityError
+from .obs_profile import active_profile_canvas
+from .resizer import (
+    MODE_SCALE_RATIO,
+    MODE_STRETCH,
+    SCOPE_COLLECTION,
+    SCOPE_SCENE,
+    SCOPE_SOURCE,
+    ResizeResult,
+    resize_collection,
+    scene_names,
+    source_names,
+    undo_resize,
+)
+from .streamlabs import (
+    StreamlabsImportResult,
+    default_obs_scenes_directory,
+    import_streamlabs_overlay,
+)
 from .settings import (
     MAX_UI_SCALE,
     MIN_UI_SCALE,
@@ -76,8 +101,25 @@ class ImportUtilityApp:
         )
         self.folder_var = tk.StringVar(value=initial_folder)
         self.collection_var = tk.StringVar()
+        self.import_method_var = tk.StringVar(value="obs")
+        self.obs_advanced_visible = False
+        self.pending_obs_conversion = False
         self.strict_var = tk.BooleanVar(value=self.settings.strict_validation)
         self.case_var = tk.BooleanVar(value=self.settings.case_sensitive_matching)
+        self.streamlabs_file_var = tk.StringVar()
+        self.automatic_folder_var = tk.StringVar(value=initial_folder)
+        self.export_collection_var = tk.StringVar()
+        self.export_destination_var = tk.StringVar()
+        self.export_status_var = tk.StringVar(value="Choose a scene collection and destination folder.")
+        self.resize_collection_var = tk.StringVar()
+        self.resize_scope_var = tk.StringVar(value=SCOPE_COLLECTION)
+        self.resize_name_var = tk.StringVar()
+        self.resize_mode_var = tk.StringVar(value=MODE_STRETCH)
+        self.resize_size_mode_var = tk.StringVar(value="screen")
+        self.resize_width_var = tk.StringVar(value="1920")
+        self.resize_height_var = tk.StringVar(value="1080")
+        self.resize_screen_size_var = tk.StringVar(value="Screen size: checking OBS profile…")
+        self.resize_status_var = tk.StringVar(value="Choose what to resize and a target size.")
         self.section_var = tk.StringVar(value="import")
         self.placeholder_title_var = tk.StringVar()
         self.placeholder_description_var = tk.StringVar()
@@ -99,6 +141,12 @@ class ImportUtilityApp:
         )
         self.status_var = tk.StringVar(value="Choose the extracted overlay folder to begin.")
         self.collections: dict[str, Path] = {}
+        self.export_collections: dict[str, Path] = {}
+        self.export_controls: list[tk.Widget] = []
+        self.resize_collections: dict[str, Path] = {}
+        self.resizer_controls: list[tk.Widget] = []
+        self.last_resize_collection: Path | None = None
+        self.last_resize_backup: Path | None = None
         self.last_output: Path | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
@@ -166,7 +214,7 @@ class ImportUtilityApp:
         frame = ttk.Frame(self.page_container, padding=22)
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(8, weight=1)
+        frame.rowconfigure(6, weight=1)
         self.import_page = frame
 
         ttk.Label(frame, text=APP_TITLE, font=("Segoe UI", 18, "bold")).grid(
@@ -174,100 +222,391 @@ class ImportUtilityApp:
         )
         ttk.Label(
             frame,
-            text="Create a safe, import-ready OBS scene collection using the files on this computer.",
+            text="Select one import method, expand its options with the arrow, then run it from this page.",
             wraplength=760,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 18))
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        folder_group = ttk.LabelFrame(frame, text="1. Overlay folder", padding=12)
-        folder_group.grid(row=2, column=0, sticky="ew")
-        folder_group.columnconfigure(0, weight=1)
-        self.folder_entry = ttk.Entry(folder_group, textvariable=self.folder_var)
-        self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.browse_button = ttk.Button(folder_group, text="Browse…", command=self._browse)
-        self.browse_button.grid(row=0, column=1)
-        self.scan_button = ttk.Button(folder_group, text="Scan", command=self._scan)
-        self.scan_button.grid(row=0, column=2, padx=(8, 0))
+        methods = ttk.Frame(frame)
+        methods.grid(row=2, column=0, sticky="ew")
+        methods.columnconfigure(0, weight=1)
+        self.method_controls: list[tk.Widget] = []
+        self.method_options: dict[str, ttk.Frame] = {}
+        self.method_arrows: dict[str, ttk.Button] = {}
+        self.method_expanded = {"obs": True, "streamlabs": False, "automatic": False}
 
-        collection_group = ttk.LabelFrame(frame, text="2. OBS scene collection", padding=12)
-        collection_group.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        collection_group.columnconfigure(0, weight=1)
-        self.collection_combo = ttk.Combobox(
-            collection_group, textvariable=self.collection_var, state="readonly"
+        obs_card = ttk.LabelFrame(methods, text="Method 1 — Fix Scene Collection Paths", padding=10)
+        obs_card.grid(row=0, column=0, sticky="ew")
+        obs_card.columnconfigure(0, weight=1)
+        obs_header = ttk.Frame(obs_card)
+        obs_header.grid(row=0, column=0, sticky="ew")
+        obs_header.columnconfigure(0, weight=1)
+        self.obs_method_radio = ttk.Radiobutton(
+            obs_header,
+            text="Repair an exported OBS scene collection and its local asset paths",
+            value="obs",
+            variable=self.import_method_var,
+            command=lambda: self._select_import_method("obs"),
         )
-        self.collection_combo.grid(row=0, column=0, sticky="ew")
-
-        options_group = ttk.LabelFrame(frame, text="Options", padding=12)
-        options_group.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        self.obs_method_radio.grid(row=0, column=0, sticky="w")
+        self.obs_arrow = ttk.Button(obs_header, text="▾", width=3, command=lambda: self._toggle_import_method("obs"))
+        self.obs_arrow.grid(row=0, column=1, sticky="e")
+        self.method_arrows["obs"] = self.obs_arrow
+        self.method_controls.extend((self.obs_method_radio, self.obs_arrow))
+        obs_options = ttk.Frame(obs_card)
+        obs_options.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        obs_options.columnconfigure(0, weight=1)
+        self.method_options["obs"] = obs_options
+        ttk.Label(obs_options, text="Overlay Folder path").grid(row=0, column=0, sticky="w")
+        obs_folder_row = ttk.Frame(obs_options)
+        obs_folder_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        obs_folder_row.columnconfigure(0, weight=1)
+        self.folder_entry = ttk.Entry(obs_folder_row, textvariable=self.folder_var)
+        self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.browse_button = ttk.Button(obs_folder_row, text="Browse…", command=self._browse)
+        self.browse_button.grid(row=0, column=1)
+        self.method_controls.extend((self.folder_entry, self.browse_button))
+        ttk.Label(
+            obs_options,
+            text="The scene collection export is found automatically inside this folder.",
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.advanced_obs_button = ttk.Button(
+            obs_options, text="Advanced options ▸", command=self._toggle_obs_advanced
+        )
+        self.advanced_obs_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.method_controls.append(self.advanced_obs_button)
+        self.advanced_obs_options = ttk.Frame(obs_options)
+        self.advanced_obs_options.columnconfigure(0, weight=1)
         self.strict_check = ttk.Checkbutton(
-            options_group,
-            text="Require every referenced file (recommended)",
+            self.advanced_obs_options,
+            text="Require every referenced file",
             variable=self.strict_var,
         )
         self.strict_check.grid(row=0, column=0, sticky="w")
         self.case_check = ttk.Checkbutton(
-            options_group,
+            self.advanced_obs_options,
             text="Case-sensitive filename matching",
             variable=self.case_var,
         )
         self.case_check.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.method_controls.extend((self.strict_check, self.case_check))
 
-        button_row = ttk.Frame(frame)
-        button_row.grid(row=5, column=0, sticky="ew", pady=(16, 0))
-        button_row.columnconfigure(0, weight=1)
-        self.convert_button = ttk.Button(
-            button_row, text="Validate and create import file", command=self._convert
+        streamlabs_card = ttk.LabelFrame(methods, text="Method 2 — Import Streamlabs Scene File", padding=10)
+        streamlabs_card.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        streamlabs_card.columnconfigure(0, weight=1)
+        streamlabs_header = ttk.Frame(streamlabs_card)
+        streamlabs_header.grid(row=0, column=0, sticky="ew")
+        streamlabs_header.columnconfigure(0, weight=1)
+        self.streamlabs_method_radio = ttk.Radiobutton(
+            streamlabs_header,
+            text="Extract, convert, and import a Streamlabs package into OBS",
+            value="streamlabs",
+            variable=self.import_method_var,
+            command=lambda: self._select_import_method("streamlabs"),
         )
-        self.convert_button.grid(row=0, column=0, sticky="ew")
-        self.open_button = ttk.Button(
-            button_row, text="Open output folder", command=self._open_output, state="disabled"
+        self.streamlabs_method_radio.grid(row=0, column=0, sticky="w")
+        self.streamlabs_arrow = ttk.Button(
+            streamlabs_header, text="▸", width=3, command=lambda: self._toggle_import_method("streamlabs")
         )
-        self.open_button.grid(row=0, column=1, padx=(10, 0))
+        self.streamlabs_arrow.grid(row=0, column=1, sticky="e")
+        self.method_arrows["streamlabs"] = self.streamlabs_arrow
+        self.method_controls.extend((self.streamlabs_method_radio, self.streamlabs_arrow))
+        streamlabs_options = ttk.Frame(streamlabs_card)
+        streamlabs_options.columnconfigure(0, weight=1)
+        self.method_options["streamlabs"] = streamlabs_options
+        streamlabs_options.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(streamlabs_options, text="Streamlabs .overlay file").grid(row=0, column=0, sticky="w")
+        streamlabs_file_row = ttk.Frame(streamlabs_options)
+        streamlabs_file_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        streamlabs_file_row.columnconfigure(0, weight=1)
+        self.streamlabs_file_entry = ttk.Entry(streamlabs_file_row, textvariable=self.streamlabs_file_var)
+        self.streamlabs_file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.streamlabs_browse_button = ttk.Button(
+            streamlabs_file_row, text="Browse…", command=self._browse_streamlabs
+        )
+        self.streamlabs_browse_button.grid(row=0, column=1)
+        self.method_controls.extend((self.streamlabs_file_entry, self.streamlabs_browse_button))
+        ttk.Label(
+            streamlabs_options,
+            text="Files are extracted beside the selected package and a new OBS collection is created automatically.",
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
-        ttk.Separator(frame).grid(row=6, column=0, sticky="ew", pady=16)
+        automatic_card = ttk.LabelFrame(methods, text="Method 3 — Automatic Scene Collection", padding=10)
+        automatic_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        automatic_card.columnconfigure(0, weight=1)
+        automatic_header = ttk.Frame(automatic_card)
+        automatic_header.grid(row=0, column=0, sticky="ew")
+        automatic_header.columnconfigure(0, weight=1)
+        self.automatic_method_radio = ttk.Radiobutton(
+            automatic_header,
+            text="Detect a Streamlabs package or OBS export and import it into OBS automatically",
+            value="automatic",
+            variable=self.import_method_var,
+            command=lambda: self._select_import_method("automatic"),
+        )
+        self.automatic_method_radio.grid(row=0, column=0, sticky="w")
+        self.automatic_arrow = ttk.Button(
+            automatic_header, text="▸", width=3, command=lambda: self._toggle_import_method("automatic")
+        )
+        self.automatic_arrow.grid(row=0, column=1, sticky="e")
+        self.method_arrows["automatic"] = self.automatic_arrow
+        self.method_controls.extend((self.automatic_method_radio, self.automatic_arrow))
+        automatic_options = ttk.Frame(automatic_card)
+        automatic_options.columnconfigure(0, weight=1)
+        self.method_options["automatic"] = automatic_options
+        automatic_options.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(automatic_options, text="Scene collection pack folder").grid(row=0, column=0, sticky="w")
+        automatic_folder_row = ttk.Frame(automatic_options)
+        automatic_folder_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        automatic_folder_row.columnconfigure(0, weight=1)
+        self.automatic_folder_entry = ttk.Entry(automatic_folder_row, textvariable=self.automatic_folder_var)
+        self.automatic_folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.automatic_browse_button = ttk.Button(
+            automatic_folder_row, text="Browse…", command=self._browse_automatic
+        )
+        self.automatic_browse_button.grid(row=0, column=1)
+        self.method_controls.extend((self.automatic_folder_entry, self.automatic_browse_button))
+        ttk.Label(
+            automatic_options,
+            text=(
+                "The utility looks for exactly one .overlay package first, then one OBS scene collection export. "
+                "It converts the detected pack and installs it in OBS with a new collection name."
+            ),
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        run_row = ttk.Frame(frame)
+        run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        run_row.columnconfigure(0, weight=1)
+        self.selected_method_label = ttk.Label(run_row, text="Selected: Method 1 — Fix Scene Collection Paths", style="Muted.TLabel")
+        self.selected_method_label.grid(row=0, column=0, sticky="w")
+        self.run_button = ttk.Button(run_row, text="Run", command=self._run_selected_method, width=18)
+        self.run_button.grid(row=0, column=1, sticky="e")
+
+        ttk.Separator(frame).grid(row=4, column=0, sticky="ew", pady=14)
         ttk.Label(frame, textvariable=self.status_var, font=("Segoe UI", 10, "bold")).grid(
-            row=7, column=0, sticky="w"
+            row=5, column=0, sticky="w"
         )
-        self.results = tk.Text(frame, height=14, wrap="word", state="disabled")
-        self.results.grid(row=8, column=0, sticky="nsew", pady=(8, 0))
+        self.results = tk.Text(frame, height=12, wrap="word", state="disabled")
+        self.results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.results.yview)
-        scrollbar.grid(row=8, column=1, sticky="ns", pady=(8, 0))
+        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
         self.results.configure(yscrollcommand=scrollbar.set)
         ttk.Label(
             frame,
-            text="Your original collection is never changed. A new _ImportReady.json file is created.",
+            text="Method 1 never changes the original export. Methods 2 and 3 never overwrite an existing OBS collection.",
             style="Muted.TLabel",
-        ).grid(row=9, column=0, sticky="w", pady=(12, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(10, 0))
+        self._update_import_method_panels()
+        self._build_export_page()
 
-        placeholder = ttk.Frame(self.page_container, padding=40)
-        placeholder.columnconfigure(0, weight=1)
-        placeholder.rowconfigure(0, weight=1)
-        content = ttk.Frame(placeholder)
-        content.grid(row=0, column=0)
-        ttk.Label(
-            content,
-            textvariable=self.placeholder_title_var,
-            font=("Segoe UI", 22, "bold"),
-            anchor="center",
-        ).grid(row=0, column=0)
-        ttk.Label(
-            content,
-            textvariable=self.placeholder_description_var,
-            justify="center",
-            anchor="center",
-            wraplength=520,
-        ).grid(row=1, column=0, pady=(12, 22))
-        ttk.Label(content, text="Coming soon", style="Muted.TLabel").grid(row=2, column=0)
-        ttk.Button(
-            content,
-            text="Back to Import Overlay",
-            command=lambda: self._select_section("import"),
-        ).grid(row=3, column=0, pady=(24, 0))
-        self.placeholder_page = placeholder
-
+        self._build_resizer_page()
         self._build_settings_page()
 
         self._show_section()
 
+    def _build_export_page(self) -> None:
+        page = ttk.Frame(self.page_container, padding=22)
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(6, weight=1)
+        self.export_page = page
+
+        ttk.Label(page, text="Export Overlay", font=("Segoe UI", 18, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            page,
+            text="Package an OBS scene collection with its local media, plugin resources, and filter files.",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        options = ttk.LabelFrame(page, text="Export options", padding=12)
+        options.grid(row=2, column=0, sticky="ew")
+        options.columnconfigure(0, weight=1)
+        ttk.Label(options, text="OBS Scene Collection").grid(row=0, column=0, sticky="w")
+        collection_row = ttk.Frame(options)
+        collection_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        collection_row.columnconfigure(0, weight=1)
+        self.export_collection_combo = ttk.Combobox(
+            collection_row,
+            textvariable=self.export_collection_var,
+            state="readonly",
+        )
+        self.export_collection_combo.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.refresh_export_button = ttk.Button(
+            collection_row, text="Refresh", command=self._refresh_export_collections
+        )
+        self.refresh_export_button.grid(row=0, column=1)
+        self.export_controls.extend((self.export_collection_combo, self.refresh_export_button))
+        ttk.Label(
+            options,
+            text="The collection currently selected in OBS is chosen automatically when available.",
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=2, column=0, sticky="w", pady=(4, 12))
+
+        ttk.Label(options, text="Export destination folder").grid(row=3, column=0, sticky="w")
+        destination_row = ttk.Frame(options)
+        destination_row.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        destination_row.columnconfigure(0, weight=1)
+        self.export_destination_entry = ttk.Entry(destination_row, textvariable=self.export_destination_var)
+        self.export_destination_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.export_destination_browse_button = ttk.Button(
+            destination_row, text="Browse…", command=self._browse_export_destination
+        )
+        self.export_destination_browse_button.grid(row=0, column=1)
+        self.export_controls.extend((self.export_destination_entry, self.export_destination_browse_button))
+        ttk.Label(
+            options,
+            text="A new organized package folder is created here, with images, videos, audio, other resources, and an OBS JSON export.",
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=5, column=0, sticky="w", pady=(4, 0))
+
+        run_row = ttk.Frame(page)
+        run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        run_row.columnconfigure(0, weight=1)
+        ttk.Label(run_row, textvariable=self.export_status_var, style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.export_run_button = ttk.Button(run_row, text="Run", command=self._export_overlay, width=18)
+        self.export_run_button.grid(row=0, column=1, sticky="e")
+        self.export_controls.append(self.export_run_button)
+
+        ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
+        ttk.Label(page, text="Export log", font=("Segoe UI", 10, "bold")).grid(row=5, column=0, sticky="w")
+        self.export_results = tk.Text(page, height=14, wrap="word", state="disabled")
+        self.export_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=self.export_results.yview)
+        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+        self.export_results.configure(yscrollcommand=scrollbar.set)
+        self._refresh_export_collections()
+    def _build_resizer_page(self) -> None:
+        page = ttk.Frame(self.page_container, padding=22)
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(6, weight=1)
+        self.resizer_page = page
+
+        ttk.Label(page, text="Auto Resizer", font=("Segoe UI", 18, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            page,
+            text="Resize an entire collection, one scene, or one source. The selected OBS collection is overwritten with an undo backup.",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        options = ttk.LabelFrame(page, text="Resize options", padding=12)
+        options.grid(row=2, column=0, sticky="ew")
+        options.columnconfigure(0, weight=1)
+        options.columnconfigure(1, weight=1)
+
+        ttk.Label(options, text="OBS Scene Collection").grid(row=0, column=0, sticky="w")
+        collection_row = ttk.Frame(options)
+        collection_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10))
+        collection_row.columnconfigure(0, weight=1)
+        self.resize_collection_combo = ttk.Combobox(
+            collection_row, textvariable=self.resize_collection_var, state="readonly"
+        )
+        self.resize_collection_combo.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.resize_collection_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_resize_targets())
+        self.refresh_resize_button = ttk.Button(
+            collection_row, text="Refresh", command=self._refresh_resize_collections
+        )
+        self.refresh_resize_button.grid(row=0, column=1)
+        self.resizer_controls.extend((self.resize_collection_combo, self.refresh_resize_button))
+
+        ttk.Label(options, text="Resize").grid(row=2, column=0, sticky="w")
+        self.resize_scope_combo = ttk.Combobox(
+            options,
+            textvariable=self.resize_scope_var,
+            values=(SCOPE_COLLECTION, SCOPE_SCENE, SCOPE_SOURCE),
+            state="readonly",
+        )
+        self.resize_scope_combo.grid(row=3, column=0, sticky="ew", padx=(0, 8), pady=(4, 10))
+        self.resize_scope_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_resize_targets())
+        self.resizer_controls.append(self.resize_scope_combo)
+
+        ttk.Label(options, text="Selected scene or source").grid(row=2, column=1, sticky="w")
+        self.resize_name_combo = ttk.Combobox(options, textvariable=self.resize_name_var, state="disabled")
+        self.resize_name_combo.grid(row=3, column=1, sticky="ew", pady=(4, 10))
+        self.resizer_controls.append(self.resize_name_combo)
+
+        ttk.Label(options, text="Resize behavior").grid(row=4, column=0, sticky="w")
+        behavior_row = ttk.Frame(options)
+        behavior_row.grid(row=5, column=0, sticky="w", pady=(4, 10))
+        self.stretch_radio = ttk.Radiobutton(
+            behavior_row, text="Stretch", value=MODE_STRETCH, variable=self.resize_mode_var
+        )
+        self.stretch_radio.grid(row=0, column=0, sticky="w")
+        self.scale_ratio_radio = ttk.Radiobutton(
+            behavior_row, text="Scale Ratio", value=MODE_SCALE_RATIO, variable=self.resize_mode_var
+        )
+        self.scale_ratio_radio.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.resizer_controls.extend((self.stretch_radio, self.scale_ratio_radio))
+
+        ttk.Label(options, text="Target canvas").grid(row=4, column=1, sticky="w")
+        size_row = ttk.Frame(options)
+        size_row.grid(row=5, column=1, sticky="ew", pady=(4, 10))
+        self.screen_size_radio = ttk.Radiobutton(
+            size_row,
+            text="Screen size",
+            value="screen",
+            variable=self.resize_size_mode_var,
+            command=self._update_resize_size_mode,
+        )
+        self.screen_size_radio.grid(row=0, column=0, sticky="w")
+        self.custom_size_radio = ttk.Radiobutton(
+            size_row,
+            text="Custom size",
+            value="custom",
+            variable=self.resize_size_mode_var,
+            command=self._update_resize_size_mode,
+        )
+        self.custom_size_radio.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.resizer_controls.extend((self.screen_size_radio, self.custom_size_radio))
+
+        ttk.Label(options, textvariable=self.resize_screen_size_var, style="Muted.TLabel", wraplength=330).grid(
+            row=6, column=0, sticky="w"
+        )
+        custom_row = ttk.Frame(options)
+        custom_row.grid(row=6, column=1, sticky="ew")
+        ttk.Label(custom_row, text="W").grid(row=0, column=0, padx=(0, 4))
+        self.resize_width_entry = ttk.Entry(custom_row, textvariable=self.resize_width_var, width=8)
+        self.resize_width_entry.grid(row=0, column=1, padx=(0, 8))
+        ttk.Label(custom_row, text="H").grid(row=0, column=2, padx=(0, 4))
+        self.resize_height_entry = ttk.Entry(custom_row, textvariable=self.resize_height_var, width=8)
+        self.resize_height_entry.grid(row=0, column=3)
+        self.resizer_controls.extend((self.resize_width_entry, self.resize_height_entry))
+        ttk.Label(
+            options,
+            text="Scale Ratio preserves aspect ratio and centers the resized layout. OBS may need to reload the collection if it is already open.",
+            style="Muted.TLabel",
+            wraplength=700,
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        run_row = ttk.Frame(page)
+        run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        run_row.columnconfigure(0, weight=1)
+        ttk.Label(run_row, textvariable=self.resize_status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.undo_resize_button = ttk.Button(run_row, text="Undo", command=self._undo_resize, width=12, state="disabled")
+        self.undo_resize_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        self.resize_run_button = ttk.Button(run_row, text="Run", command=self._run_resize, width=18)
+        self.resize_run_button.grid(row=0, column=2, sticky="e")
+        self.resizer_controls.extend((self.undo_resize_button, self.resize_run_button))
+
+        ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
+        ttk.Label(page, text="Resize log", font=("Segoe UI", 10, "bold")).grid(row=5, column=0, sticky="w")
+        self.resize_results = tk.Text(page, height=10, wrap="word", state="disabled")
+        self.resize_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=self.resize_results.yview)
+        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+        self.resize_results.configure(yscrollcommand=scrollbar.set)
+        self._refresh_resize_collections()
+        self._update_resize_size_mode()
     def _build_settings_page(self) -> None:
         page = ttk.Frame(self.page_container, padding=22)
         page.columnconfigure(0, weight=1)
@@ -414,22 +753,23 @@ class ImportUtilityApp:
     def _show_section(self) -> None:
         section = self.section_var.get()
         self.import_page.grid_remove()
-        self.placeholder_page.grid_remove()
+        self.export_page.grid_remove()
+        self.resizer_page.grid_remove()
         self.settings_page.grid_remove()
         if section == "import":
             self.import_page.grid(row=0, column=0, sticky="nsew")
             return
+        if section == "export":
+            self._refresh_export_collections()
+            self.export_page.grid(row=0, column=0, sticky="nsew")
+            return
+        if section == "resizer":
+            self._refresh_resize_collections()
+            self.resizer_page.grid(row=0, column=0, sticky="nsew")
+            return
         if section == "settings":
             self.settings_page.grid(row=0, column=0, sticky="nsew")
             return
-
-        title, description = self.PLACEHOLDER_COPY.get(
-            section,
-            ("Coming Soon", "This tool is planned for a future release."),
-        )
-        self.placeholder_title_var.set(title)
-        self.placeholder_description_var.set(description)
-        self.placeholder_page.grid(row=0, column=0, sticky="nsew")
 
     def _apply_theme(self) -> None:
         theme = THEME_LABELS.get(self.theme_var.get(), "system")
@@ -586,14 +926,16 @@ class ImportUtilityApp:
 
         style.configure("Muted.TLabel", foreground=muted)
         self.root.configure(background=background)
-        if hasattr(self, "results"):
-            self.results.configure(
-                background=text_background,
-                foreground=text_foreground,
-                insertbackground=text_foreground,
-                selectbackground=selection,
-                selectforeground="#ffffff",
-            )
+        for text_widget_name in ("results", "export_results", "resize_results"):
+            text_widget = getattr(self, text_widget_name, None)
+            if text_widget is not None:
+                text_widget.configure(
+                    background=text_background,
+                    foreground=text_foreground,
+                    insertbackground=text_foreground,
+                    selectbackground=selection,
+                    selectforeground="#ffffff",
+                )
 
     def _capture_scalable_ui(self) -> None:
         named_fonts = set(tkfont.names(self.root))
@@ -788,6 +1130,320 @@ class ImportUtilityApp:
                     pass
             self._scan()
 
+    def _select_import_method(self, method: str) -> None:
+        self.import_method_var.set(method)
+        for name in self.method_expanded:
+            self.method_expanded[name] = name == method
+        self._update_import_method_panels()
+
+    def _toggle_import_method(self, method: str) -> None:
+        if self.import_method_var.get() != method:
+            self._select_import_method(method)
+            return
+        self.method_expanded[method] = not self.method_expanded[method]
+        self._update_import_method_panels()
+
+    def _update_import_method_panels(self) -> None:
+        labels = {
+            "obs": "Method 1 — Fix Scene Collection Paths",
+            "streamlabs": "Method 2 — Import Streamlabs Scene File",
+            "automatic": "Method 3 — Automatic Scene Collection",
+        }
+        for method, options in self.method_options.items():
+            if self.method_expanded[method]:
+                options.grid()
+            else:
+                options.grid_remove()
+            self.method_arrows[method].configure(text="▾" if self.method_expanded[method] else "▸")
+        selected = self.import_method_var.get()
+        self.selected_method_label.configure(text=f"Selected: {labels[selected]}")
+        self.run_button.configure(state="disabled" if self.busy else "normal")
+
+    def _toggle_obs_advanced(self) -> None:
+        self.obs_advanced_visible = not self.obs_advanced_visible
+        if self.obs_advanced_visible:
+            self.advanced_obs_options.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        else:
+            self.advanced_obs_options.grid_remove()
+        self.advanced_obs_button.configure(
+            text="Advanced options ▾" if self.obs_advanced_visible else "Advanced options ▸"
+        )
+
+    def _run_selected_method(self) -> None:
+        method = self.import_method_var.get()
+        if method == "obs":
+            self._convert()
+        elif method == "streamlabs":
+            self._import_streamlabs()
+        else:
+            self._import_automatic()
+    def _configured_obs_scenes_directory(self) -> Path:
+        executable: Path | None = None
+        if self.use_custom_obs_var.get():
+            custom_path = Path(self.obs_path_var.get().strip())
+            if custom_path.is_file():
+                executable = custom_path
+        if executable is None:
+            executable = self.detected_obs_path
+        return default_obs_scenes_directory(executable)
+
+    def _refresh_export_collections(self) -> None:
+        if self.busy:
+            return
+        scenes_directory = self._configured_obs_scenes_directory()
+        self.export_collections = list_obs_scene_collections(scenes_directory)
+        labels = list(self.export_collections)
+        self.export_collection_combo.configure(values=labels)
+        selected = self.export_collection_var.get()
+        active = active_obs_scene_collection(scenes_directory)
+        active_label = next(
+            (label for label, path in self.export_collections.items() if active and path == active),
+            None,
+        )
+        if active_label:
+            self.export_collection_var.set(active_label)
+        elif selected in self.export_collections:
+            self.export_collection_var.set(selected)
+        elif labels:
+            self.export_collection_var.set(labels[0])
+        else:
+            self.export_collection_var.set("")
+        self.export_status_var.set(
+            "Choose a scene collection and destination folder."
+            if labels
+            else "No OBS scene collections were found. Check OBS in Settings, then Refresh."
+        )
+
+    def _browse_export_destination(self) -> None:
+        selected = filedialog.askdirectory(title="Choose the overlay export destination")
+        if selected:
+            self.export_destination_var.set(selected)
+
+    def _export_overlay(self) -> None:
+        if self.busy:
+            return
+        collection = self.export_collections.get(self.export_collection_var.get())
+        if collection is None or not collection.is_file():
+            messagebox.showerror(APP_TITLE, "Choose a valid OBS scene collection first.")
+            return
+        destination = Path(self.export_destination_var.get().strip())
+        if not destination.is_dir():
+            messagebox.showerror(APP_TITLE, "Choose a valid export destination folder.")
+            return
+        self._set_busy(True, "Exporting the scene collection and its local resources…")
+        self.export_status_var.set("Packaging the selected OBS collection…")
+        self._write_export_results("")
+        threading.Thread(
+            target=self._export_worker, args=(collection, destination), daemon=True
+        ).start()
+
+    def _export_worker(self, collection: Path, destination: Path) -> None:
+        self.events.put(("export", export_scene_collection(collection, destination)))
+    def _refresh_resize_collections(self) -> None:
+        if self.busy:
+            return
+        scenes_directory = self._configured_obs_scenes_directory()
+        self.resize_collections = list_obs_scene_collections(scenes_directory)
+        labels = list(self.resize_collections)
+        self.resize_collection_combo.configure(values=labels)
+        selected = self.resize_collection_var.get()
+        active = active_obs_scene_collection(scenes_directory)
+        active_label = next(
+            (label for label, path in self.resize_collections.items() if active and path == active),
+            None,
+        )
+        if active_label:
+            self.resize_collection_var.set(active_label)
+        elif selected in self.resize_collections:
+            self.resize_collection_var.set(selected)
+        elif labels:
+            self.resize_collection_var.set(labels[0])
+        else:
+            self.resize_collection_var.set("")
+        self._refresh_resize_targets()
+        self._refresh_resize_screen_size()
+        self.resize_status_var.set(
+            "Choose what to resize and a target size."
+            if labels
+            else "No OBS scene collections were found. Check OBS in Settings, then Refresh."
+        )
+
+    def _refresh_resize_targets(self) -> None:
+        collection = self.resize_collections.get(self.resize_collection_var.get())
+        scope = self.resize_scope_var.get()
+        if collection is None:
+            self.resize_name_combo.configure(values=(), state="disabled")
+            self.resize_name_var.set("")
+            return
+        if scope == SCOPE_COLLECTION:
+            self.resize_name_combo.configure(values=(), state="disabled")
+            self.resize_name_var.set("")
+            return
+        try:
+            data = load_json(collection)
+            names = scene_names(data) if scope == SCOPE_SCENE else source_names(data)
+        except UtilityError:
+            names = []
+        self.resize_name_combo.configure(values=names, state="readonly" if names else "disabled")
+        if self.resize_name_var.get() not in names:
+            self.resize_name_var.set(names[0] if names else "")
+
+    def _refresh_resize_screen_size(self) -> None:
+        canvas = active_profile_canvas(self._configured_obs_scenes_directory())
+        if canvas:
+            self.resize_screen_size_var.set(
+                f"Screen size: {canvas.width} × {canvas.height} (active OBS profile: {canvas.profile_name})"
+            )
+        else:
+            self.resize_screen_size_var.set("Screen size unavailable; choose Custom size or configure OBS in Settings.")
+
+    def _update_resize_size_mode(self) -> None:
+        state = "normal" if self.resize_size_mode_var.get() == "custom" and not self.busy else "disabled"
+        self.resize_width_entry.configure(state=state)
+        self.resize_height_entry.configure(state=state)
+
+    def _resize_target_size(self) -> tuple[int, int]:
+        if self.resize_size_mode_var.get() == "screen":
+            canvas = active_profile_canvas(self._configured_obs_scenes_directory())
+            if not canvas:
+                raise UtilityError("OBS's active profile canvas could not be read. Choose Custom size instead.")
+            return canvas.width, canvas.height
+        try:
+            return int(self.resize_width_var.get().strip()), int(self.resize_height_var.get().strip())
+        except ValueError as exc:
+            raise UtilityError("Enter whole-number custom width and height values.") from exc
+
+    def _run_resize(self) -> None:
+        if self.busy:
+            return
+        collection = self.resize_collections.get(self.resize_collection_var.get())
+        if collection is None or not collection.is_file():
+            messagebox.showerror(APP_TITLE, "Choose a valid OBS scene collection first.")
+            return
+        scope = self.resize_scope_var.get()
+        selected_name = self.resize_name_var.get().strip() or None
+        if scope != SCOPE_COLLECTION and not selected_name:
+            messagebox.showerror(APP_TITLE, "Choose the scene or source to resize first.")
+            return
+        try:
+            target_width, target_height = self._resize_target_size()
+        except UtilityError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._set_busy(True, "Resizing the selected OBS collection…")
+        self.resize_status_var.set("Writing the resized collection and its undo backup…")
+        self._write_resize_results("")
+        threading.Thread(
+            target=self._resize_worker,
+            args=(collection, scope, selected_name, self.resize_mode_var.get(), target_width, target_height),
+            daemon=True,
+        ).start()
+
+    def _resize_worker(
+        self,
+        collection: Path,
+        scope: str,
+        selected_name: str | None,
+        mode: str,
+        target_width: int,
+        target_height: int,
+    ) -> None:
+        self.events.put(
+            (
+                "resize",
+                resize_collection(
+                    collection,
+                    scope=scope,
+                    selected_name=selected_name,
+                    mode=mode,
+                    target_width=target_width,
+                    target_height=target_height,
+                ),
+            )
+        )
+
+    def _undo_resize(self) -> None:
+        if self.busy:
+            return
+        if not self.last_resize_collection or not self.last_resize_backup:
+            return
+        self._set_busy(True, "Restoring the collection from its resize backup…")
+        self.resize_status_var.set("Restoring the last resize backup…")
+        threading.Thread(
+            target=self._undo_resize_worker,
+            args=(self.last_resize_collection, self.last_resize_backup),
+            daemon=True,
+        ).start()
+
+    def _undo_resize_worker(self, collection: Path, backup: Path) -> None:
+        self.events.put(("resize_undo", (collection, backup, undo_resize(collection, backup))))
+    def _browse_streamlabs(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose a Streamlabs overlay package",
+            filetypes=(("Streamlabs overlay", "*.overlay"), ("ZIP packages", "*.zip"), ("All files", "*.*")),
+        )
+        if selected:
+            self.streamlabs_file_var.set(selected)
+
+    def _import_streamlabs(self) -> None:
+        if self.busy:
+            return
+        archive = Path(self.streamlabs_file_var.get().strip())
+        if not archive.is_file():
+            messagebox.showerror(APP_TITLE, "Choose a valid Streamlabs .overlay package.")
+            return
+        if self.use_custom_obs_var.get():
+            configured_path = Path(self.obs_path_var.get().strip())
+            if not configured_path.is_file():
+                messagebox.showerror(APP_TITLE, "Choose a valid custom OBS executable in Settings first.")
+                return
+            executable: Path | None = configured_path
+        else:
+            executable = self.detected_obs_path
+        self._set_busy(True, "Extracting and converting the Streamlabs package…")
+        self._write_results("")
+        target = default_obs_scenes_directory(executable)
+        threading.Thread(target=self._streamlabs_worker, args=(archive, target), daemon=True).start()
+
+    def _streamlabs_worker(self, archive: Path, target: Path) -> None:
+        self.events.put(("streamlabs", import_streamlabs_overlay(archive, target)))
+
+    def _browse_automatic(self) -> None:
+        selected = filedialog.askdirectory(title="Choose the scene collection pack folder")
+        if selected:
+            self.automatic_folder_var.set(selected)
+
+    def _import_automatic(self) -> None:
+        if self.busy:
+            return
+        folder = Path(self.automatic_folder_var.get().strip())
+        if not folder.is_dir():
+            messagebox.showerror(APP_TITLE, "Choose a valid scene collection pack folder.")
+            return
+        if self.use_custom_obs_var.get():
+            configured_path = Path(self.obs_path_var.get().strip())
+            if not configured_path.is_file():
+                messagebox.showerror(APP_TITLE, "Choose a valid custom OBS executable in Settings first.")
+                return
+            executable: Path | None = configured_path
+        else:
+            executable = self.detected_obs_path
+        self._set_busy(True, "Detecting and importing the scene collection pack…")
+        self._write_results("")
+        target = default_obs_scenes_directory(executable)
+        threading.Thread(
+            target=self._automatic_worker,
+            args=(folder, target, self.strict_var.get(), self.case_var.get()),
+            daemon=True,
+        ).start()
+
+    def _automatic_worker(
+        self, folder: Path, target: Path, strict: bool, case_sensitive: bool
+    ) -> None:
+        result = automatically_import_overlay(
+            folder, target, strict=strict, case_sensitive=case_sensitive
+        )
+        self.events.put(("automatic", result))
     def _scan(self) -> None:
         if self.busy:
             return
@@ -796,8 +1452,7 @@ class ImportUtilityApp:
             messagebox.showerror(APP_TITLE, "Choose a valid overlay folder.")
             return
         self.last_output = None
-        self.open_button.configure(state="disabled")
-        self._set_busy(True, "Scanning for OBS scene collections…")
+        self._set_busy(True, "Finding an OBS scene collection export…")
         threading.Thread(target=self._scan_worker, args=(folder,), daemon=True).start()
 
     def _scan_worker(self, folder: Path) -> None:
@@ -811,8 +1466,14 @@ class ImportUtilityApp:
             return
         collection = self.collections.get(self.collection_var.get())
         folder = Path(self.folder_var.get().strip())
+        if collection is not None and folder.is_dir() and not collection.is_relative_to(folder.resolve()):
+            collection = None
         if collection is None:
-            messagebox.showerror(APP_TITLE, "Select a detected OBS scene collection.")
+            if not folder.is_dir():
+                messagebox.showerror(APP_TITLE, "Choose a valid overlay folder.")
+                return
+            self.pending_obs_conversion = True
+            self._scan()
             return
         self._set_busy(True, "Checking and matching overlay files…")
         self._write_results("")
@@ -829,7 +1490,6 @@ class ImportUtilityApp:
             collection, folder, strict=strict, case_sensitive=case_sensitive
         )
         self.events.put(("conversion", result))
-
     def _process_events(self) -> None:
         try:
             while True:
@@ -838,6 +1498,16 @@ class ImportUtilityApp:
                     self._finish_scan(payload)  # type: ignore[arg-type]
                 elif event == "conversion":
                     self._finish_conversion(payload)  # type: ignore[arg-type]
+                elif event == "streamlabs":
+                    self._finish_streamlabs(payload)  # type: ignore[arg-type]
+                elif event == "automatic":
+                    self._finish_automatic(payload)  # type: ignore[arg-type]
+                elif event == "export":
+                    self._finish_export(payload)  # type: ignore[arg-type]
+                elif event == "resize":
+                    self._finish_resize(payload)  # type: ignore[arg-type]
+                elif event == "resize_undo":
+                    self._finish_resize_undo(payload)  # type: ignore[arg-type]
                 elif event == "error":
                     self._set_busy(False, "Could not finish the operation.")
                     messagebox.showerror(APP_TITLE, str(payload))
@@ -857,16 +1527,19 @@ class ImportUtilityApp:
                 label = str(path)
             self.collections[label] = path
         labels = list(self.collections)
-        self.collection_combo.configure(values=labels)
         self.collection_var.set(labels[0] if labels else "")
         if labels:
-            self._write_results("Detected:\n" + "\n".join(f"• {label}" for label in labels))
-            self._set_busy(False, f"Found {len(labels)} valid OBS scene collection(s).")
+            self._write_results("Automatically detected OBS export:\n" + "\n".join(f"• {label}" for label in labels))
+            self._set_busy(False, f"Found {len(labels)} OBS scene collection export(s).")
+            if self.pending_obs_conversion:
+                self.pending_obs_conversion = False
+                self._convert()
         else:
+            self.pending_obs_conversion = False
             self._write_results(
                 "No valid OBS scene collection was found. Make sure the downloaded package was fully extracted."
             )
-            self._set_busy(False, "No OBS scene collections found.")
+            self._set_busy(False, "No OBS scene collection export found.")
 
     def _finish_conversion(self, result: ConversionResult) -> None:
         if result.error:
@@ -890,36 +1563,159 @@ class ImportUtilityApp:
 
         if result.success and result.output_path:
             self.last_output = result.output_path
-            self.open_button.configure(state="normal")
-            lines.extend(("", f"Created: {result.output_path}"))
+            lines.extend(("", f"Created: {result.output_path}", "Import it in OBS with Scene Collection → Import."))
             self._set_busy(False, "Import-ready collection created successfully.")
-            messagebox.showinfo(
-                APP_TITLE,
-                "The import-ready collection was created.\n\nIn OBS, use Scene Collection → Import.",
-            )
             if self.open_output_var.get():
                 self._open_output()
         else:
             self._set_busy(False, "No file was written. Resolve the items below and try again.")
         self._write_results("\n".join(lines))
 
+    def _finish_resize(self, result: ResizeResult) -> None:
+        if result.error:
+            self._write_resize_results(result.error)
+            self.resize_status_var.set("Resize failed safely; the collection was not overwritten.")
+            self._set_busy(False, "Could not resize the scene collection.")
+            return
+        self.last_resize_collection = result.collection_path
+        self.last_resize_backup = result.backup_path
+        self._write_resize_results(
+            "\n".join(
+                (
+                    f"Collection overwritten: {result.collection_path}",
+                    f"Undo backup: {result.backup_path}",
+                    f"Canvas: {result.source_width} × {result.source_height} → {result.target_width} × {result.target_height}",
+                    f"Source items resized: {result.changed_items}",
+                    "",
+                    "OBS can remain open. If this collection is already active, switch collections or restart OBS to reload the updated file.",
+                )
+            )
+        )
+        self.resize_status_var.set("Resize complete. Undo is available for this operation.")
+        self._set_busy(False, "Scene collection resized successfully.")
+        self.undo_resize_button.configure(state="normal")
+
+    def _finish_resize_undo(self, payload: tuple[Path, Path, str | None]) -> None:
+        collection, backup, error = payload
+        if error:
+            self._write_resize_results(error)
+            self.resize_status_var.set("Undo failed; the resize backup was retained.")
+            self._set_busy(False, "Could not restore the resize backup.")
+            self.undo_resize_button.configure(state="normal")
+            return
+        self.last_resize_collection = None
+        self.last_resize_backup = None
+        self._write_resize_results(
+            f"Undo complete. Restored: {collection}\nRemoved used backup: {backup}\n\n"
+            "If OBS has this collection open, switch collections or restart OBS to reload the restored file."
+        )
+        self.resize_status_var.set("The last resize was restored.")
+        self._set_busy(False, "Resize undo completed successfully.")
+        self.undo_resize_button.configure(state="disabled")
+    def _finish_export(self, result: ExportResult) -> None:
+        if result.error:
+            self._write_export_results(result.error)
+            self.export_status_var.set("Export failed safely; review the log and try again.")
+            self._set_busy(False, "Could not export the scene collection.")
+            return
+        lines = [
+            f"Package folder: {result.package_path}",
+            f"OBS export JSON: {result.collection_path}",
+            f"Referenced files copied: {result.copied_files}",
+            f"Local file references rewritten: {result.source_references}",
+            "",
+            "The JSON preserves OBS, plugin-source, and filter settings. Install required OBS plugins and fonts separately on the destination computer.",
+        ]
+        if result.skipped_references:
+            lines.extend(("", "References requiring manual review:"))
+            lines.extend(f"• {item}" for item in result.skipped_references)
+        self._write_export_results("\n".join(lines))
+        self.export_status_var.set("Overlay package exported successfully.")
+        self._set_busy(False, "Overlay package exported successfully.")
+        if self.open_output_var.get() and result.package_path:
+            self._open_folder(result.package_path)
+    def _finish_streamlabs(self, result: StreamlabsImportResult) -> None:
+        if result.error:
+            self._write_results(result.error)
+            self._set_busy(False, "Streamlabs import failed safely; no OBS collection was created.")
+            return
+
+        lines = [
+            f"OBS collection: {result.collection_name}",
+            f"Collection file: {result.collection_path}",
+            f"Extracted package: {result.extraction_path}",
+            f"Canvas resized to: {result.canvas_width} × {result.canvas_height}"
+            + (f" (active OBS profile: {result.profile_name})" if result.profile_name else ""),
+            f"Supported sources imported: {result.imported_sources}",
+            "",
+            "Restart OBS if it was already open, then select the new collection from Scene Collection.",
+        ]
+        if result.skipped_sources:
+            lines.extend(("", "Sources that need manual setup:"))
+            lines.extend(f"• {item}" for item in result.skipped_sources)
+        self._write_results("\n".join(lines))
+        self._set_busy(False, "Streamlabs package imported into OBS successfully.")
+
+    def _finish_automatic(self, result: AutomaticImportResult) -> None:
+        if result.error:
+            self._write_results(result.error)
+            self._set_busy(False, "Automatic scene collection import failed safely.")
+            return
+
+        lines = [
+            f"Detected format: {'Streamlabs .overlay' if result.kind == 'streamlabs' else 'OBS scene collection export'}",
+            f"OBS collection: {result.collection_name}",
+            f"Collection file: {result.collection_path}",
+        ]
+        if result.extraction_path:
+            lines.append(f"Extracted package: {result.extraction_path}")
+        if result.canvas_width and result.canvas_height:
+            profile_detail = f" (active OBS profile: {result.profile_name})" if result.profile_name else ""
+            lines.append(f"Canvas resized to: {result.canvas_width} × {result.canvas_height}{profile_detail}")
+        if result.conversion:
+            lines.extend(
+                (
+                    f"Paths updated: {result.conversion.changed}",
+                    f"Paths already valid: {result.conversion.unchanged}",
+                )
+            )
+        if result.streamlabs and result.streamlabs.skipped_sources:
+            lines.extend(("", "Sources that need manual setup:"))
+            lines.extend(f"• {item}" for item in result.streamlabs.skipped_sources)
+        lines.extend(("", "Restart OBS if it was already open, then select the new collection from Scene Collection."))
+        self._write_results("\n".join(lines))
+        self._set_busy(False, "Scene collection detected and imported into OBS successfully.")
     def _set_busy(self, busy: bool, status: str) -> None:
         self.busy = busy
         self.status_var.set(status)
         state = "disabled" if busy else "normal"
-        self.folder_entry.configure(state=state)
-        self.browse_button.configure(state=state)
-        self.scan_button.configure(state=state)
-        self.strict_check.configure(state=state)
-        self.case_check.configure(state=state)
-        self.convert_button.configure(state=state)
-        self.collection_combo.configure(state="disabled" if busy else "readonly")
+        for control in self.method_controls:
+            control.configure(state=state)
+        for control in self.export_controls:
+            control.configure(state=state)
+        for control in self.resizer_controls:
+            control.configure(state=state)
+        if not busy:
+            self._update_resize_size_mode()
+            self.undo_resize_button.configure(
+                state="normal" if self.last_resize_collection and self.last_resize_backup else "disabled"
+            )
         for button in self.navigation_buttons:
-            button.configure(state="disabled" if busy else "normal")
-        if busy:
-            self.open_button.configure(state="disabled")
-        elif self.last_output:
-            self.open_button.configure(state="normal")
+            button.configure(state=state)
+        self.run_button.configure(
+            state="disabled" if busy else "normal"
+        )
+    def _write_resize_results(self, text: str) -> None:
+        self.resize_results.configure(state="normal")
+        self.resize_results.delete("1.0", "end")
+        self.resize_results.insert("1.0", text)
+        self.resize_results.configure(state="disabled")
+
+    def _write_export_results(self, text: str) -> None:
+        self.export_results.configure(state="normal")
+        self.export_results.delete("1.0", "end")
+        self.export_results.insert("1.0", text)
+        self.export_results.configure(state="disabled")
 
     def _write_results(self, text: str) -> None:
         self.results.configure(state="normal")
@@ -927,6 +1723,16 @@ class ImportUtilityApp:
         self.results.insert("1.0", text)
         self.results.configure(state="disabled")
 
+    def _open_folder(self, folder: Path) -> None:
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(folder)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except OSError as exc:
+            messagebox.showerror(APP_TITLE, f"Could not open the folder: {exc}")
     def _open_output(self) -> None:
         if not self.last_output:
             return

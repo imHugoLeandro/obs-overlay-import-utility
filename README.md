@@ -1,6 +1,6 @@
 # OBS Overlay Import Utility
 
-A small, open-source Windows desktop utility that repairs local file paths in exported OBS scene collections. It is designed for independent overlay creators who want customers to import a package without manually finding and replacing every image, video, audio, or local browser-source path.
+A small, open-source Windows desktop utility that imports and exports portable OBS overlay packages. It is designed for independent overlay creators who want customers to import a package without manually finding and replacing every image, video, audio, local browser-source, plugin, or filter resource path.
 
 The portable build has no installer and does not require Python.
 
@@ -8,15 +8,50 @@ The Settings page supports the Windows default, white, and dark themes; adjustab
 
 ## Customer workflow
 
-1. Extract the complete overlay download to a normal folder.
-2. Run `OBS Overlay Import Utility.exe` from the package.
-3. Choose the extracted overlay folder.
-4. Select the detected OBS scene collection.
-5. Click **Validate and create import file**.
-6. In OBS, open **Scene Collection → Import** and select the new `_ImportReady.json` file.
+### Method 1 — Fix Scene Collection Paths
 
-The original collection is never changed. The utility scans the chosen package once, matches files by filename and trailing folders, and creates a separate import-ready JSON only when the match is safe.
+1. Expand **Method 1** with its down arrow.
+2. Choose the extracted **Overlay Folder path**.
+3. Click **Run**. The utility finds the OBS scene collection export automatically.
+4. In OBS, open **Scene Collection → Import** and select the new `_ImportReady.json` file.
 
+The original collection is never changed. **Advanced options** is collapsed by default and contains the enabled-by-default strict file check and case-sensitive matching option.
+
+### Method 2 — Import Streamlabs Scene File
+
+1. Expand **Method 2** with its down arrow.
+2. Choose the Streamlabs `.overlay` package.
+3. Click **Run** in the same Import Overlay window.
+
+The utility extracts every package file beside the archive into a new `name overlay` folder, recursively matches asset references by exact relative path and then by a unique filename, converts supported Streamlabs Desktop sources, and writes a new collection into OBS's scenes folder. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
+
+### Method 3 — Automatic Scene Collection
+
+1. Expand **Method 3** with its down arrow.
+2. Choose the folder containing the scene collection pack.
+3. Click **Run**.
+
+The utility recursively searches the selected folder for all supported pack files and asset folders. It prioritizes exactly one OBS scene collection export when both that export and a Streamlabs `.overlay` package are present; otherwise it uses exactly one `.overlay` package. It matches local assets safely, sizes the imported collection to the active OBS profile's base canvas, installs it without overwriting an existing collection, and reports what it detected. If several candidates of the preferred format are found, it stops safely and asks you to use the specific method instead.
+
+## Export Overlay workflow
+
+1. Open **Export Overlay**.
+2. Select an OBS scene collection. The collection currently selected in OBS is preselected when available.
+3. Choose an export destination folder.
+4. Click **Run**.
+
+The utility creates a new package folder named after the collection. It copies direct local files into **images**, **videos**, **audio**, and **other resources**, then writes an OBS-compatible JSON with the copied paths. It traverses the full collection JSON, including nested plugin-source and filter settings, so existing absolute local files with arbitrary extensions are preserved rather than limiting export to built-in OBS source types. Missing local paths are reported in the console for manual review.
+
+Exporting does not bundle OBS plugins, fonts, device sources, credentials, or web-hosted resources; those must be installed or configured on the destination computer.
+## Auto Resizer workflow
+
+1. Open **Auto Resizer** and select the OBS scene collection. OBS's active collection is selected by default when available.
+2. Choose **Collection**, **Scene**, or **Source**, then select the specific scene or source when needed.
+3. Choose **Stretch** for separate horizontal and vertical scaling, or **Scale Ratio** to preserve aspect ratio and center the layout.
+4. Select **Screen size** to use the active OBS profile's base canvas, or enter a **Custom size**.
+5. Click **Run**. The selected collection JSON is overwritten and a backup is created automatically. Click **Undo** to restore the last resize during the current app session.
+
+Auto Resizer can write while OBS is open. If the edited collection is already active, switch to another collection and back, or restart OBS, so OBS reloads the changed file. Backups are stored under `.obs-overlay-resizer-backups` beside OBS's scene-collection folder. Resizing changes scene-item transforms and the collection canvas only; it preserves sources, filters, plugin settings, and file paths.
 ## Safety behavior
 
 - Reads only JSON files that look like OBS scene collections.
@@ -27,6 +62,10 @@ The original collection is never changed. The utility scans the chosen package o
 - Writes through a temporary file and atomically renames it.
 - Never overwrites an earlier converted file.
 - Follows neither directory symlinks nor generated/build folders while scanning.
+- Validates Streamlabs ZIP paths, duplicate archive entries, symbolic links, and total extracted size before extraction.
+- Streamlabs and automatic imports use a new OBS collection name and never overwrite an existing collection file.
+- Export creates a new package folder and never edits the source OBS collection or overwrites an earlier package.
+- Auto Resizer writes only after creating an undo backup; Undo restores the most recent resize made in the current application session.
 
 ## Run from source
 
@@ -64,6 +103,7 @@ Before publishing, replace `YOUR-GITHUB-USERNAME` in `pyproject.toml` with your 
 - The application fixes local file references; it does not install fonts or OBS plugins.
 - A public executable is unsigned, so Windows SmartScreen may show an unrecognized-app warning until the project gains reputation or the executable is code-signed.
 - Customers should keep the extracted overlay folder in place after importing because OBS continues to load media from those paths.
+- Streamlabs webcam/device sources and Streamlabs service labels are not portable; the import result lists sources that need manual OBS setup.
 
 ## License
 

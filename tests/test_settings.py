@@ -55,5 +55,10 @@ class SettingsTests(unittest.TestCase):
             self.assertNotIn("unknown", data)
 
 
+
+    def test_default_matching_options_are_safe(self) -> None:
+        settings = AppSettings()
+        self.assertTrue(settings.strict_validation)
+        self.assertTrue(settings.case_sensitive_matching)
 if __name__ == "__main__":
     unittest.main()

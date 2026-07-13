@@ -30,7 +30,7 @@ class AppSettings:
     last_overlay_folder: str = ""
     open_output_after_conversion: bool = False
     strict_validation: bool = True
-    case_sensitive_matching: bool = False
+    case_sensitive_matching: bool = True
 
     @classmethod
     def from_dict(cls, value: Any) -> "AppSettings":

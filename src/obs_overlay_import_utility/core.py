@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
@@ -159,6 +160,88 @@ def atomic_write_json(path: Path, data: Any) -> None:
                 pass
         raise UtilityError(f"Could not save the converted collection: {exc}") from exc
 
+
+def _portable_collection_name(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", value)
+    cleaned = " ".join(cleaned.split()).rstrip(". ")
+    return cleaned or "Imported Scene Collection"
+
+
+def next_obs_collection_path(directory: Path, base_name: str) -> tuple[str, Path]:
+    """Choose a new OBS collection filename without replacing an existing collection."""
+    name = _portable_collection_name(base_name)
+    candidate = directory / f"{name}.json"
+    number = 1
+    while candidate.exists():
+        candidate = directory / f"{name} {number}.json"
+        number += 1
+    return candidate.stem, candidate
+
+
+def install_scene_collection(collection_path: Path, obs_scenes_directory: Path) -> tuple[str, Path]:
+    """Copy a validated OBS collection into OBS using a unique collection name."""
+    collection_path = collection_path.expanduser().resolve()
+    data = load_json(collection_path)
+    if not is_obs_scene_collection_data(data):
+        raise UtilityError("The converted file is not a recognized OBS scene collection.")
+    base_name = data.get("name") if isinstance(data.get("name"), str) else collection_path.stem
+    obs_scenes_directory = obs_scenes_directory.expanduser().resolve()
+    obs_scenes_directory.mkdir(parents=True, exist_ok=True)
+    collection_name, destination = next_obs_collection_path(obs_scenes_directory, base_name)
+    installed = copy.deepcopy(data)
+    installed["name"] = collection_name
+    atomic_write_json(destination, installed)
+    return collection_name, destination
+
+def resize_scene_collection(data: Any, width: int, height: int) -> bool:
+    """Resize an OBS collection's canvas and absolute scene-item transforms.
+
+    Returns whether the source collection contained a usable canvas resolution.
+    Collections without one are still marked with the requested resolution, but their
+    transforms are left intact because there is no safe scale factor to apply.
+    """
+    if not is_obs_scene_collection_data(data):
+        raise UtilityError("The converted file is not a recognized OBS scene collection.")
+    if not (16 <= width <= 32_768 and 16 <= height <= 32_768):
+        raise UtilityError("The OBS profile canvas resolution is invalid.")
+
+    resolution = data.get("resolution")
+    source_width = resolution.get("x") if isinstance(resolution, dict) else None
+    source_height = resolution.get("y") if isinstance(resolution, dict) else None
+    can_scale = (
+        isinstance(source_width, (int, float))
+        and isinstance(source_height, (int, float))
+        and source_width > 0
+        and source_height > 0
+    )
+    scale_x = width / source_width if can_scale else 1.0
+    scale_y = height / source_height if can_scale else 1.0
+
+    def scale_pair(value: Any, x_factor: float, y_factor: float) -> None:
+        if not isinstance(value, dict):
+            return
+        if isinstance(value.get("x"), (int, float)):
+            value["x"] = value["x"] * x_factor
+        if isinstance(value.get("y"), (int, float)):
+            value["y"] = value["y"] * y_factor
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if "scale_ref" in value:
+                value["scale_ref"] = {"x": float(width), "y": float(height)}
+            if can_scale:
+                scale_pair(value.get("pos"), scale_x, scale_y)
+                scale_pair(value.get("scale"), scale_x, scale_y)
+                scale_pair(value.get("bounds"), scale_x, scale_y)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(data.get("sources", []))
+    data["resolution"] = {"x": int(width), "y": int(height)}
+    return can_scale
 
 def convert_collection(
     collection_path: Path,

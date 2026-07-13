@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added Auto Resizer with collection, scene, and source scopes; Stretch or Scale Ratio modes; active-profile or custom target sizes; in-window logs; and undoable overwrite backups.
+- Added Export Overlay: selects OBS's active scene collection by default, packages referenced local resources into organized folders, rewrites paths in an OBS JSON export, and retains custom plugin/filter configuration.
+- Reworked Import Overlay into three expandable in-window methods with a shared Run button and console output; Method 1 now auto-detects the OBS export from the selected folder.
+
+- Added a dedicated Streamlabs .overlay import workflow that extracts and recursively matches package assets safely, sizes scenes to the active OBS profile, converts supported sources, and installs a uniquely named OBS scene collection.
+- Added Automatic Scene Collection, which recursively detects supported pack files, prioritizes OBS exports over Streamlabs packages, sizes imports to the active OBS profile, and installs the result safely.
 - Added top-level tool navigation for Import Overlay, Export Overlay, Auto Resizer, and Settings.
 - Added placeholder pages for Export Overlay and Auto Resizer while keeping Import Overlay fully functional.
 - Added the Social Space logo to the tool bar.
