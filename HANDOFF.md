@@ -11,11 +11,11 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ## Current state
 
 - Branch: `main`
-- Latest pushed commit before these working changes: `beeda64` — `Refactor tests for improved readability and maintainability`
+- Latest pushed commit before these working changes: `391c148` — `feat: Enhance overlay import utility with export inventory feature`
 - Working tree was clean before this handoff file was added.
 - Latest GitHub Actions test run passed: <https://github.com/imHugoLeandro/obs-overlay-import-utility/actions/runs/29268864090>
 - Local portable executable: `dist/OBS Overlay Import Utility.exe`
-- Current executable SHA-256: `20D6D0B797A5F2472EF368681B8B6826F0D22B5B5ECA7DE0A93C5A13F5A35A1F`
+- Current executable SHA-256: `F4C5310B92CB5AF18B7182F4021631F9C24D7A337D0491353159293583CCA5E0`
 - `dist/` is intentionally Git-ignored. Release executables should be built locally or through GitHub Actions.
 
 ## Implemented features
@@ -36,18 +36,18 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 
 - Import Overlay: functional.
 - Export Overlay: functional. It selects the active OBS scene collection by default, inventories every file and missing reference for confirmation, packages direct and browser resources transactionally, rewrites the collection JSON, and uses Windows-safe package names.
-- Auto Resizer: functional. It can resize a collection, scene, or UUID-selected source with Stretch or aspect-preserving Scale Ratio, using the active OBS profile or a custom canvas. Active bounds modes are handled without double-scaling. Every overwrite gets an undo backup.
+- Auto Resizer: functional. Active collections resize and undo through obs-websocket while OBS remains open; inactive collection files retain atomic undo backups. Stretch, Scale Ratio, collection/scene/UUID source scopes, active bounds, and custom/profile canvases are supported.
 - Settings: functional.
 
 ### Branding and settings
 
-- Social Space logo displayed at the top-right.
+- Social Space logo displayed in a persistent responsive left navigation sidebar.
 - Original SVG and transparent PNG are stored under `src/obs_overlay_import_utility/assets/` and packaged in the executable.
-- Logo is approximately 60×25 at 100% UI scale and responds to the UI scale setting.
-- Themes: Windows default, white, and dark.
-- Dark theme uses red-accent sliders, focus states, buttons, checkboxes, and borders.
+- Logo scales from its 240×100 packaged source according to monitor DPI and user zoom without external imaging dependencies.
+- Themes: Windows default, white, and dark. Windows default resolves the current Windows app theme at startup.
+- Accessible light/dark semantic palettes use Social Space red primary actions, modern cards, styled consoles, clear focus states, and WCAG AA text contrast.
 - UI scale: 75–150% in 5% increments.
-- UI scaling changes text, buttons, fields, padding, sliders, and logo size without changing the application window dimensions.
+- Per-Monitor V2 DPI awareness, monitor-change watching, and independent UI zoom scale fonts, buttons, fields, padding, navigation, sliders, consoles, and the logo without Windows bitmap stretching.
 - Optional custom Python executable, disabled by default because the portable application bundles Python.
 - Automatic OBS detection with an optional custom OBS executable.
 - Remember-last-folder preference.
@@ -67,13 +67,18 @@ src/obs_overlay_import_utility/core.py       Conversion and discovery engine
 src/obs_overlay_import_utility/exporter.py   Portable OBS package export engine
 src/obs_overlay_import_utility/device_setup.py Device-source detection and post-import setup
 src/obs_overlay_import_utility/resizer.py    Undoable OBS transform resize engine
+src/obs_overlay_import_utility/obs_live.py  Dependency-free obs-websocket 5.x client
+src/obs_overlay_import_utility/live_resize.py Live active-collection resize and undo engine
 src/obs_overlay_import_utility/paths.py      Cross-platform path matching
-src/obs_overlay_import_utility/ui.py         Tkinter UI, navigation, themes, scaling
+src/obs_overlay_import_utility/ui.py         Responsive Tk UI, navigation, themes, scaling
+src/obs_overlay_import_utility/appearance.py  DPI awareness and semantic light/dark palettes
 src/obs_overlay_import_utility/settings.py   Settings model and atomic persistence
 src/obs_overlay_import_utility/assets/       Logo SVG and PNG
 tests/test_core.py                           Conversion/path regression tests
 tests/test_settings.py                       Settings persistence tests
+tests/test_appearance.py                     DPI, contrast, manifest, and portability tests
 scripts/build_portable.ps1                   Local Windows build entry point
+scripts/app.manifest                         Per-Monitor V2 Windows manifest
 .github/workflows/ci.yml                     Windows/Linux test matrix
 .github/workflows/build-windows.yml          Tagged/manual portable build
 docs/GITHUB_SYNC.md                          GitHub usage instructions
@@ -85,15 +90,15 @@ Current working changes add transactional Streamlabs installation, hardened arch
 
 The latest local verification completed successfully:
 
-- 48 unit tests passed, including transaction rollback, hostile ZIP limits, recursive custom-resource relinking, UUID source selection, bounds-aware transforms, export inventory, invalid device collections, and Windows package names.
-- 21 source/test files passed AST parsing.
+- 56 unit tests passed, including live OBS authentication/buffering, live resize/undo, DPI manifest embedding, accessible palette contrast, dependency-free portability, and import/export/resizer safety coverage.
+- Source and test files pass Python compilation and AST parsing.
 - UI construction and navigation passed.
 - Windows default, white, and dark themes passed switching tests.
 - UI controls were measured at 75%, 100%, and 150%.
-- Window geometry remained `820×700` throughout the scaling test.
+- The DPI-aware initial window centered at `1055×757` logical pixels on the 144-DPI test display and remained responsive at 75%, 100%, and 150% zoom.
 - Button, field, slider, and logo dimensions changed with UI scale.
 - Both logo assets were confirmed inside the PyInstaller archive.
-- The rebuilt 12,039,256-byte packaged executable launched successfully and its smoke-test process was closed cleanly.
+- The rebuilt 12,068,008-byte packaged executable launched successfully; its embedded Per-Monitor V2 manifest was verified by the build tests, and only its two one-file runtime processes were closed.
 - `git diff --check` passed.
 
 Run tests:
@@ -124,7 +129,7 @@ The follow-up test run `29268864090` passed on Windows and Ubuntu.
 
 ## Known limitations and future work
 
-- Export Overlay handles direct file references, but it cannot bundle installed OBS plugins, fonts, credentials, device sources, or remote web resources. Auto Resizer Undo is available for the most recent resize in the current app session; retained backup files are stored beside OBS scene collections.
+- Export Overlay cannot bundle installed OBS plugins, fonts, credentials, device sources, or remote web resources. Live control currently targets the standard local obs-websocket port `4455`; a custom server port is not yet exposed in Settings. Live Undo is available for the current app session, while inactive-file backups are retained beside OBS scene collections.
 - Custom Python and OBS paths are persisted for future tools; Import Overlay does not currently need either application path.
 - Font and OBS plugin installation are outside the import utility's current scope.
 - The executable is unsigned, so Windows SmartScreen may warn new users.
@@ -134,6 +139,8 @@ The follow-up test run `29268864090` passed on Windows and Ubuntu.
 ## Portability rules for future AI work
 
 When changing Import Overlay or Export Overlay, treat the complete OBS collection JSON as portable data—not just built-in OBS `file` settings.
+
+For UI work, preserve the dependency-free Tk/ttk runtime and one-file build unless a measured requirement truly cannot be met. Keep `scripts/app.manifest`, call DPI awareness before `tk.Tk()`, retain Per-Monitor V2/mixed-DPI checks, and keep normal text contrast at 4.5:1 or better.
 
 - Preserve unknown source IDs, plugin settings, filters, nested lists, and metadata without dropping or normalizing them away.
 - Import matching must continue to discover local files referenced by custom plugin sources and filters, including non-media extensions where a real local file is present.
@@ -151,6 +158,13 @@ When changing Import Overlay or Export Overlay, treat the complete OBS collectio
 ## Auto Resizer rules for future AI work
 
 - Auto Resizer intentionally overwrites the selected OBS collection because the user explicitly requested live-compatible editing. Always create and atomically save an undo backup before writing the new collection.
+## Live OBS rules for future AI work
+
+- OBS 28+ bundles obs-websocket 5.x. Keep the live client dependency-free and local-only unless a deliberate settings/security design changes that.
+- Never persist or log the WebSocket password; keep it only in application memory.
+- Finish all file-based device setup before activating an imported collection in OBS.
+- Never overwrite the JSON of the collection currently loaded by a running OBS instance. Use `SetSceneItemTransform` and `SetVideoSettings` live; if live control is unavailable, stop safely.
+- Inactive collection files may use the existing atomic backup/undo workflow while OBS is open.
 - Keep resize scopes clear: Collection changes all scene-item transforms and updates the canvas; Scene and Source change only selected scene-item transforms and preserve the current canvas.
 - Stretch uses independent X/Y factors. Scale Ratio uses a uniform fit factor and centers the selected layout in the requested target size.
 - Preserve all non-transform data exactly, including unknown plugin source settings, filters, resource paths, source IDs, and metadata. Automatic import resizing and Auto Resizer must traverse only the `items` arrays of OBS `scene` and `group` sources; never recursively resize arbitrary plugin dictionaries.

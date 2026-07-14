@@ -288,7 +288,7 @@ class CoreTests(unittest.TestCase):
             path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py")
         )
         self.assertNotIn("obspython", source.casefold())
-        self.assertNotIn("base64", source.casefold())
+        self.assertNotIn("base64.b64decode", source.casefold())
 
 
 if __name__ == "__main__":

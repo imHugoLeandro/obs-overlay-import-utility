@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Added dependency-free obs-websocket 5.x live control for OBS 28+, with session-only password authentication.
+- Streamlabs and Automatic imports now finish device setup and activate the new collection in an open OBS session without a restart.
+- Auto Resizer now changes and undoes active collection transforms directly through OBS; it refuses unsafe active-JSON fallback writes when live control is unavailable.
+- Removed restart/reload guidance and added live-protocol/authentication regression coverage.
+- Rebuilt the interface as a responsive lightweight ttk shell with left-side navigation, modern cards, semantic red primary actions, centralized typography, accessible light/dark palettes, and styled consoles/dialogs.
+- Added a dependency-free DPI layer plus an embedded Windows Per-Monitor V2 manifest so the portable executable remains sharp across high-DPI and mixed-monitor setups.
+- Added monitor-DPI watching, bounded initial window sizing, system light/dark detection, sharper high-resolution logo scaling, and portable font fallbacks.
+- Added UI regression tests for palette contrast, DPI manifest/build integration, system-theme selection, and the dependency-free runtime guarantee.
 - Made Streamlabs installation transactional: extracted resources and the OBS collection now publish together, with rollback on collection-publish failure.
 - Hardened Streamlabs archives with Windows-path normalization, entry/per-file/total limits, compression-ratio checks, encrypted/special-file rejection, duplicate detection, and free-space preflight.
 - Added recursive resource relinking for Streamlabs custom/plugin source and filter settings while preserving remote URLs.

@@ -46,6 +46,7 @@ if (Test-Path $PortableApp) {
     --clean `
     --onefile `
     --windowed `
+    --manifest (Join-Path $Root "scripts\app.manifest") `
     --name "OBS Overlay Import Utility" `
     --paths (Join-Path $Root "src") `
     --collect-data "obs_overlay_import_utility" `

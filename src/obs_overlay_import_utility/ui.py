@@ -9,11 +9,18 @@ import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from fractions import Fraction
+from math import gcd
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Callable
 
 from .automatic import AutomaticImportResult, automatically_import_overlay
+from .appearance import (
+    Palette,
+    enable_high_dpi_awareness,
+    palette_for,
+    window_dpi,
+)
 from .constants import APP_TITLE, __version__
 from .core import convert_collection, find_scene_collections, load_json
 from .device_setup import (
@@ -30,6 +37,18 @@ from .exporter import (
     active_obs_scene_collection,
     export_scene_collection,
     list_obs_scene_collections,
+)
+from .obs_live import (
+    ObsAuthenticationRequired,
+    ObsLiveError,
+    ObsWebSocketClient,
+    is_obs_running,
+)
+from .live_resize import (
+    LiveResizeOutcome,
+    LiveResizeSnapshot,
+    resize_active_collection,
+    undo_live_resize,
 )
 from .models import ConversionResult, UtilityError
 from .obs_profile import active_profile_canvas
@@ -72,6 +91,7 @@ def bundled_asset(name: str) -> Path:
         return Path(sys._MEIPASS) / "obs_overlay_import_utility" / "assets" / name
     return Path(__file__).resolve().parent / "assets" / name
 
+
 def format_file_size(size: int) -> str:
     """Format a byte count for compact inventory display."""
     value = float(size)
@@ -82,7 +102,6 @@ def format_file_size(size: int) -> str:
     return f"{size} B"
 
 
-
 class ImportUtilityApp:
     SECTIONS = (
         ("import", "Import Overlay"),
@@ -91,23 +110,13 @@ class ImportUtilityApp:
         ("settings", "Settings"),
     )
 
-    PLACEHOLDER_COPY = {
-        "export": (
-            "Export Overlay",
-            "Package an OBS overlay for customers. This tool is planned for a future release.",
-        ),
-        "resizer": (
-            "Auto Resizer",
-            "Resize overlay assets and scene layouts automatically. This tool is planned for a future release.",
-        ),
-    }
-
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"{APP_TITLE} {__version__}")
-        self.root.minsize(720, 600)
-        self.root.geometry("820x700")
-        self.default_tk_scaling = float(self.root.tk.call("tk", "scaling"))
+        self.root.update_idletasks()
+        self.current_dpi = window_dpi(self.root.winfo_id())
+        self.root.tk.call("tk", "scaling", self.current_dpi / 72.0)
+        self._set_initial_window_size()
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
         self.detected_obs_path = detect_default_obs_path()
@@ -147,8 +156,6 @@ class ImportUtilityApp:
             value="Choose what to resize and a target size."
         )
         self.section_var = tk.StringVar(value="import")
-        self.placeholder_title_var = tk.StringVar()
-        self.placeholder_description_var = tk.StringVar()
         self.theme_var = tk.StringVar(
             value=THEME_NAMES.get(self.settings.theme, "Windows default")
         )
@@ -182,14 +189,18 @@ class ImportUtilityApp:
         self.last_resize_collection: Path | None = None
         self.last_resize_backup: Path | None = None
         self.last_output: Path | None = None
+        self.last_live_resize_snapshot: LiveResizeSnapshot | None = None
+        self.obs_websocket_password: str | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
         self.navigation_buttons: list[ttk.Radiobutton] = []
         self.logo_source: tk.PhotoImage | None = None
         self.logo_image: tk.PhotoImage | None = None
         self.logo_label: ttk.Label | None = None
-        self.base_named_font_sizes: dict[str, int] = {}
-        self.scaled_widget_fonts: list[tuple[tkfont.Font, int]] = []
+        self.font_family = self._preferred_font_family()
+        self.mono_font_family = self._preferred_mono_font_family()
+        self.fonts = self._create_fonts()
+        self.current_palette: Palette = palette_for(self.settings.theme)
         self.scaled_widget_paddings: list[tuple[tk.Widget, tuple[int, ...]]] = []
 
         self._apply_theme()
@@ -199,68 +210,155 @@ class ImportUtilityApp:
         self._apply_theme()
         self._update_custom_path_states()
         self.root.after(100, self._process_events)
+        self.root.after(750, self._watch_window_dpi)
+
+    def _set_initial_window_size(self) -> None:
+        dpi_factor = max(1.0, self.current_dpi / 96.0)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        width = min(round(1040 * dpi_factor), round(screen_width * 0.92))
+        height = min(round(720 * dpi_factor), round(screen_height * 0.9))
+        minimum_width = min(round(860 * dpi_factor), width)
+        minimum_height = min(round(600 * dpi_factor), height)
+        self.root.minsize(minimum_width, minimum_height)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _preferred_font_family(self) -> str:
+        available = {family.casefold(): family for family in tkfont.families(self.root)}
+        for candidate in ("Segoe UI Variable", "Segoe UI", "Arial"):
+            if candidate.casefold() in available:
+                return available[candidate.casefold()]
+        return "TkDefaultFont"
+
+    def _preferred_mono_font_family(self) -> str:
+        available = {family.casefold(): family for family in tkfont.families(self.root)}
+        for candidate in ("Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"):
+            if candidate.casefold() in available:
+                return available[candidate.casefold()]
+        return "TkFixedFont"
+
+    def _create_fonts(self) -> dict[str, tkfont.Font]:
+        return {
+            "body": tkfont.Font(
+                root=self.root, family=self.font_family, size=10, name="AppBodyFont"
+            ),
+            "body_bold": tkfont.Font(
+                root=self.root,
+                family=self.font_family,
+                size=10,
+                weight="bold",
+                name="AppBodyBoldFont",
+            ),
+            "title": tkfont.Font(
+                root=self.root,
+                family=self.font_family,
+                size=22,
+                weight="bold",
+                name="AppTitleFont",
+            ),
+            "section": tkfont.Font(
+                root=self.root,
+                family=self.font_family,
+                size=11,
+                weight="bold",
+                name="AppSectionFont",
+            ),
+            "small": tkfont.Font(
+                root=self.root, family=self.font_family, size=9, name="AppSmallFont"
+            ),
+            "mono": tkfont.Font(
+                root=self.root,
+                family=self.mono_font_family,
+                size=9,
+                name="AppMonoFont",
+            ),
+        }
+
+    def _watch_window_dpi(self) -> None:
+        try:
+            dpi = window_dpi(self.root.winfo_id())
+            if dpi != self.current_dpi:
+                self.current_dpi = dpi
+                self.root.tk.call("tk", "scaling", dpi / 72.0)
+                self._apply_ui_scale(self.ui_scale_var.get())
+        except tk.TclError:
+            return
+        self.root.after(750, self._watch_window_dpi)
 
     def _build_interface(self) -> None:
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        sidebar_width = round(214 * max(1.0, self.current_dpi / 96.0))
+        self.root.columnconfigure(0, weight=0, minsize=sidebar_width)
+        self.root.columnconfigure(1, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-        navigation = ttk.Frame(self.root, padding=(18, 12))
-        navigation.grid(row=0, column=0, sticky="ew")
-        ttk.Label(navigation, text="Tools", font=("Segoe UI", 10, "bold")).grid(
-            row=0, column=0, padx=(0, 12)
+        navigation = ttk.Frame(
+            self.root,
+            padding=(18, 22),
+            style="Sidebar.TFrame",
+            width=sidebar_width,
         )
-        for column, (section, label) in enumerate(self.SECTIONS, start=1):
+        self.navigation_frame = navigation
+        navigation.grid(row=0, column=0, sticky="nsew")
+        navigation.grid_propagate(False)
+        navigation.columnconfigure(0, weight=1)
+        navigation.rowconfigure(len(self.SECTIONS) + 3, weight=1)
+
+        logo_path = bundled_asset("social-space-logo.png")
+        try:
+            self.logo_source = tk.PhotoImage(file=logo_path)
+            self.logo_label = ttk.Label(navigation, style="Sidebar.TLabel")
+            self.logo_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        except tk.TclError:
+            self.logo_label = None
+        ttk.Label(
+            navigation,
+            text="OVERLAY TOOLS",
+            style="SidebarCaption.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 18))
+
+        for row, (section, label) in enumerate(self.SECTIONS, start=2):
             button = ttk.Radiobutton(
                 navigation,
                 text=label,
                 value=section,
                 variable=self.section_var,
                 command=self._show_section,
-                style="Toolbutton",
-                padding=(12, 7),
+                style="Nav.Toolbutton",
+                width=23,
             )
-            button.grid(row=0, column=column, padx=(0, 6))
+            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
             self.navigation_buttons.append(button)
-        navigation.columnconfigure(len(self.SECTIONS) + 1, weight=1)
-        logo_path = bundled_asset("social-space-logo.png")
-        try:
-            self.logo_source = tk.PhotoImage(file=logo_path)
-            self.logo_label = ttk.Label(navigation)
-            self.logo_label.grid(
-                row=0,
-                column=len(self.SECTIONS) + 2,
-                sticky="e",
-                padx=(12, 0),
-            )
-        except tk.TclError:
-            ttk.Label(
-                navigation,
-                text="SOCIAL SPACE",
-                font=("Segoe UI", 10, "bold"),
-            ).grid(row=0, column=len(self.SECTIONS) + 2, sticky="e", padx=(12, 0))
-        ttk.Separator(self.root).grid(row=0, column=0, sticky="sew")
 
-        self.page_container = ttk.Frame(self.root)
-        self.page_container.grid(row=1, column=0, sticky="nsew")
+        ttk.Label(
+            navigation,
+            text=f"Portable • v{__version__}",
+            style="SidebarMuted.TLabel",
+        ).grid(row=len(self.SECTIONS) + 4, column=0, sticky="sw")
+
+        self.page_container = ttk.Frame(self.root, style="Page.TFrame")
+        self.page_container.grid(row=0, column=1, sticky="nsew")
         self.page_container.columnconfigure(0, weight=1)
         self.page_container.rowconfigure(0, weight=1)
 
-        frame = ttk.Frame(self.page_container, padding=22)
+        frame = ttk.Frame(self.page_container, padding=26, style="Page.TFrame")
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(6, weight=1)
         self.import_page = frame
 
-        ttk.Label(frame, text=APP_TITLE, font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(frame, text="Import Overlay", style="PageTitle.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
             frame,
             text="Select one import method, expand its options with the arrow, then run it from this page.",
             wraplength=760,
+            style="PageSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        methods = ttk.Frame(frame)
+        methods = ttk.Frame(frame, padding=1)
         methods.grid(row=2, column=0, sticky="ew")
         methods.columnconfigure(0, weight=1)
         self.method_controls: list[tk.Widget] = []
@@ -269,7 +367,10 @@ class ImportUtilityApp:
         self.method_expanded = {"obs": True, "streamlabs": False, "automatic": False}
 
         obs_card = ttk.LabelFrame(
-            methods, text="Method 1 — Fix Scene Collection Paths", padding=10
+            methods,
+            text="Method 1 — Fix Scene Collection Paths",
+            padding=14,
+            style="Card.TLabelframe",
         )
         obs_card.grid(row=0, column=0, sticky="ew")
         obs_card.columnconfigure(0, weight=1)
@@ -289,6 +390,7 @@ class ImportUtilityApp:
             text="▾",
             width=3,
             command=lambda: self._toggle_import_method("obs"),
+            style="Icon.TButton",
         )
         self.obs_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["obs"] = self.obs_arrow
@@ -338,7 +440,10 @@ class ImportUtilityApp:
         self.method_controls.extend((self.strict_check, self.case_check))
 
         streamlabs_card = ttk.LabelFrame(
-            methods, text="Method 2 — Import Streamlabs Scene File", padding=10
+            methods,
+            text="Method 2 — Import Streamlabs Scene File",
+            padding=14,
+            style="Card.TLabelframe",
         )
         streamlabs_card.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         streamlabs_card.columnconfigure(0, weight=1)
@@ -358,6 +463,7 @@ class ImportUtilityApp:
             text="▸",
             width=3,
             command=lambda: self._toggle_import_method("streamlabs"),
+            style="Icon.TButton",
         )
         self.streamlabs_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["streamlabs"] = self.streamlabs_arrow
@@ -402,7 +508,10 @@ class ImportUtilityApp:
         self.method_controls.append(self.streamlabs_device_setup_check)
 
         automatic_card = ttk.LabelFrame(
-            methods, text="Method 3 — Automatic Scene Collection", padding=10
+            methods,
+            text="Method 3 — Automatic Scene Collection",
+            padding=14,
+            style="Card.TLabelframe",
         )
         automatic_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         automatic_card.columnconfigure(0, weight=1)
@@ -422,6 +531,7 @@ class ImportUtilityApp:
             text="▸",
             width=3,
             command=lambda: self._toggle_import_method("automatic"),
+            style="Icon.TButton",
         )
         self.automatic_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["automatic"] = self.automatic_arrow
@@ -473,15 +583,29 @@ class ImportUtilityApp:
         )
         self.selected_method_label.grid(row=0, column=0, sticky="w")
         self.run_button = ttk.Button(
-            run_row, text="Run", command=self._run_selected_method, width=18
+            run_row,
+            text="Run Import",
+            command=self._run_selected_method,
+            width=18,
+            style="Primary.TButton",
         )
         self.run_button.grid(row=0, column=1, sticky="e")
 
         ttk.Separator(frame).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(
-            frame, textvariable=self.status_var, font=("Segoe UI", 10, "bold")
-        ).grid(row=5, column=0, sticky="w")
-        self.results = tk.Text(frame, height=12, wrap="word", state="disabled")
+        ttk.Label(frame, textvariable=self.status_var, style="PageSection.TLabel").grid(
+            row=5, column=0, sticky="w"
+        )
+        self.results = tk.Text(
+            frame,
+            height=12,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            padx=12,
+            pady=10,
+        )
         self.results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.results.yview)
         scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
@@ -500,12 +624,12 @@ class ImportUtilityApp:
         self._show_section()
 
     def _build_export_page(self) -> None:
-        page = ttk.Frame(self.page_container, padding=22)
+        page = ttk.Frame(self.page_container, padding=26, style="Page.TFrame")
         page.columnconfigure(0, weight=1)
         page.rowconfigure(6, weight=1)
         self.export_page = page
 
-        ttk.Label(page, text="Export Overlay", font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(page, text="Export Overlay", style="PageTitle.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
@@ -514,7 +638,9 @@ class ImportUtilityApp:
             wraplength=760,
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        options = ttk.LabelFrame(page, text="Export options", padding=12)
+        options = ttk.LabelFrame(
+            page, text="Export options", padding=16, style="Card.TLabelframe"
+        )
         options.grid(row=2, column=0, sticky="ew")
         options.columnconfigure(0, weight=1)
         ttk.Label(options, text="OBS Scene Collection").grid(
@@ -574,16 +700,30 @@ class ImportUtilityApp:
             run_row, textvariable=self.export_status_var, style="Muted.TLabel"
         ).grid(row=0, column=0, sticky="w")
         self.export_run_button = ttk.Button(
-            run_row, text="Run", command=self._export_overlay, width=18
+            run_row,
+            text="Run Export",
+            command=self._export_overlay,
+            width=18,
+            style="Primary.TButton",
         )
         self.export_run_button.grid(row=0, column=1, sticky="e")
         self.export_controls.append(self.export_run_button)
 
         ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(page, text="Export log", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(page, text="Export log", style="PageSection.TLabel").grid(
             row=5, column=0, sticky="w"
         )
-        self.export_results = tk.Text(page, height=14, wrap="word", state="disabled")
+        self.export_results = tk.Text(
+            page,
+            height=14,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            padx=12,
+            pady=10,
+        )
         self.export_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
         scrollbar = ttk.Scrollbar(
             page, orient="vertical", command=self.export_results.yview
@@ -593,12 +733,12 @@ class ImportUtilityApp:
         self._refresh_export_collections()
 
     def _build_resizer_page(self) -> None:
-        page = ttk.Frame(self.page_container, padding=22)
+        page = ttk.Frame(self.page_container, padding=26, style="Page.TFrame")
         page.columnconfigure(0, weight=1)
         page.rowconfigure(6, weight=1)
         self.resizer_page = page
 
-        ttk.Label(page, text="Auto Resizer", font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(page, text="Auto Resizer", style="PageTitle.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
@@ -607,7 +747,9 @@ class ImportUtilityApp:
             wraplength=760,
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        options = ttk.LabelFrame(page, text="Resize options", padding=12)
+        options = ttk.LabelFrame(
+            page, text="Resize options", padding=16, style="Card.TLabelframe"
+        )
         options.grid(row=2, column=0, sticky="ew")
         options.columnconfigure(0, weight=1)
         options.columnconfigure(1, weight=1)
@@ -736,16 +878,30 @@ class ImportUtilityApp:
         )
         self.undo_resize_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
         self.resize_run_button = ttk.Button(
-            run_row, text="Run", command=self._run_resize, width=18
+            run_row,
+            text="Run Resize",
+            command=self._run_resize,
+            width=18,
+            style="Primary.TButton",
         )
         self.resize_run_button.grid(row=0, column=2, sticky="e")
         self.resizer_controls.extend((self.undo_resize_button, self.resize_run_button))
 
         ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(page, text="Resize log", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(page, text="Resize log", style="PageSection.TLabel").grid(
             row=5, column=0, sticky="w"
         )
-        self.resize_results = tk.Text(page, height=10, wrap="word", state="disabled")
+        self.resize_results = tk.Text(
+            page,
+            height=10,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            padx=12,
+            pady=10,
+        )
         self.resize_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
         scrollbar = ttk.Scrollbar(
             page, orient="vertical", command=self.resize_results.yview
@@ -756,11 +912,11 @@ class ImportUtilityApp:
         self._update_resize_size_mode()
 
     def _build_settings_page(self) -> None:
-        page = ttk.Frame(self.page_container, padding=22)
+        page = ttk.Frame(self.page_container, padding=26, style="Page.TFrame")
         page.columnconfigure(0, weight=1)
         self.settings_page = page
 
-        ttk.Label(page, text="Settings", font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(page, text="Settings", style="PageTitle.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
@@ -769,7 +925,9 @@ class ImportUtilityApp:
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        appearance = ttk.LabelFrame(page, text="Appearance", padding=12)
+        appearance = ttk.LabelFrame(
+            page, text="Appearance", padding=16, style="Card.TLabelframe"
+        )
         appearance.grid(row=2, column=0, sticky="ew")
         appearance.columnconfigure(1, weight=1)
         ttk.Label(appearance, text="Theme").grid(
@@ -810,7 +968,9 @@ class ImportUtilityApp:
             command=lambda: self._set_scale(100),
         ).grid(row=0, column=2, padx=(6, 0))
 
-        paths = ttk.LabelFrame(page, text="Application paths", padding=12)
+        paths = ttk.LabelFrame(
+            page, text="Application paths", padding=16, style="Card.TLabelframe"
+        )
         paths.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         paths.columnconfigure(0, weight=1)
 
@@ -867,7 +1027,9 @@ class ImportUtilityApp:
         )
         self.obs_browse_button.grid(row=0, column=1)
 
-        behavior = ttk.LabelFrame(page, text="Import behavior", padding=12)
+        behavior = ttk.LabelFrame(
+            page, text="Import behavior", padding=16, style="Card.TLabelframe"
+        )
         behavior.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         ttk.Checkbutton(
             behavior,
@@ -892,9 +1054,12 @@ class ImportUtilityApp:
 
         actions = ttk.Frame(page)
         actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
-        ttk.Button(actions, text="Save settings", command=self._save_settings).grid(
-            row=0, column=0
-        )
+        ttk.Button(
+            actions,
+            text="Save settings",
+            command=self._save_settings,
+            style="Primary.TButton",
+        ).grid(row=0, column=0)
         ttk.Button(
             actions, text="Restore defaults", command=self._restore_defaults
         ).grid(row=0, column=1, padx=(8, 0))
@@ -929,188 +1094,301 @@ class ImportUtilityApp:
 
     def _apply_theme(self) -> None:
         theme = THEME_LABELS.get(self.theme_var.get(), "system")
+        palette = palette_for(theme)
+        self.current_palette = palette
         style = ttk.Style(self.root)
-
-        if theme == "system":
-            preferred = (
-                "vista" if sys.platform.startswith("win") else style.theme_names()[0]
-            )
-            try:
-                style.theme_use(preferred)
-            except tk.TclError:
-                pass
-            background = style.lookup("TFrame", "background") or "SystemButtonFace"
-            foreground = style.lookup("TLabel", "foreground") or "SystemWindowText"
-            muted = "#666666"
-            text_background = (
-                "SystemWindow" if sys.platform.startswith("win") else "#ffffff"
-            )
-            text_foreground = (
-                "SystemWindowText" if sys.platform.startswith("win") else "#111111"
-            )
-            selection = (
-                "SystemHighlight" if sys.platform.startswith("win") else "#3478c7"
-            )
-            self.root.option_add("*TCombobox*Listbox.background", text_background)
-            self.root.option_add("*TCombobox*Listbox.foreground", text_foreground)
-            self.root.option_add("*TCombobox*Listbox.selectBackground", selection)
-        else:
+        try:
             style.theme_use("clam")
-            if theme == "dark":
-                background = "#151515"
-                surface = "#252525"
-                foreground = "#f7f7f7"
-                muted = "#c2c2c2"
-                field = "#202020"
-                selection = "#f42425"
-                accent_hover = "#ff4b4c"
-                border = "#713335"
-                trough = "#3b181a"
-                disabled = "#343434"
-            else:
-                background = "#f5f5f5"
-                surface = "#ffffff"
-                foreground = "#171717"
-                muted = "#5f5f5f"
-                field = "#ffffff"
-                selection = "#d91f20"
-                accent_hover = "#f42425"
-                border = "#c7c7c7"
-                trough = "#f5caca"
-                disabled = "#e5e5e5"
-            text_background = field
-            text_foreground = foreground
-            style.configure(".", background=background, foreground=foreground)
-            style.configure("TFrame", background=background)
-            style.configure("TLabel", background=background, foreground=foreground)
-            style.configure(
-                "TLabelframe",
-                background=background,
-                foreground=foreground,
-                bordercolor=border,
-                lightcolor=border,
-                darkcolor=border,
-                borderwidth=1,
-            )
-            style.configure(
-                "TLabelframe.Label", background=background, foreground=foreground
-            )
-            style.configure(
-                "TButton",
-                background=surface,
-                foreground=foreground,
-                bordercolor=border,
-                focuscolor=selection,
-                lightcolor=border,
-                darkcolor=border,
-            )
-            style.map(
-                "TButton",
-                background=[("pressed", selection), ("active", accent_hover)],
-                foreground=[("active", "#ffffff")],
-            )
-            style.configure(
-                "TCheckbutton",
-                background=background,
-                foreground=foreground,
-                indicatorcolor=field,
-                bordercolor=border,
-                focuscolor=selection,
-            )
-            style.map(
-                "TCheckbutton",
-                background=[("active", background)],
-                indicatorcolor=[
-                    ("selected", selection),
-                    ("active", accent_hover),
-                    ("disabled", disabled),
-                ],
-            )
-            style.configure(
-                "TEntry",
-                fieldbackground=field,
-                foreground=foreground,
-                insertcolor=foreground,
-                bordercolor=border,
-                focuscolor=selection,
-                lightcolor=border,
-                darkcolor=border,
-            )
-            style.configure(
-                "TCombobox",
-                fieldbackground=field,
-                background=surface,
-                foreground=foreground,
-                arrowcolor=foreground,
-                bordercolor=border,
-                focuscolor=selection,
-                lightcolor=border,
-                darkcolor=border,
-            )
-            style.map(
-                "TCombobox",
-                fieldbackground=[("readonly", field), ("disabled", disabled)],
-                foreground=[("readonly", foreground), ("disabled", muted)],
-                bordercolor=[("focus", selection)],
-            )
-            style.configure(
-                "Horizontal.TScale",
-                background=selection,
-                troughcolor=trough,
-                bordercolor=border,
-                lightcolor=selection,
-                darkcolor=selection,
-                troughrelief="flat",
-            )
-            style.map(
-                "Horizontal.TScale",
-                background=[("active", accent_hover), ("disabled", disabled)],
-                lightcolor=[("active", accent_hover)],
-                darkcolor=[("active", accent_hover)],
-            )
-            style.configure(
-                "Toolbutton",
-                background=surface,
-                foreground=foreground,
-                bordercolor=border,
-                focuscolor=selection,
-            )
-            style.map(
-                "Toolbutton",
-                background=[
-                    ("selected", selection),
-                    ("pressed", selection),
-                    ("active", accent_hover),
-                ],
-                foreground=[("selected", "#ffffff"), ("active", "#ffffff")],
-            )
-            self.root.option_add("*TCombobox*Listbox.background", field)
-            self.root.option_add("*TCombobox*Listbox.foreground", foreground)
-            self.root.option_add("*TCombobox*Listbox.selectBackground", selection)
+        except tk.TclError:
+            pass
 
-        style.configure("Muted.TLabel", foreground=muted)
-        self.root.configure(background=background)
+        style.configure(
+            ".",
+            background=palette.surface,
+            foreground=palette.foreground,
+            font=self.fonts["body"],
+        )
+        style.configure("TFrame", background=palette.surface)
+        style.configure("Page.TFrame", background=palette.background)
+        style.configure("Sidebar.TFrame", background=palette.sidebar)
+        style.configure(
+            "TLabel", background=palette.surface, foreground=palette.foreground
+        )
+        style.configure(
+            "PageTitle.TLabel",
+            background=palette.background,
+            foreground=palette.foreground,
+            font=self.fonts["title"],
+        )
+        style.configure(
+            "PageSubtitle.TLabel",
+            background=palette.background,
+            foreground=palette.muted,
+        )
+        style.configure(
+            "PageSection.TLabel",
+            background=palette.background,
+            foreground=palette.foreground,
+            font=self.fonts["section"],
+        )
+        style.configure(
+            "Muted.TLabel", background=palette.surface, foreground=palette.muted
+        )
+        style.configure(
+            "PageMuted.TLabel",
+            background=palette.background,
+            foreground=palette.muted,
+        )
+        style.configure(
+            "Sidebar.TLabel",
+            background=palette.sidebar,
+            foreground=palette.sidebar_foreground,
+        )
+        style.configure(
+            "SidebarCaption.TLabel",
+            background=palette.sidebar,
+            foreground=palette.sidebar_muted,
+            font=self.fonts["small"],
+        )
+        style.configure(
+            "SidebarMuted.TLabel",
+            background=palette.sidebar,
+            foreground=palette.sidebar_muted,
+            font=self.fonts["small"],
+        )
+        style.configure(
+            "TSeparator", background=palette.border, bordercolor=palette.border
+        )
+        style.configure(
+            "Card.TLabelframe",
+            background=palette.surface,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=palette.surface,
+            foreground=palette.foreground,
+            font=self.fonts["section"],
+        )
+        style.configure(
+            "TButton",
+            background=palette.surface_alt,
+            foreground=palette.foreground,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            focuscolor=palette.accent,
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("pressed", palette.disabled),
+                ("active", palette.border),
+                ("disabled", palette.disabled),
+            ],
+            foreground=[("disabled", palette.muted)],
+            bordercolor=[("focus", palette.accent)],
+        )
+        style.configure(
+            "Primary.TButton",
+            background=palette.accent,
+            foreground="#FFFFFF",
+            bordercolor=palette.accent,
+            lightcolor=palette.accent,
+            darkcolor=palette.accent,
+            font=self.fonts["body_bold"],
+        )
+        style.map(
+            "Primary.TButton",
+            background=[
+                ("pressed", palette.accent_pressed),
+                ("active", palette.accent_hover),
+                ("disabled", palette.disabled),
+            ],
+            foreground=[("disabled", palette.muted)],
+            bordercolor=[
+                ("pressed", palette.accent_pressed),
+                ("active", palette.accent_hover),
+            ],
+        )
+        style.configure(
+            "Icon.TButton",
+            background=palette.surface,
+            foreground=palette.muted,
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            "Icon.TButton",
+            background=[
+                ("pressed", palette.surface_alt),
+                ("active", palette.surface_alt),
+            ],
+            foreground=[("active", palette.foreground)],
+        )
+        style.configure(
+            "Nav.Toolbutton",
+            background=palette.sidebar,
+            foreground=palette.sidebar_foreground,
+            bordercolor=palette.sidebar,
+            lightcolor=palette.sidebar,
+            darkcolor=palette.sidebar,
+            focuscolor=palette.accent,
+            anchor="w",
+            relief="flat",
+            font=self.fonts["body_bold"],
+        )
+        style.map(
+            "Nav.Toolbutton",
+            background=[
+                ("selected", palette.sidebar_selected),
+                ("pressed", palette.sidebar_selected),
+                ("active", palette.sidebar_hover),
+            ],
+            foreground=[("disabled", palette.muted)],
+            bordercolor=[("focus", palette.accent)],
+        )
+        style.configure(
+            "TCheckbutton",
+            background=palette.surface,
+            foreground=palette.foreground,
+            indicatorcolor=palette.field,
+            bordercolor=palette.border,
+            focuscolor=palette.accent,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", palette.surface)],
+            indicatorcolor=[
+                ("selected", palette.accent),
+                ("active", palette.accent_hover),
+                ("disabled", palette.disabled),
+            ],
+            foreground=[("disabled", palette.muted)],
+        )
+        style.configure(
+            "TRadiobutton",
+            background=palette.surface,
+            foreground=palette.foreground,
+            indicatorcolor=palette.field,
+            bordercolor=palette.border,
+            focuscolor=palette.accent,
+        )
+        style.map(
+            "TRadiobutton",
+            background=[("active", palette.surface)],
+            indicatorcolor=[
+                ("selected", palette.accent),
+                ("active", palette.accent_hover),
+                ("disabled", palette.disabled),
+            ],
+            foreground=[("disabled", palette.muted)],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=palette.field,
+            foreground=palette.foreground,
+            insertcolor=palette.foreground,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            focuscolor=palette.accent,
+        )
+        style.map(
+            "TEntry",
+            fieldbackground=[("disabled", palette.disabled)],
+            foreground=[("disabled", palette.muted)],
+            bordercolor=[("focus", palette.accent)],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette.field,
+            background=palette.surface_alt,
+            foreground=palette.foreground,
+            arrowcolor=palette.muted,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            focuscolor=palette.accent,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[
+                ("readonly", palette.field),
+                ("disabled", palette.disabled),
+            ],
+            foreground=[("readonly", palette.foreground), ("disabled", palette.muted)],
+            bordercolor=[("focus", palette.accent)],
+            arrowcolor=[("active", palette.foreground)],
+        )
+        style.configure(
+            "Horizontal.TScale",
+            background=palette.accent,
+            troughcolor=palette.surface_alt,
+            bordercolor=palette.border,
+            lightcolor=palette.accent,
+            darkcolor=palette.accent,
+            troughrelief="flat",
+        )
+        style.map(
+            "Horizontal.TScale",
+            background=[
+                ("active", palette.accent_hover),
+                ("disabled", palette.disabled),
+            ],
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            background=palette.surface_alt,
+            troughcolor=palette.surface,
+            arrowcolor=palette.muted,
+            bordercolor=palette.surface,
+        )
+        style.configure(
+            "Treeview",
+            background=palette.field,
+            fieldbackground=palette.field,
+            foreground=palette.foreground,
+            bordercolor=palette.border,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", palette.selection)],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=palette.surface_alt,
+            foreground=palette.foreground,
+            font=self.fonts["body_bold"],
+            relief="flat",
+        )
+
+        self.root.option_add("*TCombobox*Listbox.background", palette.field)
+        self.root.option_add("*TCombobox*Listbox.foreground", palette.foreground)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", palette.selection)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+        self.root.configure(background=palette.background)
         for text_widget_name in ("results", "export_results", "resize_results"):
             text_widget = getattr(self, text_widget_name, None)
             if text_widget is not None:
                 text_widget.configure(
-                    background=text_background,
-                    foreground=text_foreground,
-                    insertbackground=text_foreground,
-                    selectbackground=selection,
-                    selectforeground="#ffffff",
+                    background=palette.console_background,
+                    foreground=palette.console_foreground,
+                    insertbackground=palette.console_foreground,
+                    selectbackground=palette.selection,
+                    selectforeground="#FFFFFF",
+                    highlightbackground=palette.border,
+                    highlightcolor=palette.accent,
+                    font=self.fonts["mono"],
                 )
 
     def _capture_scalable_ui(self) -> None:
-        named_fonts = set(tkfont.names(self.root))
-        for name in named_fonts:
-            try:
-                size = int(tkfont.nametofont(name, root=self.root).cget("size"))
-            except tk.TclError:
-                continue
-            if size:
-                self.base_named_font_sizes[name] = size
-
         def descendants(widget: tk.Misc) -> list[tk.Misc]:
             items: list[tk.Misc] = []
             for child in widget.winfo_children():
@@ -1119,19 +1397,6 @@ class ImportUtilityApp:
             return items
 
         for widget in descendants(self.root):
-            try:
-                font_value = str(widget.cget("font"))
-            except tk.TclError:
-                font_value = ""
-            if font_value and font_value not in named_fonts:
-                try:
-                    font = tkfont.Font(root=self.root, font=font_value)
-                    base_size = int(font.cget("size"))
-                    widget.configure(font=font)
-                    self.scaled_widget_fonts.append((font, base_size))
-                except tk.TclError:
-                    pass
-
             try:
                 raw_padding = widget.cget("padding")
                 parts = self.root.tk.splitlist(raw_padding)
@@ -1154,22 +1419,26 @@ class ImportUtilityApp:
         self.ui_scale_label_var.set(f"{percent}%")
         if round(self.ui_scale_var.get()) != percent:
             self.ui_scale_var.set(percent)
-        factor = percent / 100.0
-        for name, base_size in self.base_named_font_sizes.items():
-            scaled_size = max(1, round(abs(base_size) * factor))
-            if base_size < 0:
-                scaled_size = -scaled_size
-            try:
-                tkfont.nametofont(name, root=self.root).configure(size=scaled_size)
-            except tk.TclError:
-                pass
-        for font, base_size in self.scaled_widget_fonts:
-            scaled_size = max(1, round(abs(base_size) * factor))
-            font.configure(size=-scaled_size if base_size < 0 else scaled_size)
+
+        user_factor = percent / 100.0
+        dimension_factor = user_factor * max(1.0, self.current_dpi / 96.0)
+        base_font_sizes = {
+            "body": 10,
+            "body_bold": 10,
+            "title": 22,
+            "section": 11,
+            "small": 9,
+            "mono": 9,
+        }
+        for name, base_size in base_font_sizes.items():
+            self.fonts[name].configure(size=max(7, round(base_size * user_factor)))
+
         for widget, padding in self.scaled_widget_paddings:
             try:
                 widget.configure(
-                    padding=tuple(max(0, round(item * factor)) for item in padding)
+                    padding=tuple(
+                        max(0, round(item * dimension_factor)) for item in padding
+                    )
                 )
             except tk.TclError:
                 pass
@@ -1177,23 +1446,47 @@ class ImportUtilityApp:
         style = ttk.Style(self.root)
         style.configure(
             "TButton",
-            padding=(max(3, round(8 * factor)), max(2, round(4 * factor))),
+            padding=(round(12 * dimension_factor), round(7 * dimension_factor)),
         )
         style.configure(
-            "Horizontal.TScale",
-            sliderlength=max(12, round(22 * factor)),
-            sliderthickness=max(10, round(16 * factor)),
+            "Primary.TButton",
+            padding=(round(16 * dimension_factor), round(8 * dimension_factor)),
         )
-        self._update_logo_scale(percent)
+        style.configure(
+            "Icon.TButton",
+            padding=(round(7 * dimension_factor), round(5 * dimension_factor)),
+        )
+        style.configure(
+            "Nav.Toolbutton",
+            padding=(round(14 * dimension_factor), round(11 * dimension_factor)),
+        )
+        style.configure(
+            "TEntry",
+            padding=(round(9 * dimension_factor), round(7 * dimension_factor)),
+        )
+        style.configure(
+            "TCombobox",
+            padding=(round(8 * dimension_factor), round(6 * dimension_factor)),
+        )
+        style.configure("Treeview", rowheight=max(24, round(30 * dimension_factor)))
+        style.configure(
+            "Horizontal.TScale",
+            sliderlength=max(14, round(22 * dimension_factor)),
+            sliderthickness=max(10, round(16 * dimension_factor)),
+        )
+        self._update_logo_scale(dimension_factor)
         self.root.update_idletasks()
 
-    def _update_logo_scale(self, percent: int) -> None:
+    def _update_logo_scale(self, factor: float) -> None:
         if not self.logo_source or not self.logo_label:
             return
-        ratio = Fraction(percent, 400).limit_denominator(16)
-        self.logo_image = self.logo_source.zoom(
-            ratio.numerator, ratio.numerator
-        ).subsample(ratio.denominator, ratio.denominator)
+        target_width = min(self.logo_source.width(), max(72, round(120 * factor)))
+        common = gcd(target_width, self.logo_source.width())
+        numerator = target_width // common
+        denominator = self.logo_source.width() // common
+        self.logo_image = self.logo_source.zoom(numerator, numerator).subsample(
+            denominator, denominator
+        )
         self.logo_label.configure(image=self.logo_image)
 
     def _update_custom_path_states(self) -> None:
@@ -1358,12 +1651,20 @@ class ImportUtilityApp:
             executable = self.detected_obs_path
         return default_obs_scenes_directory(executable)
 
-    def _maybe_open_device_setup_wizard(self, collection_path: Path | None) -> None:
+    def _maybe_open_device_setup_wizard(
+        self,
+        collection_path: Path | None,
+        on_complete: Callable[[], None] | None = None,
+    ) -> None:
         if not self.device_setup_var.get() or collection_path is None:
+            if on_complete:
+                self.root.after_idle(on_complete)
             return
         try:
             requirements = collection_device_requirements(collection_path)
             if not requirements:
+                if on_complete:
+                    self.root.after_idle(on_complete)
                 return
             candidates = available_device_candidates(
                 self._configured_obs_scenes_directory(),
@@ -1373,14 +1674,19 @@ class ImportUtilityApp:
             message = f"Device setup could not read the imported collection: {exc}"
             self._append_import_results(f"\n\n{message}")
             messagebox.showwarning(APP_TITLE, message, parent=self.root)
+            if on_complete:
+                self.root.after_idle(on_complete)
             return
-        self._open_device_setup_wizard(collection_path, requirements, candidates)
+        self._open_device_setup_wizard(
+            collection_path, requirements, candidates, on_complete
+        )
 
     def _open_device_setup_wizard(
         self,
         collection_path: Path,
         requirements: list[DeviceRequirement],
         candidates_by_source_id: dict[str, list[DeviceCandidate]],
+        on_complete: Callable[[], None] | None = None,
     ) -> None:
         window = tk.Toplevel(self.root)
         window.title("Overlay Device Setup")
@@ -1395,7 +1701,7 @@ class ImportUtilityApp:
         ttk.Label(
             header,
             text="Overlay Device Setup",
-            font=("Segoe UI", 15, "bold"),
+            style="DialogTitle.TLabel",
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
@@ -1411,9 +1717,9 @@ class ImportUtilityApp:
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
         canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0)
-        canvas_background = (
-            ttk.Style().lookup("TFrame", "background") or self.root.cget("background")
-        )
+        canvas_background = ttk.Style().lookup(
+            "TFrame", "background"
+        ) or self.root.cget("background")
         canvas.configure(background=canvas_background)
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
@@ -1495,13 +1801,20 @@ class ImportUtilityApp:
 
         actions = ttk.Frame(window, padding=18)
         actions.grid(row=2, column=0, sticky="e")
+        completed = False
 
         def close_window() -> None:
+            nonlocal completed
+            if completed:
+                return
+            completed = True
             try:
                 window.grab_release()
             except tk.TclError:
                 pass
             window.destroy()
+            if on_complete:
+                self.root.after_idle(on_complete)
 
         def apply_setup() -> None:
             choices = {
@@ -1683,6 +1996,55 @@ class ImportUtilityApp:
         self.resize_width_entry.configure(state=state)
         self.resize_height_entry.configure(state=state)
 
+    def _prepare_live_connection(self) -> tuple[str | None, str, str | None]:
+        """Connect to OBS, prompting once for an in-memory-only password."""
+        try:
+            with ObsWebSocketClient(password=self.obs_websocket_password) as client:
+                current, _collections = client.scene_collections()
+                return self.obs_websocket_password, current, None
+        except ObsAuthenticationRequired:
+            password = simpledialog.askstring(
+                "OBS Live Control",
+                "Enter the password shown in OBS under Tools → WebSocket Server Settings.\n\n"
+                "The password is kept only until this app closes.",
+                show="*",
+                parent=self.root,
+            )
+            if password is None:
+                return None, "", "OBS live control was cancelled."
+            try:
+                with ObsWebSocketClient(password=password) as client:
+                    current, _collections = client.scene_collections()
+                self.obs_websocket_password = password
+                return password, current, None
+            except ObsLiveError as exc:
+                return None, "", str(exc)
+        except ObsLiveError as exc:
+            return None, "", str(exc)
+
+    def _activate_imported_collection(self, name: str) -> None:
+        if not is_obs_running():
+            self._append_import_results(
+                "\n\nOBS is closed. The collection will be available on the next OBS launch."
+            )
+            return
+        password, _current, error = self._prepare_live_connection()
+        if error:
+            self._append_import_results(
+                f"\n\nThe collection was installed, but live activation was unavailable: {error}"
+            )
+            return
+        try:
+            with ObsWebSocketClient(password=password) as client:
+                client.activate_scene_collection(name)
+            self._append_import_results(
+                f'\n\nLive OBS: switched to "{name}". No restart required.'
+            )
+        except ObsLiveError as exc:
+            self._append_import_results(
+                f"\n\nThe collection was installed, but OBS could not activate it live: {exc}"
+            )
+
     def _resize_target_size(self) -> tuple[int, int]:
         if self.resize_size_mode_var.get() == "screen":
             canvas = active_profile_canvas(self._configured_obs_scenes_directory())
@@ -1728,6 +2090,32 @@ class ImportUtilityApp:
         except UtilityError as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
+        collection_name = str(load_json(collection).get("name", collection.stem))
+        if is_obs_running():
+            password, current, live_error = self._prepare_live_connection()
+            if not live_error and current == collection_name:
+                self._set_busy(True, "Resizing the active collection inside OBS…")
+                self.resize_status_var.set("Applying live transforms through OBS…")
+                self._write_resize_results("")
+                threading.Thread(
+                    target=self._live_resize_worker,
+                    args=(
+                        collection, password, collection_name, scope, selected_name,
+                        selected_uuid, self.resize_mode_var.get(), target_width, target_height,
+                    ),
+                    daemon=True,
+                ).start()
+                return
+            active_path = active_obs_scene_collection(
+                self._configured_obs_scenes_directory()
+            )
+            if live_error and active_path and active_path.resolve() == collection.resolve():
+                messagebox.showerror(
+                    APP_TITLE,
+                    "The active collection cannot be safely overwritten while OBS is open.\n\n"
+                    f"{live_error}",
+                )
+                return
         self._set_busy(True, "Resizing the selected OBS collection…")
         self.resize_status_var.set(
             "Writing the resized collection and its undo backup…"
@@ -1772,8 +2160,34 @@ class ImportUtilityApp:
             )
         )
 
+    def _live_resize_worker(
+        self, collection: Path, password: str | None, collection_name: str,
+        scope: str, selected_name: str | None, selected_uuid: str | None,
+        mode: str, target_width: int, target_height: int,
+    ) -> None:
+        outcome = resize_active_collection(
+            password=password,
+            collection_name=collection_name,
+            scope=scope,
+            selected_name=selected_name,
+            selected_uuid=selected_uuid,
+            mode=mode,
+            target_width=target_width,
+            target_height=target_height,
+        )
+        outcome.result.collection_path = collection
+        self.events.put(("live_resize", outcome))
+
     def _undo_resize(self) -> None:
         if self.busy:
+            return
+        if self.last_live_resize_snapshot:
+            self._set_busy(True, "Undoing the live resize inside OBS…")
+            threading.Thread(
+                target=self._undo_live_resize_worker,
+                args=(self.last_live_resize_snapshot,),
+                daemon=True,
+            ).start()
             return
         if not self.last_resize_collection or not self.last_resize_backup:
             return
@@ -1789,6 +2203,12 @@ class ImportUtilityApp:
         self.events.put(
             ("resize_undo", (collection, backup, undo_resize(collection, backup)))
         )
+
+    def _undo_live_resize_worker(self, snapshot: LiveResizeSnapshot) -> None:
+        self.events.put((
+            "live_resize_undo",
+            (snapshot, undo_live_resize(self.obs_websocket_password, snapshot)),
+        ))
 
     def _browse_streamlabs(self) -> None:
         selected = filedialog.askopenfilename(
@@ -1941,6 +2361,10 @@ class ImportUtilityApp:
                     self._finish_export_inventory(payload)  # type: ignore[arg-type]
                 elif event == "export":
                     self._finish_export(payload)  # type: ignore[arg-type]
+                elif event == "live_resize":
+                    self._finish_live_resize(payload)  # type: ignore[arg-type]
+                elif event == "live_resize_undo":
+                    self._finish_live_resize_undo(payload)  # type: ignore[arg-type]
                 elif event == "resize":
                     self._finish_resize(payload)  # type: ignore[arg-type]
                 elif event == "resize_undo":
@@ -2035,6 +2459,7 @@ class ImportUtilityApp:
             return
         self.last_resize_collection = result.collection_path
         self.last_resize_backup = result.backup_path
+        self.last_live_resize_snapshot = None
         canvas_text = (
             f"Canvas: {result.source_width} × {result.source_height} → {result.target_width} × {result.target_height}"
             if result.canvas_changed
@@ -2043,12 +2468,19 @@ class ImportUtilityApp:
         self._write_resize_results(
             "\n".join(
                 (
-                    f"Collection overwritten: {result.collection_path}",
-                    f"Undo backup: {result.backup_path}",
+                    (
+                        f"Live OBS collection updated: {result.collection_path}"
+                        if result.live
+                        else f"Collection file overwritten: {result.collection_path}"
+                    ),
+                    (
+                        "Undo snapshot: held in memory for this app session"
+                        if result.live else f"Undo backup: {result.backup_path}"
+                    ),
                     canvas_text,
                     f"Source items resized: {result.changed_items}",
                     "",
-                    "OBS can remain open. If this collection is already active, switch collections or restart OBS to reload the updated file.",
+                    "OBS remained open and the change is already active." if result.live else "The inactive collection file was resized safely.",
                 )
             )
         )
@@ -2069,18 +2501,46 @@ class ImportUtilityApp:
         self.last_resize_collection = None
         self.last_resize_backup = None
         self._write_resize_results(
-            f"Undo complete. Restored: {collection}\nRemoved used backup: {backup}\n\n"
-            "If OBS has this collection open, switch collections or restart OBS to reload the restored file."
+            f"Undo complete. Restored inactive collection: {collection}\nRemoved used backup: {backup}"
         )
         self.resize_status_var.set("The last resize was restored.")
         self._set_busy(False, "Resize undo completed successfully.")
+        self.undo_resize_button.configure(state="disabled")
+
+    def _finish_live_resize(self, outcome: LiveResizeOutcome) -> None:
+        self._finish_resize(outcome.result)
+        self.last_live_resize_snapshot = outcome.snapshot
+        self.undo_resize_button.configure(
+            state="normal" if outcome.snapshot and outcome.result.success else "disabled"
+        )
+
+    def _finish_live_resize_undo(
+        self, payload: tuple[LiveResizeSnapshot, str | None]
+    ) -> None:
+        _snapshot, error = payload
+        if error:
+            self._write_resize_results(error)
+            self.resize_status_var.set("Live Undo failed; the snapshot was retained.")
+            self._set_busy(False, "Could not undo the live resize.")
+            self.undo_resize_button.configure(state="normal")
+            return
+        self.last_live_resize_snapshot = None
+        self.last_resize_collection = None
+        self.last_resize_backup = None
+        self._write_resize_results(
+            "Live Undo complete. OBS remained open and the restored layout is already active."
+        )
+        self.resize_status_var.set("The last live resize was restored.")
+        self._set_busy(False, "Live resize undo completed successfully.")
         self.undo_resize_button.configure(state="disabled")
 
     def _finish_export_inventory(self, inventory: ExportInventory) -> None:
         if inventory.error or not inventory.success:
             error = inventory.error or "Could not build the export inventory."
             self._write_export_results(error)
-            self.export_status_var.set("Export inventory failed; no package was created.")
+            self.export_status_var.set(
+                "Export inventory failed; no package was created."
+            )
             self._set_busy(False, "Could not inspect the scene collection.")
             return
         if inventory.collection_path is None or inventory.destination is None:
@@ -2117,7 +2577,7 @@ class ImportUtilityApp:
         ttk.Label(
             header,
             text="Export inventory",
-            font=("Segoe UI", 15, "bold"),
+            style="DialogTitle.TLabel",
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
@@ -2260,14 +2720,17 @@ class ImportUtilityApp:
             ),
             f"Supported sources imported: {result.imported_sources}",
             "",
-            "Restart OBS if it was already open, then select the new collection from Scene Collection.",
+            "Finalizing device setup, then activating the collection in live OBS…",
         ]
         if result.skipped_sources:
             lines.extend(("", "Sources that need manual setup:"))
             lines.extend(f"• {item}" for item in result.skipped_sources)
         self._write_results("\n".join(lines))
         self._set_busy(False, "Streamlabs package imported into OBS successfully.")
-        self._maybe_open_device_setup_wizard(result.collection_path)
+        self._maybe_open_device_setup_wizard(
+            result.collection_path,
+            lambda: self._activate_imported_collection(result.collection_name),
+        )
 
     def _finish_automatic(self, result: AutomaticImportResult) -> None:
         if result.error:
@@ -2304,14 +2767,17 @@ class ImportUtilityApp:
         lines.extend(
             (
                 "",
-                "Restart OBS if it was already open, then select the new collection from Scene Collection.",
+                "Finalizing device setup, then activating the collection in live OBS…",
             )
         )
         self._write_results("\n".join(lines))
         self._set_busy(
             False, "Scene collection detected and imported into OBS successfully."
         )
-        self._maybe_open_device_setup_wizard(result.collection_path)
+        self._maybe_open_device_setup_wizard(
+            result.collection_path,
+            lambda: self._activate_imported_collection(result.collection_name),
+        )
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self.busy = busy
@@ -2327,7 +2793,7 @@ class ImportUtilityApp:
             self._update_resize_size_mode()
             self.undo_resize_button.configure(
                 state="normal"
-                if self.last_resize_collection and self.last_resize_backup
+                if self.last_live_resize_snapshot or (self.last_resize_collection and self.last_resize_backup)
                 else "disabled"
             )
         for button in self.navigation_buttons:
@@ -2384,11 +2850,8 @@ class ImportUtilityApp:
 
 
 def main() -> None:
+    enable_high_dpi_awareness()
     root = tk.Tk()
-    try:
-        ttk.Style(root).theme_use("vista" if sys.platform.startswith("win") else "clam")
-    except tk.TclError:
-        pass
     ImportUtilityApp(root)
     root.mainloop()
 

@@ -2,10 +2,18 @@
 
 A small, open-source Windows desktop utility that imports and exports portable OBS overlay packages. It is designed for independent overlay creators who want customers to import a package without manually finding and replacing every image, video, audio, local browser-source, plugin, or filter resource path.
 
-The portable build has no installer and does not require Python.
+The portable build is a single lightweight executable: it has no installer, does not require Python, and adds no heavyweight GUI runtime dependencies.
 
 The Settings page supports the Windows default, white, and dark themes; adjustable UI scaling; remembered overlay folders; import defaults; and optional custom OBS/Python locations. Settings are saved per Windows user in `%APPDATA%\OBS Overlay Import Utility\settings.json`.
 
+## Interface and display
+
+- Lightweight standard-library Tk/ttk interface with no Qt, Electron, browser engine, or third-party theme runtime.
+- Responsive left-side tool navigation with clear page titles, bordered option cards, semantic primary actions, and compact status consoles.
+- Accessible light and dark palettes with the Social Space red accent; **Windows default** follows the current Windows app theme at startup.
+- Windows Per-Monitor V2 DPI awareness is embedded in the executable and enabled before Tk starts, preventing Windows bitmap stretching on high-DPI displays.
+- The interface watches for monitor-DPI changes, uses Segoe UI Variable/Segoe UI and Cascadia Mono/Consolas when available, and retains independent 75–150% user zoom.
+- The Social Space logo is scaled from its packaged high-resolution source, and the initial window is centered and bounded to the available display.
 ## Customer workflow
 
 ### Method 1 — Fix Scene Collection Paths
@@ -23,7 +31,7 @@ The original collection is never changed. **Advanced options** is collapsed by d
 2. Choose the Streamlabs `.overlay` package.
 3. Click **Run** in the same Import Overlay window.
 
-The utility validates the archive before extraction (including entry, per-file, total-size, compression-ratio, path, link, encryption, duplicate-name, and free-space limits), then extracts beside the archive into a new `name overlay` folder. It recursively relinks assets in built-in and custom/plugin source and filter settings, converts supported Streamlabs Desktop sources, and transactionally publishes the extracted folder together with a new OBS collection. A publish failure rolls back the extracted folder and pending JSON. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them only to locally configured sources with the same OBS source ID. The wizard copies device-selector fields while preserving the imported resolution, FPS, filters, source type, and other settings. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
+The utility validates the archive before extraction (including entry, per-file, total-size, compression-ratio, path, link, encryption, duplicate-name, and free-space limits), then extracts beside the archive into a new `name overlay` folder. It recursively relinks assets in built-in and custom/plugin source and filter settings, converts supported Streamlabs Desktop sources, and transactionally publishes the extracted folder together with a new OBS collection. A publish failure rolls back the extracted folder and pending JSON. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them only to locally configured sources with the same OBS source ID. The wizard copies device-selector fields while preserving the imported resolution, FPS, filters, source type, and other settings. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. When OBS is open, the utility finishes device setup and then switches to the imported collection through OBS's built-in WebSocket server—no restart or collection reload is needed.
 
 ### Method 3 — Automatic Scene Collection
 
@@ -51,7 +59,11 @@ Exporting does not bundle OBS plugins, fonts, device sources, credentials, or we
 4. Select **Screen size** to use the active OBS profile's base canvas, or enter a **Custom size**.
 5. Click **Run**. The selected collection JSON is overwritten and a backup is created automatically. Click **Undo** to restore the last resize during the current app session.
 
-Auto Resizer can write while OBS is open. If the edited collection is already active, switch to another collection and back, or restart OBS, so OBS reloads the changed file. Backups are stored under `.obs-overlay-resizer-backups` beside OBS's scene-collection folder. Collection scope changes every scene-item transform and updates the collection canvas. Scene and Source scopes change only the selected scene-item transforms and preserve the existing canvas. Automatic import resizing also traverses only real OBS scene/group items, so similarly named fields inside custom plugin settings remain untouched. Items with active OBS bounds modes resize their bounds without also multiplying source scale; unbounded items resize source scale normally.
+When the selected collection is active in an open OBS session, Auto Resizer changes scene-item transforms and video settings through OBS's live API. OBS remains open, the result is immediately visible, and Undo restores the in-memory snapshot live. The app refuses to overwrite the active JSON if live control is unavailable. Inactive collections retain the file-based atomic backup workflow under `.obs-overlay-resizer-backups`. Collection scope changes every scene/group item transform and updates the canvas. Scene and Source scopes change only matching scene-item transforms and preserve the existing canvas. Items with active OBS bounds modes resize their bounds without also multiplying source scale; unbounded items resize source scale normally.
+
+## Running tools while OBS is open
+
+OBS Studio 28 and newer includes obs-websocket. Leave **Tools → WebSocket Server Settings → Enable WebSocket server** enabled on the default local port `4455`. If authentication is enabled, the app asks for the password only when live control is needed and keeps it in memory only until the app closes. Method 1 and Export Overlay are always safe while OBS is open. Methods 2 and 3 activate their imported collection live after device setup. Auto Resizer uses live requests for the active collection and file backups only for inactive collections. If the server is disabled, uses a non-default port, or is unavailable, imports remain installed but cannot be selected automatically; the active collection is never overwritten as a fallback.
 ## Safety behavior
 
 - Reads only JSON files that look like OBS scene collections.
@@ -69,6 +81,7 @@ Auto Resizer can write while OBS is open. If the edited collection is already ac
 - Device setup requires the exact OBS source ID and copies only recognized device-selector values.
 - Scene/source resize scopes preserve the global collection canvas; only Collection scope changes it.
 - Auto Resizer writes only after creating an undo backup; Undo restores the most recent resize made in the current application session.
+- Live OBS passwords are never saved in settings or written to logs.
 
 ## Run from source
 
