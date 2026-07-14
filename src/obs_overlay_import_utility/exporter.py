@@ -5,7 +5,10 @@ from __future__ import annotations
 import configparser
 import copy
 import os
+import re
 import shutil
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
@@ -15,9 +18,29 @@ from .models import PathReference, UtilityError
 from .paths import looks_absolute_local_path, normalized_output_path
 
 
-IMAGE_EXTENSIONS = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"})
-VIDEO_EXTENSIONS = frozenset({".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ts", ".webm"})
-AUDIO_EXTENSIONS = frozenset({".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"})
+IMAGE_EXTENSIONS = frozenset(
+    {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"}
+)
+VIDEO_EXTENSIONS = frozenset(
+    {".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ts", ".webm"}
+)
+AUDIO_EXTENSIONS = frozenset(
+    {".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"}
+)
+
+MAX_BROWSER_FILES = 10_000
+MAX_BROWSER_BYTES = 2 * 1024 * 1024 * 1024
+INVALID_WINDOWS_NAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
 
 
 @dataclass
@@ -68,7 +91,11 @@ def active_obs_scene_collection(obs_scenes_directory: Path) -> Path | None:
         filename = config.get("Basic", "SceneCollectionFile", fallback="").strip()
     except (configparser.Error, OSError, UnicodeError):
         return None
-    if not filename or Path(filename).name != filename or Path(filename).suffix.casefold() != ".json":
+    if (
+        not filename
+        or Path(filename).name != filename
+        or Path(filename).suffix.casefold() != ".json"
+    ):
         return None
     candidate = (scenes_directory / filename).resolve()
     try:
@@ -78,15 +105,21 @@ def active_obs_scene_collection(obs_scenes_directory: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _iter_local_path_references(value: Any, *, source_name: str = "Scene collection") -> Iterator[PathReference]:
+def _iter_local_path_references(
+    value: Any, *, source_name: str = "Scene collection"
+) -> Iterator[PathReference]:
     """Find every absolute local path in OBS or plugin source/filter data."""
     if isinstance(value, dict):
-        current_source = value.get("name") if isinstance(value.get("name"), str) else source_name
+        current_source = (
+            value.get("name") if isinstance(value.get("name"), str) else source_name
+        )
         for key, child in value.items():
             if isinstance(child, str) and looks_absolute_local_path(child):
                 yield PathReference(value, key, key, child, current_source)
             elif isinstance(child, (dict, list)):
-                yield from _iter_local_path_references(child, source_name=current_source)
+                yield from _iter_local_path_references(
+                    child, source_name=current_source
+                )
     elif isinstance(value, list):
         for position, child in enumerate(value):
             if isinstance(child, str) and looks_absolute_local_path(child):
@@ -107,7 +140,14 @@ def _resource_folder(path: Path) -> str:
 
 
 def _next_package_directory(destination: Path, collection_name: str) -> Path:
-    cleaned = " ".join(collection_name.split()).strip().rstrip(". ") or "OBS Overlay"
+    cleaned = (
+        INVALID_WINDOWS_NAME_RE.sub("_", " ".join(collection_name.split()))
+        .strip()
+        .rstrip(". ")
+    )
+    cleaned = cleaned or "OBS Overlay"
+    if cleaned.upper() in WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
     candidate = destination / cleaned
     number = 1
     while candidate.exists():
@@ -126,30 +166,114 @@ def _next_browser_directory(parent: Path, source_directory: Path) -> Path:
     return candidate
 
 
-def _copy_browser_overlay_directory(
-    source_file: Path, package_path: Path, copied_paths: dict[Path, Path]
-) -> tuple[Path, int]:
-    """Copy a local browser overlay directory so relative web dependencies remain valid."""
-    source_root = source_file.parent.resolve()
-    target_root = _next_browser_directory(package_path / "browser overlays", source_root)
-    copied = 0
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = path.lstat().st_file_attributes
+    except (AttributeError, OSError):
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _unsafe_browser_roots() -> set[Path]:
+    home = Path.home().resolve()
+    roots = {
+        Path(home.anchor).resolve(),
+        home,
+        home.parent,
+        *(
+            home / name
+            for name in (
+                "Desktop",
+                "Documents",
+                "Downloads",
+                "Music",
+                "Pictures",
+                "Videos",
+            )
+        ),
+    }
+    for variable in (
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "SYSTEMROOT",
+        "USERPROFILE",
+    ):
+        value = os.environ.get(variable)
+        if value:
+            roots.add(Path(value).expanduser().resolve())
+    return roots
+
+
+def _browser_inventory(source_root: Path, export_destination: Path) -> list[Path]:
+    if source_root in _unsafe_browser_roots():
+        raise UtilityError(
+            "The browser source is stored in a broad personal or system folder. "
+            "Move it into a dedicated overlay project folder before exporting."
+        )
+    if _is_within(export_destination, source_root):
+        raise UtilityError(
+            "The export destination cannot be inside the browser overlay folder."
+        )
+
+    inventory: list[Path] = []
+    total_bytes = 0
     for current, directories, files in os.walk(source_root, followlinks=False):
-        directories[:] = [name for name in directories if not Path(current, name).is_symlink()]
-        relative_directory = Path(current).relative_to(source_root)
-        destination_directory = target_root / relative_directory
-        destination_directory.mkdir(parents=True, exist_ok=True)
+        directories[:] = [
+            name
+            for name in directories
+            if not _is_link_or_reparse_point(Path(current, name))
+        ]
         for filename in files:
             source = Path(current, filename)
-            if source.is_symlink():
+            if _is_link_or_reparse_point(source):
                 continue
-            destination = destination_directory / filename
-            shutil.copy2(source, destination)
-            copied_paths[source.resolve()] = destination.resolve()
-            copied += 1
+            total_bytes += source.stat().st_size
+            inventory.append(source)
+            if len(inventory) > MAX_BROWSER_FILES:
+                raise UtilityError(
+                    f"The browser overlay contains more than {MAX_BROWSER_FILES:,} files."
+                )
+            if total_bytes > MAX_BROWSER_BYTES:
+                raise UtilityError(
+                    "The browser overlay is larger than the safe 2 GB export limit."
+                )
+    return inventory
+
+
+def _copy_browser_overlay_directory(
+    source_file: Path,
+    package_path: Path,
+    export_destination: Path,
+    copied_paths: dict[Path, Path],
+) -> tuple[Path, int]:
+    """Copy a bounded local browser project while preserving its relative structure."""
+    source_root = source_file.parent.resolve()
+    inventory = _browser_inventory(source_root, export_destination)
+    target_root = _next_browser_directory(
+        package_path / "browser overlays", source_root
+    )
+    for source in inventory:
+        destination = target_root / source.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied_paths[source.resolve()] = destination.resolve()
     target_file = copied_paths.get(source_file.resolve())
     if target_file is None:
         raise UtilityError("Could not include the local browser overlay file.")
-    return target_file, copied
+    return target_file, len(inventory)
+
 
 def _next_asset_path(folder: Path, source: Path) -> Path:
     candidate = folder / source.name
@@ -161,8 +285,9 @@ def _next_asset_path(folder: Path, source: Path) -> Path:
 
 
 def export_scene_collection(collection_path: Path, destination: Path) -> ExportResult:
-    """Copy an OBS collection and all directly referenced local files into one pack."""
+    """Copy an OBS collection and its bounded local resources into one portable pack."""
     result = ExportResult()
+    staging_path: Path | None = None
     try:
         collection_path = collection_path.expanduser().resolve()
         destination = destination.expanduser().resolve()
@@ -172,11 +297,19 @@ def export_scene_collection(collection_path: Path, destination: Path) -> ExportR
             raise UtilityError("Choose a valid export destination folder.")
         original = load_json(collection_path)
         if not is_obs_scene_collection_data(original):
-            raise UtilityError("The selected JSON is not a recognized OBS scene collection.")
+            raise UtilityError(
+                "The selected JSON is not a recognized OBS scene collection."
+            )
 
-        collection_name = original.get("name") if isinstance(original.get("name"), str) else collection_path.stem
+        collection_name = (
+            original.get("name")
+            if isinstance(original.get("name"), str)
+            else collection_path.stem
+        )
         package_path = _next_package_directory(destination, collection_name)
-        package_path.mkdir(parents=True)
+        staging_path = Path(
+            tempfile.mkdtemp(prefix=f".{package_path.name}-", dir=destination)
+        )
         converted = copy.deepcopy(original)
         copied_paths: dict[Path, Path] = {}
 
@@ -184,26 +317,48 @@ def export_scene_collection(collection_path: Path, destination: Path) -> ExportR
             source = Path(normalized_output_path(reference.value)).resolve()
             result.source_references += 1
             if not source.is_file():
-                result.skipped_references.append(f"{reference.source_name}: {reference.value}")
+                result.skipped_references.append(
+                    f"{reference.source_name}: {reference.value}"
+                )
                 continue
             target = copied_paths.get(source)
             if target is None and source.suffix.casefold() in {".htm", ".html"}:
-                target, copied = _copy_browser_overlay_directory(source, package_path, copied_paths)
+                target, copied = _copy_browser_overlay_directory(
+                    source,
+                    staging_path,
+                    destination,
+                    copied_paths,
+                )
                 result.copied_files += copied
             elif target is None:
-                target_folder = package_path / _resource_folder(source)
+                target_folder = staging_path / _resource_folder(source)
                 target_folder.mkdir(parents=True, exist_ok=True)
                 target = _next_asset_path(target_folder, source)
                 shutil.copy2(source, target)
                 copied_paths[source] = target
                 result.copied_files += 1
-            reference.parent[reference.key] = str(target.resolve())
+            published_target = package_path / target.relative_to(staging_path)
+            reference.parent[reference.key] = str(published_target.resolve())
 
-        exported_collection = package_path / f"{collection_path.stem}.json"
-        atomic_write_json(exported_collection, converted)
+        collection_filename = f"{collection_path.stem}.json"
+        atomic_write_json(staging_path / collection_filename, converted)
+        if package_path.exists():
+            raise UtilityError(
+                "Another export created the selected package folder. Run the export again."
+            )
+        os.replace(staging_path, package_path)
+        staging_path = None
+
         result.success = True
         result.package_path = package_path
-        result.collection_path = exported_collection
+        result.collection_path = package_path / collection_filename
     except (OSError, UtilityError) as exc:
-        result.error = str(exc) if isinstance(exc, UtilityError) else f"Could not export the scene collection: {exc}"
+        result.error = (
+            str(exc)
+            if isinstance(exc, UtilityError)
+            else f"Could not export the scene collection: {exc}"
+        )
+    finally:
+        if staging_path is not None:
+            shutil.rmtree(staging_path, ignore_errors=True)
     return result

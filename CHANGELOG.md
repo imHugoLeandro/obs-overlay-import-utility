@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed browser-overlay exports so broad personal/system roots, recursively nested export destinations, links/reparse points, and projects beyond safe file/size limits are rejected before copying; failed exports now leave no partial package.
+- Fixed the device wizard to require exact OBS source-type compatibility and merge only device-selector fields without replacing imported source configuration.
+- Fixed Scene and Source resize scopes so they preserve the global collection canvas.
+- Fixed automatic import resizing so arbitrary custom plugin settings named `pos`, `scale`, or `bounds` are never transformed.
 - Added enabled-by-default post-import device setup for Streamlabs and Automatic imports, mapping camera/audio/display/custom device sources to compatible locally configured OBS sources.
 - Added full local browser-overlay packing: HTML browser sources now retain their recursive dependency folders on export.
 - Added Auto Resizer with collection, scene, and source scopes; Stretch or Scale Ratio modes; active-profile or custom target sizes; in-window logs; and undoable overwrite backups.

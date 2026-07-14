@@ -23,7 +23,7 @@ The original collection is never changed. **Advanced options** is collapsed by d
 2. Choose the Streamlabs `.overlay` package.
 3. Click **Run** in the same Import Overlay window.
 
-The utility extracts every package file beside the archive into a new `name overlay` folder, recursively matches asset references by exact relative path and then by a unique filename, converts supported Streamlabs Desktop sources, and writes a new collection into OBS's scenes folder. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them to matching sources already configured in local OBS collections. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
+The utility extracts every package file beside the archive into a new `name overlay` folder, recursively matches asset references by exact relative path and then by a unique filename, converts supported Streamlabs Desktop sources, and writes a new collection into OBS's scenes folder. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them only to locally configured sources with the same OBS source ID. The wizard copies device-selector fields while preserving the imported resolution, FPS, filters, source type, and other settings. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. Restart OBS if it was already open, then select the new collection from **Scene Collection**.
 
 ### Method 3 — Automatic Scene Collection
 
@@ -40,7 +40,7 @@ The utility recursively searches the selected folder for all supported pack file
 3. Choose an export destination folder.
 4. Click **Run**.
 
-The utility creates a new package folder named after the collection. It copies direct local files into **images**, **videos**, **audio**, and **other resources**, then writes an OBS-compatible JSON with the copied paths. A local HTML browser overlay is exported as a complete recursive **browser overlays** folder so its relative CSS, JavaScript, fonts, images, and other dependencies remain intact. It traverses the full collection JSON, including nested plugin-source and filter settings, so existing absolute local files with arbitrary extensions are preserved rather than limiting export to built-in OBS source types. Missing local paths are reported in the console for manual review.
+The utility creates a new package folder named after the collection. It copies direct local files into **images**, **videos**, **audio**, and **other resources**, then writes an OBS-compatible JSON with the copied paths. A local HTML browser overlay is exported as a complete recursive **browser overlays** folder so its relative CSS, JavaScript, fonts, images, and other dependencies remain intact. Browser projects are preflighted with a 10,000-file and 2 GB limit; drive roots, broad personal/system folders, links/reparse points, and export destinations inside the browser project are rejected. The package is assembled in a temporary staging folder and published only after its JSON and resources are complete. It traverses the full collection JSON, including nested plugin-source and filter settings, so existing absolute local files with arbitrary extensions are preserved rather than limiting export to built-in OBS source types. Missing local paths are reported in the console for manual review.
 
 Exporting does not bundle OBS plugins, fonts, device sources, credentials, or web-hosted resources; those must be installed or configured on the destination computer.
 ## Auto Resizer workflow
@@ -51,7 +51,7 @@ Exporting does not bundle OBS plugins, fonts, device sources, credentials, or we
 4. Select **Screen size** to use the active OBS profile's base canvas, or enter a **Custom size**.
 5. Click **Run**. The selected collection JSON is overwritten and a backup is created automatically. Click **Undo** to restore the last resize during the current app session.
 
-Auto Resizer can write while OBS is open. If the edited collection is already active, switch to another collection and back, or restart OBS, so OBS reloads the changed file. Backups are stored under `.obs-overlay-resizer-backups` beside OBS's scene-collection folder. Resizing changes scene-item transforms and the collection canvas only; it preserves sources, filters, plugin settings, and file paths.
+Auto Resizer can write while OBS is open. If the edited collection is already active, switch to another collection and back, or restart OBS, so OBS reloads the changed file. Backups are stored under `.obs-overlay-resizer-backups` beside OBS's scene-collection folder. Collection scope changes every scene-item transform and updates the collection canvas. Scene and Source scopes change only the selected scene-item transforms and preserve the existing canvas. Automatic import resizing also traverses only real OBS scene/group items, so similarly named fields inside custom plugin settings remain untouched.
 ## Safety behavior
 
 - Reads only JSON files that look like OBS scene collections.
@@ -65,6 +65,9 @@ Auto Resizer can write while OBS is open. If the edited collection is already ac
 - Validates Streamlabs ZIP paths, duplicate archive entries, symbolic links, and total extracted size before extraction.
 - Streamlabs and automatic imports use a new OBS collection name and never overwrite an existing collection file.
 - Export creates a new package folder and never edits the source OBS collection or overwrites an earlier package.
+- Browser-overlay export is bounded, rejects broad or recursively nested roots, skips links and Windows reparse points, and leaves no partial package after failure.
+- Device setup requires the exact OBS source ID and copies only recognized device-selector values.
+- Scene/source resize scopes preserve the global collection canvas; only Collection scope changes it.
 - Auto Resizer writes only after creating an undo backup; Undo restores the most recent resize made in the current application session.
 
 ## Run from source
@@ -103,7 +106,7 @@ Before publishing, replace `YOUR-GITHUB-USERNAME` in `pyproject.toml` with your 
 - The application fixes local file references; it does not install fonts or OBS plugins.
 - A public executable is unsigned, so Windows SmartScreen may show an unrecognized-app warning until the project gains reputation or the executable is code-signed.
 - Customers should keep the extracted overlay folder in place after importing because OBS continues to load media from those paths.
-- Streamlabs webcam/device sources and Streamlabs service labels are not portable; the import result lists sources that need manual OBS setup.
+- Streamlabs webcam/device IDs and service labels are not portable. The setup wizard can reuse matching exact-type devices from local OBS collections; unmatched sources still need manual OBS configuration.
 
 ## License
 

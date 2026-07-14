@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .constants import GENERATED_JSON_RE, SUPPORTED_EXTENSIONS, TRACKING_FILENAME
-from .models import AmbiguousMatch, ConversionResult, FileIndex, PathReference, UtilityError
+from .models import (
+    AmbiguousMatch,
+    ConversionResult,
+    FileIndex,
+    PathReference,
+    UtilityError,
+)
 from .paths import (
     find_file_match,
     is_local_media_path,
@@ -54,7 +60,10 @@ def should_skip_json(path: Path) -> bool:
     return (
         name.casefold() == TRACKING_FILENAME.casefold()
         or bool(GENERATED_JSON_RE.search(name))
-        or any(part.casefold() in {".git", ".venv", ".venv-build", "build", "dist"} for part in path.parts)
+        or any(
+            part.casefold() in {".git", ".venv", ".venv-build", "build", "dist"}
+            for part in path.parts
+        )
     )
 
 
@@ -62,7 +71,8 @@ def _prune_directories(current: str, directories: list[str]) -> None:
     directories[:] = [
         name
         for name in directories
-        if name.casefold() not in {".git", ".venv", ".venv-build", "__pycache__", "build", "dist"}
+        if name.casefold()
+        not in {".git", ".venv", ".venv-build", "__pycache__", "build", "dist"}
         and not Path(current, name).is_symlink()
     ]
 
@@ -101,16 +111,22 @@ def build_file_index(root: Path, *, case_sensitive: bool = False) -> FileIndex:
                 name_key = normalized_key(filename, case_sensitive)
                 folder_key = normalized_key(path.parent.name, case_sensitive)
                 index.by_name.setdefault(name_key, []).append(resolved)
-                index.by_folder.setdefault(folder_key, {}).setdefault(name_key, []).append(resolved)
+                index.by_folder.setdefault(folder_key, {}).setdefault(
+                    name_key, []
+                ).append(resolved)
                 index.file_count += 1
     except OSError as exc:
         raise UtilityError(f"Could not index overlay files: {exc}") from exc
     return index
 
 
-def iter_path_references(value: Any, *, source_name: str = "Scene collection") -> Iterator[PathReference]:
+def iter_path_references(
+    value: Any, *, source_name: str = "Scene collection"
+) -> Iterator[PathReference]:
     if isinstance(value, dict):
-        current_source = value.get("name") if isinstance(value.get("name"), str) else source_name
+        current_source = (
+            value.get("name") if isinstance(value.get("name"), str) else source_name
+        )
         for key, child in value.items():
             if isinstance(child, str) and is_local_media_path(child):
                 yield PathReference(value, key, key, child, current_source)
@@ -134,7 +150,9 @@ def next_output_path(collection_path: Path) -> Path:
         return base
     number = 2
     while True:
-        candidate = collection_path.with_name(f"{collection_path.stem}_ImportReady_{number}.json")
+        candidate = collection_path.with_name(
+            f"{collection_path.stem}_ImportReady_{number}.json"
+        )
         if not candidate.exists():
             return candidate
         number += 1
@@ -144,7 +162,13 @@ def atomic_write_json(path: Path, data: Any) -> None:
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", newline="\n", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+            "w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
         ) as handle:
             temporary_name = handle.name
             json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -178,20 +202,29 @@ def next_obs_collection_path(directory: Path, base_name: str) -> tuple[str, Path
     return candidate.stem, candidate
 
 
-def install_scene_collection(collection_path: Path, obs_scenes_directory: Path) -> tuple[str, Path]:
+def install_scene_collection(
+    collection_path: Path, obs_scenes_directory: Path
+) -> tuple[str, Path]:
     """Copy a validated OBS collection into OBS using a unique collection name."""
     collection_path = collection_path.expanduser().resolve()
     data = load_json(collection_path)
     if not is_obs_scene_collection_data(data):
-        raise UtilityError("The converted file is not a recognized OBS scene collection.")
-    base_name = data.get("name") if isinstance(data.get("name"), str) else collection_path.stem
+        raise UtilityError(
+            "The converted file is not a recognized OBS scene collection."
+        )
+    base_name = (
+        data.get("name") if isinstance(data.get("name"), str) else collection_path.stem
+    )
     obs_scenes_directory = obs_scenes_directory.expanduser().resolve()
     obs_scenes_directory.mkdir(parents=True, exist_ok=True)
-    collection_name, destination = next_obs_collection_path(obs_scenes_directory, base_name)
+    collection_name, destination = next_obs_collection_path(
+        obs_scenes_directory, base_name
+    )
     installed = copy.deepcopy(data)
     installed["name"] = collection_name
     atomic_write_json(destination, installed)
     return collection_name, destination
+
 
 def resize_scene_collection(data: Any, width: int, height: int) -> bool:
     """Resize an OBS collection's canvas and absolute scene-item transforms.
@@ -201,7 +234,9 @@ def resize_scene_collection(data: Any, width: int, height: int) -> bool:
     transforms are left intact because there is no safe scale factor to apply.
     """
     if not is_obs_scene_collection_data(data):
-        raise UtilityError("The converted file is not a recognized OBS scene collection.")
+        raise UtilityError(
+            "The converted file is not a recognized OBS scene collection."
+        )
     if not (16 <= width <= 32_768 and 16 <= height <= 32_768):
         raise UtilityError("The OBS profile canvas resolution is invalid.")
 
@@ -225,23 +260,25 @@ def resize_scene_collection(data: Any, width: int, height: int) -> bool:
         if isinstance(value.get("y"), (int, float)):
             value["y"] = value["y"] * y_factor
 
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            if "scale_ref" in value:
-                value["scale_ref"] = {"x": float(width), "y": float(height)}
+    for source in data.get("sources", []):
+        if not isinstance(source, dict) or source.get("id") not in {"scene", "group"}:
+            continue
+        settings = source.get("settings")
+        items = settings.get("items") if isinstance(settings, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if "scale_ref" in item:
+                item["scale_ref"] = {"x": float(width), "y": float(height)}
             if can_scale:
-                scale_pair(value.get("pos"), scale_x, scale_y)
-                scale_pair(value.get("scale"), scale_x, scale_y)
-                scale_pair(value.get("bounds"), scale_x, scale_y)
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(data.get("sources", []))
+                scale_pair(item.get("pos"), scale_x, scale_y)
+                scale_pair(item.get("scale"), scale_x, scale_y)
+                scale_pair(item.get("bounds"), scale_x, scale_y)
     data["resolution"] = {"x": int(width), "y": int(height)}
     return can_scale
+
 
 def convert_collection(
     collection_path: Path,
@@ -259,7 +296,9 @@ def convert_collection(
             raise UtilityError("The selected scene collection no longer exists.")
         data = load_json(collection_path)
         if not is_obs_scene_collection_data(data):
-            raise UtilityError("The selected JSON is not a recognized OBS scene collection.")
+            raise UtilityError(
+                "The selected JSON is not a recognized OBS scene collection."
+            )
 
         converted = copy.deepcopy(data)
         references = list(iter_path_references(converted))
@@ -284,7 +323,11 @@ def convert_collection(
             else:
                 result.missing.append(
                     f"{reference.source_name}: {portable_filename(reference.value)}"
-                    + (f" (expected folder: {portable_parent_name(reference.value)})" if portable_parent_name(reference.value) else "")
+                    + (
+                        f" (expected folder: {portable_parent_name(reference.value)})"
+                        if portable_parent_name(reference.value)
+                        else ""
+                    )
                 )
 
         if result.ambiguous or (strict and result.missing):

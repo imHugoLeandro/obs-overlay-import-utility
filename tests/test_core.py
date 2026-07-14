@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import copy
 import sys
 import tempfile
 import unittest
@@ -51,7 +52,9 @@ class CoreTests(unittest.TestCase):
             valid = scene_data(r"C:\old\image.png")
             valid["padding"] = "x" * 12000
             (root / "collection.json").write_text(json.dumps(valid), encoding="utf-8")
-            (root / "collection_ImportReady.json").write_text(json.dumps(valid), encoding="utf-8")
+            (root / "collection_ImportReady.json").write_text(
+                json.dumps(valid), encoding="utf-8"
+            )
             (root / "metadata.json").write_text('{"name":"not OBS"}', encoding="utf-8")
             found = core.find_scene_collections(root)
             self.assertEqual(found, [(root / "collection.json").resolve()])
@@ -77,17 +80,25 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(result.changed, 3)
             self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
             converted = json.loads(result.output_path.read_text(encoding="utf-8"))
-            values = [item["value"] for item in converted["sources"][0]["settings"]["playlist"]]
+            values = [
+                item["value"]
+                for item in converted["sources"][0]["settings"]["playlist"]
+            ]
             self.assertEqual(
                 values,
-                [str((assets / name).resolve()) for name in ("image.png", "sound.ogg", "widget.html")],
+                [
+                    str((assets / name).resolve())
+                    for name in ("image.png", "sound.ogg", "widget.html")
+                ],
             )
 
     def test_missing_file_prevents_output_in_strict_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8"
+            )
             result = core.convert_collection(source, root)
             self.assertFalse(result.success)
             self.assertEqual(len(result.missing), 1)
@@ -97,7 +108,9 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\old\missing.png")), encoding="utf-8"
+            )
             result = core.convert_collection(source, root, strict=False)
             self.assertTrue(result.success)
             self.assertEqual(len(result.missing), 1)
@@ -110,7 +123,9 @@ class CoreTests(unittest.TestCase):
             (root / "one" / "same.png").write_bytes(b"1")
             (root / "two" / "same.png").write_bytes(b"2")
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\old\same.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\old\same.png")), encoding="utf-8"
+            )
             result = core.convert_collection(source, root)
             self.assertFalse(result.success)
             self.assertEqual(len(result.ambiguous), 1)
@@ -125,7 +140,9 @@ class CoreTests(unittest.TestCase):
             (expected / "same.png").write_bytes(b"1")
             (other / "same.png").write_bytes(b"2")
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\seller\media\same.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\seller\media\same.png")), encoding="utf-8"
+            )
             result = core.convert_collection(source, root)
             self.assertTrue(result.success)
             converted = json.loads(result.output_path.read_text(encoding="utf-8"))
@@ -172,7 +189,9 @@ class CoreTests(unittest.TestCase):
             root = Path(temp)
             (root / "image.png").write_bytes(b"x")
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8"
+            )
             first = core.convert_collection(source, root)
             second = core.convert_collection(source, root)
             self.assertEqual(first.output_path.name, "collection_ImportReady.json")
@@ -182,7 +201,10 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             target = root / "result.json"
-            with mock.patch("obs_overlay_import_utility.core.os.replace", side_effect=OSError("blocked")):
+            with mock.patch(
+                "obs_overlay_import_utility.core.os.replace",
+                side_effect=OSError("blocked"),
+            ):
                 with self.assertRaises(core.UtilityError):
                     core.atomic_write_json(target, {"ok": True})
             self.assertFalse(target.exists())
@@ -193,15 +215,63 @@ class CoreTests(unittest.TestCase):
             root = Path(temp)
             (root / "image.png").write_bytes(b"x")
             source = root / "collection.json"
-            source.write_text(json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8")
+            source.write_text(
+                json.dumps(scene_data(r"C:\old\image.png")), encoding="utf-8"
+            )
             real_walk = os.walk
-            with mock.patch("obs_overlay_import_utility.core.os.walk", wraps=real_walk) as walk:
+            with mock.patch(
+                "obs_overlay_import_utility.core.os.walk", wraps=real_walk
+            ) as walk:
                 result = core.convert_collection(source, root)
             self.assertTrue(result.success)
             self.assertEqual(walk.call_count, 1)
 
+    def test_resize_changes_only_obs_scene_item_transforms(self) -> None:
+        data = {
+            "name": "Plugin resize safety",
+            "current_scene": "Main",
+            "scene_order": [{"name": "Main"}],
+            "resolution": {"x": 100, "y": 100},
+            "sources": [
+                {
+                    "name": "Main",
+                    "id": "scene",
+                    "settings": {
+                        "items": [
+                            {
+                                "name": "Plugin",
+                                "pos": {"x": 10.0, "y": 20.0},
+                                "scale": {"x": 1.0, "y": 1.0},
+                                "bounds": {"x": 30.0, "y": 40.0},
+                                "scale_ref": {"x": 100.0, "y": 100.0},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "id": "custom_plugin_source",
+                    "settings": {
+                        "pos": {"x": 7, "y": 8},
+                        "scale": {"x": 9, "y": 10},
+                        "bounds": {"x": 11, "y": 12},
+                    },
+                },
+            ],
+        }
+        plugin_settings = copy.deepcopy(data["sources"][1]["settings"])
+
+        self.assertTrue(core.resize_scene_collection(data, 200, 300))
+
+        self.assertEqual(data["sources"][1]["settings"], plugin_settings)
+        item = data["sources"][0]["settings"]["items"][0]
+        self.assertEqual(item["pos"], {"x": 20.0, "y": 60.0})
+        self.assertEqual(data["resolution"], {"x": 200, "y": 300})
+
     def test_source_has_no_obs_plugin_or_embedded_binary_dependency(self) -> None:
-        source = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py"))
+        source = "\n".join(
+            path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py")
+        )
         self.assertNotIn("obspython", source.casefold())
         self.assertNotIn("base64", source.casefold())
 

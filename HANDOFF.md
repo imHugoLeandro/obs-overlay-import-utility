@@ -1,6 +1,6 @@
 # Project Handoff
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Project
 
@@ -11,11 +11,11 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ## Current state
 
 - Branch: `main`
-- Latest pushed commit: `217044c` — `Improve UI scaling theme contrast and Windows CI`
+- Latest pushed commit before these working changes: `06d91c4` — `Add device setup wizard and browser overlay packing features`
 - Working tree was clean before this handoff file was added.
 - Latest GitHub Actions test run passed: <https://github.com/imHugoLeandro/obs-overlay-import-utility/actions/runs/29268864090>
 - Local portable executable: `dist/OBS Overlay Import Utility.exe`
-- Current executable SHA-256: `85C804EDF4B940B44B560AFAAFAE02495901FD29EA5EAC3F0E7C1DFA9A5675FA`
+- Current executable SHA-256: `02D31D860D2F186E6CCFD74A2EFF09807B87E98E3CBE23E0CAFE8A548D67867B`
 - `dist/` is intentionally Git-ignored. Release executables should be built locally or through GitHub Actions.
 
 ## Implemented features
@@ -83,8 +83,8 @@ docs/GITHUB_SYNC.md                          GitHub usage instructions
 
 The latest local verification completed successfully:
 
-- 26 unit tests passed.
-- 10 source/test files passed AST parsing.
+- 36 unit tests passed.
+- 21 source/test files passed AST parsing.
 - UI construction and navigation passed.
 - Windows default, white, and dark themes passed switching tests.
 - UI controls were measured at 75%, 100%, and 150%.
@@ -141,15 +141,15 @@ When changing Import Overlay or Export Overlay, treat the complete OBS collectio
 ## Device setup and browser-packer rules for future AI work
 
 - Methods 2 and 3 expose an enabled-by-default device setup wizard, but it must appear only after a successful import whose resulting collection contains device-like sources.
-- Do not invent operating-system device IDs. The wizard maps imported sources to compatible device sources already configured in the user's local OBS collections, copying their verified OBS settings. If there is no match, allow the user to keep the imported setting, disable the source, or configure it later in OBS.
-- Continue to detect built-in camera/audio/display/capture sources and custom/plugin sources that contain device, monitor, or window settings. Preserve filters and every other source field when applying a device choice.
-- Full browser-overlay export must retain a local HTML file's recursive folder structure so relative HTML, CSS, JavaScript, fonts, images, and media links remain valid. Do not follow symlinks during this copy.
+- Do not invent operating-system device IDs. Offer only local candidates whose OBS source ID exactly matches the imported source, and copy only recognized device-selector fields. Never replace the source ID or overwrite resolution, FPS, filters, or complete settings dictionaries. If there is no match, allow the user to keep the imported setting, disable the source, or configure it later in OBS.
+- Continue to detect built-in camera/audio/display/capture sources and custom/plugin sources that contain recognized device, monitor, display, or window selector settings. Preserve filters and every other source field when applying a device choice.
+- Full browser-overlay export must retain a local HTML file's recursive folder structure so relative HTML, CSS, JavaScript, fonts, images, and media links remain valid. Reject drive roots and broad personal/system folders, reject export destinations inside the browser project, cap the project at 10,000 files and 2 GB, skip symlinks and Windows reparse points, and publish from staging only after the complete pack succeeds.
 ## Auto Resizer rules for future AI work
 
 - Auto Resizer intentionally overwrites the selected OBS collection because the user explicitly requested live-compatible editing. Always create and atomically save an undo backup before writing the new collection.
-- Keep resize scopes clear: collection changes all scene-item transforms, scene changes only one scene's item transforms, and source changes each matching source item. The collection canvas is updated to the selected target size.
-- Stretch uses independent X/Y factors. Scale Ratio uses a uniform fit factor and centers the result in the target canvas.
-- Preserve all non-transform data exactly, including unknown plugin source settings, filters, resource paths, source IDs, and metadata. Do not attempt to resize plugin internals unless their transform is an OBS scene item.
+- Keep resize scopes clear: Collection changes all scene-item transforms and updates the canvas; Scene and Source change only selected scene-item transforms and preserve the current canvas.
+- Stretch uses independent X/Y factors. Scale Ratio uses a uniform fit factor and centers the selected layout in the requested target size.
+- Preserve all non-transform data exactly, including unknown plugin source settings, filters, resource paths, source IDs, and metadata. Automatic import resizing and Auto Resizer must traverse only the `items` arrays of OBS `scene` and `group` sources; never recursively resize arbitrary plugin dictionaries.
 - Do not silently delete backups. Only remove the backup after a successful explicit Undo restore.
 ## Safe continuation checklist
 
