@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .core import atomic_write_json, is_obs_scene_collection_data, load_json
+from .core import (
+    atomic_write_json,
+    is_obs_scene_collection_data,
+    load_json,
+    resize_scene_item_transform,
+)
 from .models import UtilityError
 
 
@@ -34,6 +39,15 @@ class ResizeResult:
     target_height: int = 0
     canvas_changed: bool = False
     error: str | None = None
+@dataclass(frozen=True)
+class SourceChoice:
+    """One UUID-backed source option shown by Auto Resizer."""
+
+    label: str
+    name: str
+    uuid: str
+
+
 
 
 def scene_names(data: Any) -> list[str]:
@@ -49,17 +63,26 @@ def scene_names(data: Any) -> list[str]:
     ]
 
 
-def source_names(data: Any) -> list[str]:
-    """Return non-scene source names that can appear in scene item transforms."""
+def source_choices(data: Any) -> list[SourceChoice]:
+    """Return UUID-backed non-scene sources with unambiguous display labels."""
     if not is_obs_scene_collection_data(data):
         return []
-    return [
-        source["name"]
-        for source in data.get("sources", [])
-        if isinstance(source, dict)
-        and source.get("id") != "scene"
-        and isinstance(source.get("name"), str)
-    ]
+    choices: list[SourceChoice] = []
+    for source in data.get("sources", []):
+        if not isinstance(source, dict) or source.get("id") == "scene":
+            continue
+        name = source.get("name")
+        source_uuid = source.get("uuid")
+        if not isinstance(name, str) or not isinstance(source_uuid, str) or not source_uuid:
+            continue
+        choices.append(
+            SourceChoice(
+                label=f"{name} ({source_uuid})",
+                name=name,
+                uuid=source_uuid,
+            )
+        )
+    return choices
 
 
 def _canvas(data: dict[str, Any]) -> tuple[int, int]:
@@ -96,36 +119,6 @@ def _scene_sources(
     return matching
 
 
-def _scale_pair(
-    value: Any,
-    factor_x: float,
-    factor_y: float,
-    offset_x: float = 0.0,
-    offset_y: float = 0.0,
-) -> None:
-    if not isinstance(value, dict):
-        return
-    if isinstance(value.get("x"), (int, float)):
-        value["x"] = value["x"] * factor_x + offset_x
-    if isinstance(value.get("y"), (int, float)):
-        value["y"] = value["y"] * factor_y + offset_y
-
-
-def _resize_item(
-    item: dict[str, Any],
-    factor_x: float,
-    factor_y: float,
-    offset_x: float,
-    offset_y: float,
-    target_width: int,
-    target_height: int,
-) -> None:
-    _scale_pair(item.get("pos"), factor_x, factor_y, offset_x, offset_y)
-    _scale_pair(item.get("scale"), factor_x, factor_y)
-    _scale_pair(item.get("bounds"), factor_x, factor_y)
-    item["scale_ref"] = {"x": float(target_width), "y": float(target_height)}
-
-
 def _backup_path(collection_path: Path) -> Path:
     directory = collection_path.parent / ".obs-overlay-resizer-backups"
     directory.mkdir(parents=True, exist_ok=True)
@@ -138,6 +131,7 @@ def resize_collection(
     *,
     scope: str,
     selected_name: str | None,
+    selected_uuid: str | None,
     mode: str,
     target_width: int,
     target_height: int,
@@ -154,8 +148,10 @@ def resize_collection(
             )
         if mode not in {MODE_STRETCH, MODE_SCALE_RATIO}:
             raise UtilityError("Choose Stretch or Scale Ratio.")
-        if scope != SCOPE_COLLECTION and not selected_name:
-            raise UtilityError("Choose the scene or source to resize.")
+        if scope == SCOPE_SCENE and not selected_name:
+            raise UtilityError("Choose the scene to resize.")
+        if scope == SCOPE_SOURCE and not selected_uuid:
+            raise UtilityError("Choose a UUID-backed source to resize.")
         _valid_target(target_width, target_height)
         original = load_json(collection_path)
         if not is_obs_scene_collection_data(original):
@@ -183,7 +179,7 @@ def resize_collection(
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if scope == SCOPE_SOURCE and item.get("name") != selected_name:
+                if scope == SCOPE_SOURCE and item.get("source_uuid") != selected_uuid:
                     continue
                 reference_width = (
                     target_width if scope == SCOPE_COLLECTION else source_width
@@ -191,14 +187,14 @@ def resize_collection(
                 reference_height = (
                     target_height if scope == SCOPE_COLLECTION else source_height
                 )
-                _resize_item(
+                resize_scene_item_transform(
                     item,
                     factor_x,
                     factor_y,
-                    offset_x,
-                    offset_y,
                     reference_width,
                     reference_height,
+                    offset_x=offset_x,
+                    offset_y=offset_y,
                 )
                 result.changed_items += 1
 

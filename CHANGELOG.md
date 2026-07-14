@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Made Streamlabs installation transactional: extracted resources and the OBS collection now publish together, with rollback on collection-publish failure.
+- Hardened Streamlabs archives with Windows-path normalization, entry/per-file/total limits, compression-ratio checks, encrypted/special-file rejection, duplicate detection, and free-space preflight.
+- Added recursive resource relinking for Streamlabs custom/plugin source and filter settings while preserving remote URLs.
+- Added a read-only export inventory and explicit confirmation window showing files, categories, sizes, browser dependencies, missing references, and the final Windows-safe package path.
+- Made Auto Resizer source selection UUID-backed and labeled `Source Name (UUID)` so duplicate names resize only the selected source.
+- Fixed OBS bounds-aware resizing so active bounds and source scale are not multiplied together.
+- Improved the device wizard with explicit read errors, modal behavior, fixed actions, scrolling, and large-list support.
+- Removed duplicate resize helpers and added failure-oriented tests for rollback, unsafe archives, disk exhaustion, custom resources, inventory, invalid device collections, and Windows names.
 
 - Fixed browser-overlay exports so broad personal/system roots, recursively nested export destinations, links/reparse points, and projects beyond safe file/size limits are rejected before copying; failed exports now leave no partial package.
 - Fixed the device wizard to require exact OBS source-type compatibility and merge only device-selector fields without replacing imported source configuration.

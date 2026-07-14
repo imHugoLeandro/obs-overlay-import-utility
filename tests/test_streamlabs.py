@@ -6,10 +6,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from obs_overlay_import_utility import streamlabs  # noqa: E402
 from obs_overlay_import_utility.streamlabs import import_streamlabs_overlay  # noqa: E402
 
 
@@ -130,5 +133,123 @@ class StreamlabsImportTests(unittest.TestCase):
             self.assertFalse((root / "outside.txt").exists())
 
 
+    def test_rejects_backslash_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "Unsafe.overlay"
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("..\\outside.txt", "nope")
+                archive.writestr("config.json", json.dumps(sample_config()))
+            result = import_streamlabs_overlay(package, root / "scenes")
+            self.assertFalse(result.success)
+            self.assertIn("unsafe file path", result.error)
+            self.assertFalse((root / "outside.txt").exists())
+
+    def test_rejects_archive_entry_and_member_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = self._write_package(root)
+            with mock.patch.object(streamlabs, "MAX_ARCHIVE_FILES", 1):
+                entry_result = import_streamlabs_overlay(package, root / "entry-scenes")
+            with mock.patch.object(streamlabs, "MAX_ARCHIVE_MEMBER_SIZE", 1):
+                size_result = import_streamlabs_overlay(package, root / "size-scenes")
+            self.assertFalse(entry_result.success)
+            self.assertIn("more than 1 entries", entry_result.error)
+            self.assertFalse(size_result.success)
+            self.assertIn("too large", size_result.error)
+
+    def test_rejects_unsafe_compression_ratio_and_low_disk_space(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "Compressed.overlay"
+            with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("config.json", json.dumps(sample_config()) + " " * 4096)
+            with (
+                mock.patch.object(streamlabs, "MIN_RATIO_CHECK_SIZE", 1),
+                mock.patch.object(streamlabs, "MAX_COMPRESSION_RATIO", 1),
+            ):
+                ratio_result = import_streamlabs_overlay(package, root / "ratio-scenes")
+            with mock.patch.object(
+                streamlabs.shutil, "disk_usage", return_value=SimpleNamespace(free=0)
+            ):
+                disk_result = import_streamlabs_overlay(package, root / "disk-scenes")
+            self.assertFalse(ratio_result.success)
+            self.assertIn("compression ratio", ratio_result.error)
+            self.assertFalse(disk_result.success)
+            self.assertIn("free disk space", disk_result.error)
+
+    def test_collection_publish_failure_rolls_back_extracted_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = self._write_package(root)
+            real_replace = streamlabs.os.replace
+
+            def fail_collection_publish(source: object, destination: object) -> None:
+                if str(source).endswith(".pending"):
+                    raise OSError("blocked collection publish")
+                real_replace(source, destination)
+
+            with mock.patch.object(
+                streamlabs.os, "replace", side_effect=fail_collection_publish
+            ):
+                result = import_streamlabs_overlay(package, scenes)
+
+            self.assertFalse(result.success)
+            self.assertIn("blocked collection publish", result.error)
+            self.assertFalse((root / "Demo overlay").exists())
+            self.assertEqual(list(scenes.glob("*.json")), [])
+            self.assertEqual(list(scenes.glob("*.pending")), [])
+
+    def test_recursively_relinks_custom_source_and_filter_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "Custom.overlay"
+            config = sample_config()
+            custom = {
+                "name": "Plugin widget",
+                "content": {
+                    "nodeType": "CustomNode",
+                    "sourceId": "vendor.plugin.source",
+                    "settings": {
+                        "nested": [{"asset": "assets/widget.dat"}],
+                        "remote": "https://example.com/widget.dat",
+                    },
+                },
+                "filters": [
+                    {
+                        "name": "Plugin filter",
+                        "type": "vendor.plugin.filter",
+                        "settings": {"nested": {"lut": "assets/filter.dat"}},
+                    }
+                ],
+            }
+            config["scenes"]["items"][0]["slots"]["items"].append(custom)
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("background.png", b"image")
+                archive.writestr("assets/widget.dat", b"widget")
+                archive.writestr("assets/filter.dat", b"filter")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            source = next(
+                item for item in converted["sources"] if item["id"] == "vendor.plugin.source"
+            )
+            extracted = root / "Custom overlay" / "assets"
+            self.assertEqual(
+                source["settings"]["nested"][0]["asset"],
+                str((extracted / "widget.dat").resolve()),
+            )
+            self.assertEqual(
+                source["settings"]["remote"], "https://example.com/widget.dat"
+            )
+            self.assertEqual(
+                source["filters"][0]["settings"]["nested"]["lut"],
+                str((extracted / "filter.dat").resolve()),
+            )
 if __name__ == "__main__":
     unittest.main()

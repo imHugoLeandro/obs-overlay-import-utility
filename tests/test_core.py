@@ -268,6 +268,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(item["pos"], {"x": 20.0, "y": 60.0})
         self.assertEqual(data["resolution"], {"x": 200, "y": 300})
 
+    def test_resize_scales_active_bounds_instead_of_source_scale(self) -> None:
+        data = {
+            "name": "Bounded", "current_scene": "Main",
+            "scene_order": [{"name": "Main"}], "resolution": {"x": 100, "y": 100},
+            "sources": [{"name": "Main", "id": "scene", "settings": {"items": [{
+                "name": "Bounded source", "bounds_type": 2,
+                "pos": {"x": 10.0, "y": 20.0}, "scale": {"x": 1.5, "y": 1.25},
+                "bounds": {"x": 30.0, "y": 40.0},
+            }]}}],
+        }
+        self.assertTrue(core.resize_scene_collection(data, 200, 300))
+        item = data["sources"][0]["settings"]["items"][0]
+        self.assertEqual(item["pos"], {"x": 20.0, "y": 60.0})
+        self.assertEqual(item["scale"], {"x": 1.5, "y": 1.25})
+        self.assertEqual(item["bounds"], {"x": 60.0, "y": 120.0})
     def test_source_has_no_obs_plugin_or_embedded_binary_dependency(self) -> None:
         source = "\n".join(
             path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py")

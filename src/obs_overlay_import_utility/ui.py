@@ -25,6 +25,8 @@ from .device_setup import (
 )
 from .exporter import (
     ExportResult,
+    ExportInventory,
+    build_export_inventory,
     active_obs_scene_collection,
     export_scene_collection,
     list_obs_scene_collections,
@@ -40,7 +42,7 @@ from .resizer import (
     ResizeResult,
     resize_collection,
     scene_names,
-    source_names,
+    source_choices,
     undo_resize,
 )
 from .streamlabs import (
@@ -69,6 +71,16 @@ def bundled_asset(name: str) -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "obs_overlay_import_utility" / "assets" / name
     return Path(__file__).resolve().parent / "assets" / name
+
+def format_file_size(size: int) -> str:
+    """Format a byte count for compact inventory display."""
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
 
 
 class ImportUtilityApp:
@@ -165,6 +177,7 @@ class ImportUtilityApp:
         self.export_collections: dict[str, Path] = {}
         self.export_controls: list[tk.Widget] = []
         self.resize_collections: dict[str, Path] = {}
+        self.resize_source_choices: dict[str, str] = {}
         self.resizer_controls: list[tk.Widget] = []
         self.last_resize_collection: Path | None = None
         self.last_resize_backup: Path | None = None
@@ -1348,12 +1361,19 @@ class ImportUtilityApp:
     def _maybe_open_device_setup_wizard(self, collection_path: Path | None) -> None:
         if not self.device_setup_var.get() or collection_path is None:
             return
-        requirements = collection_device_requirements(collection_path)
-        if not requirements:
+        try:
+            requirements = collection_device_requirements(collection_path)
+            if not requirements:
+                return
+            candidates = available_device_candidates(
+                self._configured_obs_scenes_directory(),
+                exclude_collection=collection_path,
+            )
+        except UtilityError as exc:
+            message = f"Device setup could not read the imported collection: {exc}"
+            self._append_import_results(f"\n\n{message}")
+            messagebox.showwarning(APP_TITLE, message, parent=self.root)
             return
-        candidates = available_device_candidates(
-            self._configured_obs_scenes_directory(), exclude_collection=collection_path
-        )
         self._open_device_setup_wizard(collection_path, requirements, candidates)
 
     def _open_device_setup_wizard(
@@ -1365,28 +1385,68 @@ class ImportUtilityApp:
         window = tk.Toplevel(self.root)
         window.title("Overlay Device Setup")
         window.transient(self.root)
-        window.minsize(620, 260)
+        window.geometry("760x520")
+        window.minsize(640, 380)
         window.columnconfigure(0, weight=1)
-        content = ttk.Frame(window, padding=18)
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(1, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(window, padding=(18, 18, 18, 8))
+        header.grid(row=0, column=0, sticky="ew")
         ttk.Label(
-            content, text="Overlay Device Setup", font=("Segoe UI", 15, "bold")
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+            header,
+            text="Overlay Device Setup",
+            font=("Segoe UI", 15, "bold"),
+        ).grid(row=0, column=0, sticky="w")
         ttk.Label(
-            content,
+            header,
             text=(
-                "Choose a compatible device source already configured in your OBS collections. "
-                "This copies its local OBS device settings into the imported collection."
+                "Choose an exact-type device source already configured in OBS. "
+                "Only device-selector values are copied; imported filters and capture settings remain intact."
             ),
-            wraplength=560,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
+            wraplength=700,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        body = ttk.Frame(window, padding=(18, 0, 18, 0))
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0)
+        canvas_background = (
+            ttk.Style().lookup("TFrame", "background") or self.root.cget("background")
+        )
+        canvas.configure(background=canvas_background)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        form = ttk.Frame(canvas)
+        form.columnconfigure(1, weight=1)
+        form_window = canvas.create_window((0, 0), window=form, anchor="nw")
+
+        def update_scroll_region(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_form_width(event: tk.Event) -> None:
+            canvas.itemconfigure(form_window, width=event.width)
+
+        form.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_form_width)
+        window.bind(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(-1 * int(event.delta / 120), "units"),
+        )
 
         choice_vars: dict[str, tk.StringVar] = {}
         choice_maps: dict[str, dict[str, DeviceCandidate | str | None]] = {}
-        for row, requirement in enumerate(requirements, start=2):
-            ttk.Label(content, text=f"{requirement.name} ({requirement.kind})").grid(
-                row=row, column=0, sticky="w", padx=(0, 12), pady=4
+        for row, requirement in enumerate(requirements):
+            source_label = f"{requirement.name} ({requirement.kind})"
+            ttk.Label(form, text=source_label, wraplength=300).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 12),
+                pady=5,
             )
             options: dict[str, DeviceCandidate | str | None] = {
                 "Keep imported setting": None,
@@ -1403,9 +1463,12 @@ class ImportUtilityApp:
                 options[label] = candidate
             variable = tk.StringVar(value="Keep imported setting")
             combo = ttk.Combobox(
-                content, textvariable=variable, values=list(options), state="readonly"
+                form,
+                textvariable=variable,
+                values=list(options),
+                state="readonly",
             )
-            combo.grid(row=row, column=1, sticky="ew", pady=4)
+            combo.grid(row=row, column=1, sticky="ew", pady=5)
             choice_vars[requirement.key] = variable
             choice_maps[requirement.key] = options
 
@@ -1415,21 +1478,30 @@ class ImportUtilityApp:
         )
         if not has_candidates:
             ttk.Label(
-                content,
-                text="No compatible local device sources were found. Keep the placeholder or disable it, then configure it in OBS.",
+                form,
+                text=(
+                    "No exact-type local device sources were found. Keep each placeholder "
+                    "or disable it, then configure the source manually in OBS."
+                ),
                 style="Muted.TLabel",
-                wraplength=560,
+                wraplength=680,
             ).grid(
-                row=len(requirements) + 2,
+                row=len(requirements),
                 column=0,
                 columnspan=2,
                 sticky="w",
-                pady=(10, 0),
+                pady=(12, 0),
             )
-        actions = ttk.Frame(content)
-        actions.grid(
-            row=len(requirements) + 3, column=0, columnspan=2, sticky="e", pady=(16, 0)
-        )
+
+        actions = ttk.Frame(window, padding=18)
+        actions.grid(row=2, column=0, sticky="e")
+
+        def close_window() -> None:
+            try:
+                window.grab_release()
+            except tk.TclError:
+                pass
+            window.destroy()
 
         def apply_setup() -> None:
             choices = {
@@ -1443,14 +1515,20 @@ class ImportUtilityApp:
             self._append_import_results(
                 "\n\nDevice setup choices were applied to the imported collection."
             )
-            window.destroy()
+            close_window()
 
-        ttk.Button(actions, text="Skip for now", command=window.destroy).grid(
-            row=0, column=0, padx=(0, 8)
+        ttk.Button(actions, text="Skip for now", command=close_window).grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
         )
         ttk.Button(actions, text="Apply Setup", command=apply_setup).grid(
-            row=0, column=1
+            row=0,
+            column=1,
         )
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        window.grab_set()
+        window.focus_set()
 
     def _refresh_export_collections(self) -> None:
         if self.busy:
@@ -1503,12 +1581,19 @@ class ImportUtilityApp:
         if not destination.is_dir():
             messagebox.showerror(APP_TITLE, "Choose a valid export destination folder.")
             return
-        self._set_busy(True, "Exporting the scene collection and its local resources…")
-        self.export_status_var.set("Packaging the selected OBS collection…")
+        self._set_busy(True, "Inspecting the scene collection before export…")
+        self.export_status_var.set("Building the export inventory…")
         self._write_export_results("")
         threading.Thread(
-            target=self._export_worker, args=(collection, destination), daemon=True
+            target=self._export_inventory_worker,
+            args=(collection, destination),
+            daemon=True,
         ).start()
+
+    def _export_inventory_worker(self, collection: Path, destination: Path) -> None:
+        self.events.put(
+            ("export_inventory", build_export_inventory(collection, destination))
+        )
 
     def _export_worker(self, collection: Path, destination: Path) -> None:
         self.events.put(("export", export_scene_collection(collection, destination)))
@@ -1550,16 +1635,26 @@ class ImportUtilityApp:
         collection = self.resize_collections.get(self.resize_collection_var.get())
         scope = self.resize_scope_var.get()
         if collection is None:
+            self.resize_source_choices.clear()
             self.resize_name_combo.configure(values=(), state="disabled")
             self.resize_name_var.set("")
             return
         if scope == SCOPE_COLLECTION:
+            self.resize_source_choices.clear()
             self.resize_name_combo.configure(values=(), state="disabled")
             self.resize_name_var.set("")
             return
+        self.resize_source_choices.clear()
         try:
             data = load_json(collection)
-            names = scene_names(data) if scope == SCOPE_SCENE else source_names(data)
+            if scope == SCOPE_SCENE:
+                names = scene_names(data)
+            else:
+                choices = source_choices(data)
+                self.resize_source_choices = {
+                    choice.label: choice.uuid for choice in choices
+                }
+                names = [choice.label for choice in choices]
         except UtilityError:
             names = []
         self.resize_name_combo.configure(
@@ -1616,9 +1711,16 @@ class ImportUtilityApp:
             return
         scope = self.resize_scope_var.get()
         selected_name = self.resize_name_var.get().strip() or None
-        if scope != SCOPE_COLLECTION and not selected_name:
+        selected_uuid = (
+            self.resize_source_choices.get(selected_name or "")
+            if scope == SCOPE_SOURCE
+            else None
+        )
+        if (scope == SCOPE_SCENE and not selected_name) or (
+            scope == SCOPE_SOURCE and not selected_uuid
+        ):
             messagebox.showerror(
-                APP_TITLE, "Choose the scene or source to resize first."
+                APP_TITLE, "Choose a valid scene or UUID-backed source first."
             )
             return
         try:
@@ -1637,6 +1739,7 @@ class ImportUtilityApp:
                 collection,
                 scope,
                 selected_name,
+                selected_uuid,
                 self.resize_mode_var.get(),
                 target_width,
                 target_height,
@@ -1649,6 +1752,7 @@ class ImportUtilityApp:
         collection: Path,
         scope: str,
         selected_name: str | None,
+        selected_uuid: str | None,
         mode: str,
         target_width: int,
         target_height: int,
@@ -1660,6 +1764,7 @@ class ImportUtilityApp:
                     collection,
                     scope=scope,
                     selected_name=selected_name,
+                    selected_uuid=selected_uuid,
                     mode=mode,
                     target_width=target_width,
                     target_height=target_height,
@@ -1832,6 +1937,8 @@ class ImportUtilityApp:
                     self._finish_streamlabs(payload)  # type: ignore[arg-type]
                 elif event == "automatic":
                     self._finish_automatic(payload)  # type: ignore[arg-type]
+                elif event == "export_inventory":
+                    self._finish_export_inventory(payload)  # type: ignore[arg-type]
                 elif event == "export":
                     self._finish_export(payload)  # type: ignore[arg-type]
                 elif event == "resize":
@@ -1968,6 +2075,145 @@ class ImportUtilityApp:
         self.resize_status_var.set("The last resize was restored.")
         self._set_busy(False, "Resize undo completed successfully.")
         self.undo_resize_button.configure(state="disabled")
+
+    def _finish_export_inventory(self, inventory: ExportInventory) -> None:
+        if inventory.error or not inventory.success:
+            error = inventory.error or "Could not build the export inventory."
+            self._write_export_results(error)
+            self.export_status_var.set("Export inventory failed; no package was created.")
+            self._set_busy(False, "Could not inspect the scene collection.")
+            return
+        if inventory.collection_path is None or inventory.destination is None:
+            self._write_export_results("The export inventory is incomplete.")
+            self._set_busy(False, "Could not inspect the scene collection.")
+            return
+
+        summary_lines = [
+            f"Proposed package: {inventory.package_path}",
+            f"Unique files: {len(inventory.items)}",
+            f"Total size: {format_file_size(inventory.total_bytes)}",
+            f"Browser-overlay files: {inventory.browser_files}",
+            f"Local references inspected: {inventory.source_references}",
+            f"Missing references: {len(inventory.missing_references)}",
+            "",
+            "Review the inventory window, then confirm or cancel the export.",
+        ]
+        self._write_export_results("\n".join(summary_lines))
+        self.export_status_var.set("Review the export inventory before continuing.")
+        self._show_export_inventory_confirmation(inventory)
+
+    def _show_export_inventory_confirmation(self, inventory: ExportInventory) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Confirm Overlay Export")
+        window.transient(self.root)
+        window.geometry("820x540")
+        window.minsize(680, 420)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(window, padding=(18, 18, 18, 8))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(
+            header,
+            text="Export inventory",
+            font=("Segoe UI", 15, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text=(
+                f"{len(inventory.items)} unique files • "
+                f"{format_file_size(inventory.total_bytes)} • "
+                f"{len(inventory.missing_references)} missing references"
+            ),
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(
+            header,
+            text=f"Package: {inventory.package_path}",
+            wraplength=760,
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        if inventory.missing_references:
+            ttk.Label(
+                window,
+                text=(
+                    "Missing references will remain unchanged in the exported JSON. "
+                    "Review the rows marked Manual review before continuing."
+                ),
+                wraplength=760,
+            ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 8))
+
+        table_frame = ttk.Frame(window, padding=(18, 0, 18, 0))
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(
+            table_frame,
+            columns=("category", "size", "path"),
+            show="headings",
+        )
+        tree.heading("category", text="Category")
+        tree.heading("size", text="Size")
+        tree.heading("path", text="Source path")
+        tree.column("category", width=135, stretch=False)
+        tree.column("size", width=85, anchor="e", stretch=False)
+        tree.column("path", width=520, stretch=True)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+
+        for item in inventory.items:
+            tree.insert(
+                "",
+                "end",
+                values=(item.category, format_file_size(item.size), str(item.path)),
+            )
+        for missing in inventory.missing_references:
+            tree.insert("", "end", values=("Manual review", "—", missing))
+
+        actions = ttk.Frame(window, padding=18)
+        actions.grid(row=3, column=0, sticky="e")
+
+        def destroy_window() -> None:
+            try:
+                window.grab_release()
+            except tk.TclError:
+                pass
+            window.destroy()
+
+        def cancel_export() -> None:
+            destroy_window()
+            self.export_status_var.set("Export cancelled after inventory review.")
+            self._set_busy(False, "Overlay export cancelled.")
+
+        def confirm_export() -> None:
+            collection = inventory.collection_path
+            destination = inventory.destination
+            destroy_window()
+            self.export_status_var.set("Packaging the confirmed OBS collection…")
+            self._write_export_results("Inventory confirmed. Exporting the package…")
+            threading.Thread(
+                target=self._export_worker,
+                args=(collection, destination),
+                daemon=True,
+            ).start()
+
+        ttk.Button(actions, text="Cancel", command=cancel_export, width=12).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(
+            actions,
+            text="Confirm Export",
+            command=confirm_export,
+            width=18,
+        ).grid(row=0, column=1)
+        window.protocol("WM_DELETE_WINDOW", cancel_export)
+        window.grab_set()
+        window.focus_set()
 
     def _finish_export(self, result: ExportResult) -> None:
         if result.error:

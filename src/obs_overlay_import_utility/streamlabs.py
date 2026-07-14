@@ -17,11 +17,18 @@ from typing import Any
 from .core import atomic_write_json, next_obs_collection_path
 from .models import UtilityError
 from .obs_profile import active_profile_canvas
+from .paths import is_remote_value
 
 
 STREAMLABS_CANVAS_WIDTH = 2560.0
 STREAMLABS_CANVAS_HEIGHT = 1440.0
-MAX_ARCHIVE_SIZE = 4 * 1024 * 1024 * 1024
+MAX_ARCHIVE_FILES = 10_000
+MAX_ARCHIVE_SIZE = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_SIZE = 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
+MIN_RATIO_CHECK_SIZE = 1024 * 1024
+MIN_FREE_SPACE_AFTER_EXTRACTION = 256 * 1024 * 1024
+
 
 
 @dataclass
@@ -58,25 +65,67 @@ def default_obs_scenes_directory(obs_executable: Path | None = None) -> Path:
     return Path.home() / "AppData" / "Roaming" / "obs-studio" / "basic" / "scenes"
 
 
+def _archive_member_path(member: zipfile.ZipInfo) -> PurePosixPath:
+    normalized = member.filename.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or path.is_absolute()
+        or ".." in path.parts
+        or any(":" in part for part in path.parts)
+    ):
+        raise UtilityError("The Streamlabs package contains an unsafe file path.")
+    return path
+
+
 def _safe_archive_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    members = archive.infolist()
+    if len(members) > MAX_ARCHIVE_FILES:
+        raise UtilityError(
+            f"The Streamlabs package contains more than {MAX_ARCHIVE_FILES:,} entries."
+        )
+
     total_size = 0
-    members: list[zipfile.ZipInfo] = []
+    safe_members: list[zipfile.ZipInfo] = []
     seen: set[str] = set()
-    for member in archive.infolist():
-        path = PurePosixPath(member.filename)
-        if not member.filename or path.is_absolute() or ".." in path.parts:
-            raise UtilityError("The Streamlabs package contains an unsafe file path.")
-        if stat.S_IFMT(member.external_attr >> 16) == stat.S_IFLNK:
+    for member in members:
+        path = _archive_member_path(member)
+        unix_type = stat.S_IFMT(member.external_attr >> 16)
+        if unix_type == stat.S_IFLNK:
             raise UtilityError("The Streamlabs package contains an unsupported symbolic link.")
-        key = str(path).casefold()
+        if unix_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+            raise UtilityError("The Streamlabs package contains an unsupported special file.")
+        if member.flag_bits & 0x1:
+            raise UtilityError("Encrypted Streamlabs package entries are not supported.")
+        if member.file_size > MAX_ARCHIVE_MEMBER_SIZE:
+            raise UtilityError("A Streamlabs package file is too large to extract safely.")
+        if (
+            member.file_size >= MIN_RATIO_CHECK_SIZE
+            and (
+                member.compress_size == 0
+                or member.file_size / member.compress_size > MAX_COMPRESSION_RATIO
+            )
+        ):
+            raise UtilityError("The Streamlabs package has an unsafe compression ratio.")
+
+        key = path.as_posix().casefold()
         if key in seen:
             raise UtilityError("The Streamlabs package contains duplicate file paths.")
         seen.add(key)
         total_size += member.file_size
         if total_size > MAX_ARCHIVE_SIZE:
             raise UtilityError("The Streamlabs package is too large to extract safely.")
-        members.append(member)
-    return members
+        safe_members.append(member)
+    return safe_members
+
+
+def _ensure_extraction_space(parent: Path, members: list[zipfile.ZipInfo]) -> None:
+    required = sum(member.file_size for member in members if not member.is_dir())
+    free = shutil.disk_usage(parent).free
+    if free - required < MIN_FREE_SPACE_AFTER_EXTRACTION:
+        raise UtilityError(
+            "There is not enough free disk space to extract this Streamlabs package safely."
+        )
 
 
 def find_streamlabs_packages(root: Path) -> list[Path]:
@@ -153,22 +202,25 @@ class _AssetIndex:
     by_filename: dict[str, list[Path]]
 
 
-def _asset_index(root: Path) -> _AssetIndex:
-    """Index every extracted file, retaining enough context to avoid wrong duplicates."""
+def _asset_index(root: Path, *, published_root: Path | None = None) -> _AssetIndex:
+    """Index extracted files while optionally publishing paths under their final root."""
+    published_root = published_root.expanduser().resolve() if published_root else root
     by_relative_path: dict[str, Path] = {}
     by_filename: dict[str, list[Path]] = {}
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        relative = path.relative_to(root).as_posix().casefold()
-        by_relative_path[relative] = path
-        by_filename.setdefault(path.name.casefold(), []).append(path)
+        relative_path = path.relative_to(root)
+        published_path = published_root / relative_path
+        relative = relative_path.as_posix().casefold()
+        by_relative_path[relative] = published_path
+        by_filename.setdefault(path.name.casefold(), []).append(published_path)
     return _AssetIndex(by_relative_path=by_relative_path, by_filename=by_filename)
 
 
 def _asset_path(value: Any, assets: _AssetIndex) -> str:
-    if not isinstance(value, str) or not value:
-        return ""
+    if not isinstance(value, str) or not value or is_remote_value(value):
+        return value if isinstance(value, str) else ""
     normalized = value.replace("\\", "/").lstrip("/").casefold()
     exact = assets.by_relative_path.get(normalized)
     if exact:
@@ -177,31 +229,58 @@ def _asset_path(value: Any, assets: _AssetIndex) -> str:
     return str(candidates[0].resolve()) if len(candidates) == 1 else value
 
 
+def _relink_asset_values(value: Any, assets: _AssetIndex) -> Any:
+    if isinstance(value, dict):
+        return {key: _relink_asset_values(child, assets) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_relink_asset_values(child, assets) for child in value]
+    if isinstance(value, str):
+        return _asset_path(value, assets)
+    return value
+
+
 def _source_settings(content: dict[str, Any], assets: _AssetIndex) -> tuple[str, dict[str, Any]] | None:
     node_type = content.get("nodeType")
     settings = copy.deepcopy(content.get("settings", {}))
     if not isinstance(settings, dict):
         settings = {}
+    settings = _relink_asset_values(settings, assets)
 
     if node_type == "ImageNode":
-        return "image_source", {"file": _asset_path(content.get("filename"), assets)}
+        settings["file"] = _asset_path(content.get("filename"), assets)
+        return "image_source", settings
     if node_type == "VideoNode":
         settings["local_file"] = _asset_path(content.get("filename"), assets)
         settings["is_local_file"] = True
         return "ffmpeg_source", settings
     if node_type in {"WebcamNode", "CameraNode"}:
-        return "av_capture_input", {"device_id": ""}
+        settings["device_id"] = ""
+        return "av_capture_input", settings
     if node_type in {"AudioInputNode", "MicNode", "MicrophoneNode"}:
-        return "wasapi_input_capture", {"device_id": "default"}
+        settings["device_id"] = "default"
+        return "wasapi_input_capture", settings
     if node_type in {"AudioOutputNode", "DesktopAudioNode"}:
-        return "wasapi_output_capture", {"device_id": "default"}
+        settings["device_id"] = "default"
+        return "wasapi_output_capture", settings
     if node_type == "TextNode":
         return "text_gdiplus_v2", settings
     if node_type == "WidgetNode":
         return "browser_source", settings
     if node_type == "StreamlabelNode":
         text = content.get("textSource")
-        return "text_gdiplus_v2", {"text": text if isinstance(text, str) else ""}
+        settings["text"] = text if isinstance(text, str) else ""
+        return "text_gdiplus_v2", settings
+
+    custom_source_id = next(
+        (
+            content.get(key)
+            for key in ("sourceId", "source_id", "obsSourceId", "type")
+            if isinstance(content.get(key), str) and content.get(key)
+        ),
+        None,
+    )
+    if custom_source_id:
+        return custom_source_id, settings
     return None
 
 
@@ -213,9 +292,7 @@ def _filters(item: dict[str, Any], assets: _AssetIndex) -> list[dict[str, Any]]:
         settings = copy.deepcopy(filter_data.get("settings", {}))
         if not isinstance(settings, dict):
             settings = {}
-        for key in ("file", "image_path", "local_file", "path"):
-            if key in settings:
-                settings[key] = _asset_path(settings[key], assets)
+        settings = _relink_asset_values(settings, assets)
         converted.append(
             {
                 "name": str(filter_data.get("name") or filter_data["type"]),
@@ -271,6 +348,7 @@ def convert_streamlabs_config(
     extraction_root: Path,
     collection_name: str,
     *,
+    published_root: Path | None = None,
     canvas_width: float = STREAMLABS_CANVAS_WIDTH,
     canvas_height: float = STREAMLABS_CANVAS_HEIGHT,
 ) -> tuple[dict[str, Any], int, list[str]]:
@@ -281,7 +359,7 @@ def convert_streamlabs_config(
     if not isinstance(scene_items, list) or not scene_items:
         raise UtilityError("The Streamlabs package does not contain any scenes.")
 
-    assets = _asset_index(extraction_root)
+    assets = _asset_index(extraction_root, published_root=published_root)
     used_names: set[str] = set()
     sources: list[dict[str, Any]] = []
     scene_by_id: dict[str, dict[str, Any]] = {}
@@ -367,28 +445,40 @@ def convert_streamlabs_config(
 
 
 def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) -> StreamlabsImportResult:
-    """Extract a Streamlabs ``.overlay`` package and install a new OBS collection."""
+    """Extract and install a Streamlabs package with rollback on publish failure."""
     result = StreamlabsImportResult()
     temporary_root: Path | None = None
+    pending_collection: Path | None = None
+    extraction_path: Path | None = None
+    extraction_published = False
     try:
         archive_path = archive_path.expanduser().resolve()
-        if not archive_path.is_file():
+        if not archive_path.is_file() or archive_path.suffix.casefold() != ".overlay":
             raise UtilityError("Choose a valid Streamlabs .overlay file.")
         with zipfile.ZipFile(archive_path) as archive:
             members = _safe_archive_members(archive)
-            config_members = [member for member in members if PurePosixPath(member.filename).name.casefold() == "config.json"]
+            _ensure_extraction_space(archive_path.parent, members)
+            config_members = [
+                member
+                for member in members
+                if _archive_member_path(member).name.casefold() == "config.json"
+            ]
             if len(config_members) != 1:
                 raise UtilityError("The Streamlabs package must contain exactly one config.json file.")
-            temporary_root = Path(tempfile.mkdtemp(prefix=f".{archive_path.stem}-", dir=archive_path.parent))
+            config_member_path = _archive_member_path(config_members[0])
+            temporary_root = Path(
+                tempfile.mkdtemp(prefix=f".{archive_path.stem}-", dir=archive_path.parent)
+            )
             for member in members:
                 if member.is_dir():
                     continue
-                target = temporary_root.joinpath(*PurePosixPath(member.filename).parts)
+                member_path = _archive_member_path(member)
+                target = temporary_root.joinpath(*member_path.parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(member) as source, target.open("wb") as destination:
                     shutil.copyfileobj(source, destination)
 
-        config_path = temporary_root.joinpath(*PurePosixPath(config_members[0].filename).parts)
+        config_path = temporary_root.joinpath(*config_member_path.parts)
         try:
             config = json.loads(config_path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -399,27 +489,46 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
         profile_canvas = active_profile_canvas(obs_scenes_directory)
         canvas_width = float(profile_canvas.width) if profile_canvas else STREAMLABS_CANVAS_WIDTH
         canvas_height = float(profile_canvas.height) if profile_canvas else STREAMLABS_CANVAS_HEIGHT
-        collection_name, collection_path = next_obs_collection_path(obs_scenes_directory, archive_path.stem)
+        collection_name, collection_path = next_obs_collection_path(
+            obs_scenes_directory, archive_path.stem
+        )
+        extraction_path = _next_available_directory(
+            archive_path.parent, f"{archive_path.stem} overlay"
+        )
         converted, imported, skipped = convert_streamlabs_config(
             config,
             temporary_root,
             collection_name,
+            published_root=extraction_path,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
         )
 
-        extraction_path = _next_available_directory(archive_path.parent, f"{archive_path.stem} overlay")
+        pending_collection = obs_scenes_directory / (
+            f".{collection_path.name}.{uuid.uuid4().hex}.pending"
+        )
+        atomic_write_json(pending_collection, converted)
+        if extraction_path.exists() or collection_path.exists():
+            raise UtilityError(
+                "Another import created one of the selected destination paths. Run the import again."
+            )
+
         os.replace(temporary_root, extraction_path)
         temporary_root = None
-        # Rebuild after the rename so OBS stores the final, customer-visible asset paths.
-        converted, imported, skipped = convert_streamlabs_config(
-            config,
-            extraction_path,
-            collection_name,
-            canvas_width=canvas_width,
-            canvas_height=canvas_height,
-        )
-        atomic_write_json(collection_path, converted)
+        extraction_published = True
+        try:
+            os.replace(pending_collection, collection_path)
+        except OSError as publish_error:
+            try:
+                shutil.rmtree(extraction_path)
+                extraction_published = False
+            except OSError as rollback_error:
+                raise UtilityError(
+                    "OBS collection publishing failed and the extracted package could not be rolled back: "
+                    f"{extraction_path}. Remove it manually before retrying."
+                ) from rollback_error
+            raise publish_error
+        pending_collection = None
 
         result.success = True
         result.extraction_path = extraction_path
@@ -431,8 +540,16 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
         result.imported_sources = imported
         result.skipped_sources = skipped
     except (OSError, zipfile.BadZipFile, UtilityError) as exc:
-        result.error = str(exc) if isinstance(exc, UtilityError) else f"Could not import the Streamlabs package: {exc}"
+        result.error = (
+            str(exc)
+            if isinstance(exc, UtilityError)
+            else f"Could not import the Streamlabs package: {exc}"
+        )
     finally:
-        if temporary_root:
+        if pending_collection is not None:
+            pending_collection.unlink(missing_ok=True)
+        if temporary_root is not None:
             shutil.rmtree(temporary_root, ignore_errors=True)
+        if not result.success and extraction_published and extraction_path is not None:
+            shutil.rmtree(extraction_path, ignore_errors=True)
     return result

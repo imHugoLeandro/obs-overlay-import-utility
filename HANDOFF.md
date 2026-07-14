@@ -11,11 +11,11 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ## Current state
 
 - Branch: `main`
-- Latest pushed commit before these working changes: `06d91c4` — `Add device setup wizard and browser overlay packing features`
+- Latest pushed commit before these working changes: `beeda64` — `Refactor tests for improved readability and maintainability`
 - Working tree was clean before this handoff file was added.
 - Latest GitHub Actions test run passed: <https://github.com/imHugoLeandro/obs-overlay-import-utility/actions/runs/29268864090>
 - Local portable executable: `dist/OBS Overlay Import Utility.exe`
-- Current executable SHA-256: `02D31D860D2F186E6CCFD74A2EFF09807B87E98E3CBE23E0CAFE8A548D67867B`
+- Current executable SHA-256: `20D6D0B797A5F2472EF368681B8B6826F0D22B5B5ECA7DE0A93C5A13F5A35A1F`
 - `dist/` is intentionally Git-ignored. Release executables should be built locally or through GitHub Actions.
 
 ## Implemented features
@@ -35,8 +35,8 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ### Navigation
 
 - Import Overlay: functional.
-- Export Overlay: functional. It selects the active OBS scene collection by default, packages direct local resources, rewrites the collection JSON, and reports missing paths.
-- Auto Resizer: functional. It can resize a collection, scene, or source with Stretch or aspect-preserving Scale Ratio, using the active OBS profile or a custom canvas. Every overwrite gets an undo backup.
+- Export Overlay: functional. It selects the active OBS scene collection by default, inventories every file and missing reference for confirmation, packages direct and browser resources transactionally, rewrites the collection JSON, and uses Windows-safe package names.
+- Auto Resizer: functional. It can resize a collection, scene, or UUID-selected source with Stretch or aspect-preserving Scale Ratio, using the active OBS profile or a custom canvas. Active bounds modes are handled without double-scaling. Every overwrite gets an undo backup.
 - Settings: functional.
 
 ### Branding and settings
@@ -81,9 +81,11 @@ docs/GITHUB_SYNC.md                          GitHub usage instructions
 
 ## Verification
 
+Current working changes add transactional Streamlabs installation, hardened archive limits, recursive plugin-resource relinking, export inventory confirmation, UUID-backed source resizing, bounds-aware transforms, and a scrollable error-reporting device wizard.
+
 The latest local verification completed successfully:
 
-- 36 unit tests passed.
+- 48 unit tests passed, including transaction rollback, hostile ZIP limits, recursive custom-resource relinking, UUID source selection, bounds-aware transforms, export inventory, invalid device collections, and Windows package names.
 - 21 source/test files passed AST parsing.
 - UI construction and navigation passed.
 - Windows default, white, and dark themes passed switching tests.
@@ -91,7 +93,7 @@ The latest local verification completed successfully:
 - Window geometry remained `820×700` throughout the scaling test.
 - Button, field, slider, and logo dimensions changed with UI scale.
 - Both logo assets were confirmed inside the PyInstaller archive.
-- The packaged executable launched successfully and its test processes were closed cleanly.
+- The rebuilt 12,039,256-byte packaged executable launched successfully and its smoke-test process was closed cleanly.
 - `git diff --check` passed.
 
 Run tests:
@@ -138,6 +140,8 @@ When changing Import Overlay or Export Overlay, treat the complete OBS collectio
 - Export must recursively inspect the entire collection for absolute local file paths, copy existing files with arbitrary extensions, rewrite only those copied references, and report missing files instead of silently guessing.
 - Never claim that an exported pack installs plugins, fonts, device sources, credentials, or remote services. Preserve their configuration in JSON and clearly report that the destination OBS installation still needs the relevant plugin or manual setup.
 - Keep duplicate handling conservative: preserve one copied target per original file, but avoid overwriting a package asset when two different source files share a name.
+- Keep Streamlabs install and Export Overlay transactional. Preflight before copying, stage output under the destination filesystem, publish only complete results, and roll back partial extracted folders or pending collection files on failure.
+- Treat archive limits as security boundaries: normalize both slash styles, reject traversal/absolute/drive paths, links, special/encrypted entries and normalized duplicates, and enforce entry, member, total, compression-ratio, and free-space limits before extraction.
 ## Device setup and browser-packer rules for future AI work
 
 - Methods 2 and 3 expose an enabled-by-default device setup wizard, but it must appear only after a successful import whose resulting collection contains device-like sources.
@@ -151,6 +155,8 @@ When changing Import Overlay or Export Overlay, treat the complete OBS collectio
 - Stretch uses independent X/Y factors. Scale Ratio uses a uniform fit factor and centers the selected layout in the requested target size.
 - Preserve all non-transform data exactly, including unknown plugin source settings, filters, resource paths, source IDs, and metadata. Automatic import resizing and Auto Resizer must traverse only the `items` arrays of OBS `scene` and `group` sources; never recursively resize arbitrary plugin dictionaries.
 - Do not silently delete backups. Only remove the backup after a successful explicit Undo restore.
+- Source scope must identify scene items by `source_uuid`, and the UI must show `Source Name (UUID)`; display names alone are not unique.
+- Respect `bounds_type`: scale active bounds instead of also scaling source scale, and scale source scale only when bounds are inactive.
 ## Safe continuation checklist
 
 ```powershell

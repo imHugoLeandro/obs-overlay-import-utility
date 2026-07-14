@@ -115,10 +115,10 @@ def device_requirements(data: Any) -> list[DeviceRequirement]:
 
 def collection_device_requirements(collection_path: Path) -> list[DeviceRequirement]:
     """Load one imported collection and return its configurable device sources."""
-    try:
-        return device_requirements(load_json(collection_path))
-    except UtilityError:
-        return []
+    data = load_json(collection_path)
+    if not is_obs_scene_collection_data(data):
+        raise UtilityError("The imported collection is not a recognized OBS scene collection.")
+    return device_requirements(data)
 
 
 def available_device_candidates(

@@ -226,6 +226,52 @@ def install_scene_collection(
     return collection_name, destination
 
 
+def scene_item_uses_bounds(item: dict[str, Any]) -> bool:
+    """Return whether an OBS scene item uses an active bounds mode."""
+    bounds_type = item.get("bounds_type")
+    if isinstance(bounds_type, str):
+        return bounds_type.casefold() not in {"", "0", "none", "obs_bounds_none"}
+    return bounds_type not in (None, 0)
+
+
+def _scale_transform_pair(
+    value: Any,
+    factor_x: float,
+    factor_y: float,
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+) -> None:
+    if not isinstance(value, dict):
+        return
+    if isinstance(value.get("x"), (int, float)):
+        value["x"] = value["x"] * factor_x + offset_x
+    if isinstance(value.get("y"), (int, float)):
+        value["y"] = value["y"] * factor_y + offset_y
+
+
+def resize_scene_item_transform(
+    item: dict[str, Any],
+    factor_x: float,
+    factor_y: float,
+    reference_width: int,
+    reference_height: int,
+    *,
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+) -> None:
+    """Resize one OBS scene-item transform without double-scaling active bounds."""
+    _scale_transform_pair(item.get("pos"), factor_x, factor_y, offset_x, offset_y)
+    bounds = item.get("bounds")
+    if scene_item_uses_bounds(item) and isinstance(bounds, dict):
+        _scale_transform_pair(bounds, factor_x, factor_y)
+    else:
+        _scale_transform_pair(item.get("scale"), factor_x, factor_y)
+    item["scale_ref"] = {
+        "x": float(reference_width),
+        "y": float(reference_height),
+    }
+
+
 def resize_scene_collection(data: Any, width: int, height: int) -> bool:
     """Resize an OBS collection's canvas and absolute scene-item transforms.
 
@@ -252,14 +298,6 @@ def resize_scene_collection(data: Any, width: int, height: int) -> bool:
     scale_x = width / source_width if can_scale else 1.0
     scale_y = height / source_height if can_scale else 1.0
 
-    def scale_pair(value: Any, x_factor: float, y_factor: float) -> None:
-        if not isinstance(value, dict):
-            return
-        if isinstance(value.get("x"), (int, float)):
-            value["x"] = value["x"] * x_factor
-        if isinstance(value.get("y"), (int, float)):
-            value["y"] = value["y"] * y_factor
-
     for source in data.get("sources", []):
         if not isinstance(source, dict) or source.get("id") not in {"scene", "group"}:
             continue
@@ -270,12 +308,16 @@ def resize_scene_collection(data: Any, width: int, height: int) -> bool:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            if "scale_ref" in item:
-                item["scale_ref"] = {"x": float(width), "y": float(height)}
             if can_scale:
-                scale_pair(item.get("pos"), scale_x, scale_y)
-                scale_pair(item.get("scale"), scale_x, scale_y)
-                scale_pair(item.get("bounds"), scale_x, scale_y)
+                resize_scene_item_transform(
+                    item,
+                    scale_x,
+                    scale_y,
+                    width,
+                    height,
+                )
+            elif "scale_ref" in item:
+                item["scale_ref"] = {"x": float(width), "y": float(height)}
     data["resolution"] = {"x": int(width), "y": int(height)}
     return can_scale
 

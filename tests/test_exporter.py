@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from obs_overlay_import_utility import exporter  # noqa: E402
 from obs_overlay_import_utility.exporter import (  # noqa: E402
     active_obs_scene_collection,
+    build_export_inventory,
     export_scene_collection,
     list_obs_scene_collections,
 )
@@ -283,5 +284,85 @@ class ExporterTests(unittest.TestCase):
             )
 
 
+    def test_inventory_reports_unique_resources_browser_files_and_missing_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            browser = root / "browser"
+            browser.mkdir()
+            html = browser / "index.html"
+            html.write_text("<html></html>", encoding="utf-8")
+            css = browser / "style.css"
+            css.write_text("body {}", encoding="utf-8")
+            image = root / "image.png"
+            image.write_bytes(b"image")
+            missing = root / "missing.plugin"
+            data = {
+                "name": "Inventory",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Browser", "id": "browser_source", "settings": {"local_file": str(html)}},
+                    {"name": "Image", "id": "image_source", "settings": {"file": str(image), "duplicate": str(image)}},
+                    {"name": "Plugin", "id": "plugin", "settings": {"asset": str(missing)}},
+                ],
+            }
+            collection_path = root / "Inventory.json"
+            collection_path.write_text(json.dumps(data), encoding="utf-8")
+            destination = root / "exports"
+            destination.mkdir()
+
+            inventory = build_export_inventory(collection_path, destination)
+
+            self.assertTrue(inventory.success, inventory.error)
+            self.assertEqual(inventory.source_references, 4)
+            self.assertEqual(len(inventory.items), 3)
+            self.assertEqual(inventory.browser_files, 2)
+            self.assertEqual(inventory.total_bytes, html.stat().st_size + css.stat().st_size + image.stat().st_size)
+            self.assertEqual(len(inventory.missing_references), 1)
+            self.assertEqual(inventory.package_path, destination / "Inventory")
+
+    def test_atomic_collection_write_failure_leaves_no_partial_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = root / "image.png"
+            image.write_bytes(b"image")
+            collection_path = root / "Collection.json"
+            collection_path.write_text(
+                json.dumps(collection(image, image, image)), encoding="utf-8"
+            )
+            destination = root / "exports"
+            destination.mkdir()
+
+            with mock.patch.object(
+                exporter, "atomic_write_json", side_effect=OSError("blocked write")
+            ):
+                result = export_scene_collection(collection_path, destination)
+
+            self.assertFalse(result.success)
+            self.assertIn("blocked write", result.error)
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_sanitizes_windows_reserved_and_invalid_package_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "exports"
+            destination.mkdir()
+            expected = (("CON", "_CON"), ("Bad:<Name>? .", "Bad__Name__"))
+            for index, (name, package_name) in enumerate(expected):
+                path = root / f"Collection {index}.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "current_scene": "Main",
+                            "scene_order": [{"name": "Main"}],
+                            "sources": [{"name": "Main", "id": "scene", "settings": {"items": []}}],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                result = export_scene_collection(path, destination)
+                self.assertTrue(result.success, result.error)
+                self.assertEqual(result.package_path.name, package_name)
 if __name__ == "__main__":
     unittest.main()

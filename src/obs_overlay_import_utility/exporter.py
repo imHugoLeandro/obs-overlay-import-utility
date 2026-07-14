@@ -56,6 +56,32 @@ class ExportResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class ExportInventoryItem:
+    """One unique local file proposed for an overlay package."""
+
+    path: Path
+    category: str
+    size: int
+    source_name: str
+
+
+@dataclass
+class ExportInventory:
+    """Read-only preflight information shown before an export starts."""
+
+    success: bool = False
+    collection_path: Path | None = None
+    destination: Path | None = None
+    package_path: Path | None = None
+    source_references: int = 0
+    total_bytes: int = 0
+    browser_files: int = 0
+    items: list[ExportInventoryItem] = field(default_factory=list)
+    missing_references: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
 def list_obs_scene_collections(obs_scenes_directory: Path) -> dict[str, Path]:
     """Return OBS scene collections keyed by their displayed collection name."""
     directory = obs_scenes_directory.expanduser().resolve()
@@ -250,6 +276,84 @@ def _browser_inventory(source_root: Path, export_destination: Path) -> list[Path
                     "The browser overlay is larger than the safe 2 GB export limit."
                 )
     return inventory
+
+
+def build_export_inventory(
+    collection_path: Path,
+    destination: Path,
+) -> ExportInventory:
+    """Inspect every file an export would copy without changing the filesystem."""
+    result = ExportInventory()
+    try:
+        collection_path = collection_path.expanduser().resolve()
+        destination = destination.expanduser().resolve()
+        if not collection_path.is_file():
+            raise UtilityError("The selected OBS scene collection no longer exists.")
+        if not destination.is_dir():
+            raise UtilityError("Choose a valid export destination folder.")
+        original = load_json(collection_path)
+        if not is_obs_scene_collection_data(original):
+            raise UtilityError("The selected JSON is not a recognized OBS scene collection.")
+
+        collection_name = (
+            original.get("name")
+            if isinstance(original.get("name"), str)
+            else collection_path.stem
+        )
+        result.collection_path = collection_path
+        result.destination = destination
+        result.package_path = _next_package_directory(destination, collection_name)
+
+        items_by_path: dict[Path, ExportInventoryItem] = {}
+        scanned_browser_roots: set[Path] = set()
+        for reference in _iter_local_path_references(original):
+            source = Path(normalized_output_path(reference.value)).resolve()
+            result.source_references += 1
+            if not source.is_file():
+                result.missing_references.append(
+                    f"{reference.source_name}: {reference.value}"
+                )
+                continue
+
+            if source.suffix.casefold() in {".htm", ".html"}:
+                source_root = source.parent.resolve()
+                if source_root in scanned_browser_roots:
+                    continue
+                scanned_browser_roots.add(source_root)
+                for browser_file in _browser_inventory(source_root, destination):
+                    resolved = browser_file.resolve()
+                    items_by_path[resolved] = ExportInventoryItem(
+                        path=resolved,
+                        category="browser overlays",
+                        size=browser_file.stat().st_size,
+                        source_name=reference.source_name,
+                    )
+                continue
+
+            if source not in items_by_path:
+                items_by_path[source] = ExportInventoryItem(
+                    path=source,
+                    category=_resource_folder(source),
+                    size=source.stat().st_size,
+                    source_name=reference.source_name,
+                )
+
+        result.items = sorted(
+            items_by_path.values(),
+            key=lambda item: (item.category.casefold(), str(item.path).casefold()),
+        )
+        result.total_bytes = sum(item.size for item in result.items)
+        result.browser_files = sum(
+            item.category == "browser overlays" for item in result.items
+        )
+        result.success = True
+    except (OSError, UtilityError) as exc:
+        result.error = (
+            str(exc)
+            if isinstance(exc, UtilityError)
+            else f"Could not inspect the scene collection for export: {exc}"
+        )
+    return result
 
 
 def _copy_browser_overlay_directory(

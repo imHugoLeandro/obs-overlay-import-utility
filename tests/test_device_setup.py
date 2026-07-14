@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from obs_overlay_import_utility.models import UtilityError  # noqa: E402
 from obs_overlay_import_utility.device_setup import (  # noqa: E402
     DeviceCandidate,
     apply_device_choices,
@@ -133,5 +134,11 @@ class DeviceSetupTests(unittest.TestCase):
             self.assertFalse(updated["sources"][1]["enabled"])
 
 
+    def test_invalid_collection_is_reported_instead_of_silently_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "Broken.json"
+            path.write_text('{"name": "not an OBS collection"}', encoding="utf-8")
+            with self.assertRaisesRegex(UtilityError, "recognized OBS scene collection"):
+                collection_device_requirements(path)
 if __name__ == "__main__":
     unittest.main()
