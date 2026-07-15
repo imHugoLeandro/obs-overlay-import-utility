@@ -370,6 +370,8 @@ class ImportUtilityApp:
         self.method_controls: list[tk.Widget] = []
         self.method_options: dict[str, ttk.Frame] = {}
         self.method_arrows: dict[str, ttk.Button] = {}
+        self.method_accents: dict[str, tk.Frame] = {}
+        self.method_labels: dict[str, ttk.Label] = {}
         self.method_expanded = {"obs": True, "streamlabs": False, "automatic": False}
 
         obs_card = ttk.LabelFrame(
@@ -380,17 +382,20 @@ class ImportUtilityApp:
         )
         obs_card.grid(row=0, column=0, sticky="ew")
         obs_card.columnconfigure(0, weight=1)
-        obs_header = ttk.Frame(obs_card)
+        obs_header = tk.Frame(obs_card, bg=self.current_palette.surface, cursor="hand2")
         obs_header.grid(row=0, column=0, sticky="ew")
-        obs_header.columnconfigure(0, weight=1)
-        self.obs_method_radio = ttk.Radiobutton(
+        obs_header.columnconfigure(1, weight=1)
+        self.obs_accent = tk.Frame(obs_header, width=4, bg=self.current_palette.border)
+        self.obs_accent.grid(row=0, column=0, sticky="ns")
+        self.method_accents["obs"] = self.obs_accent
+        self.obs_label = ttk.Label(
             obs_header,
             text="Repair an exported OBS scene collection and its local asset paths",
-            value="obs",
-            variable=self.import_method_var,
-            command=lambda: self._select_import_method("obs"),
+            wraplength=600,
+            style="MethodSelector.TLabel",
         )
-        self.obs_method_radio.grid(row=0, column=0, sticky="w")
+        self.obs_label.grid(row=0, column=1, sticky="w", padx=(10, 8), pady=14)
+        self.method_labels["obs"] = self.obs_label
         self.obs_arrow = ttk.Button(
             obs_header,
             text="▾",
@@ -398,9 +403,11 @@ class ImportUtilityApp:
             command=lambda: self._toggle_import_method("obs"),
             style="Arrow.TButton",
         )
-        self.obs_arrow.grid(row=0, column=1, sticky="e")
+        self.obs_arrow.grid(row=0, column=2, sticky="e")
         self.method_arrows["obs"] = self.obs_arrow
-        self.method_controls.extend((self.obs_method_radio, self.obs_arrow))
+        self.method_controls.append(self.obs_arrow)
+        obs_header.bind("<Button-1>", lambda e: self._select_import_method("obs"))
+        self.obs_label.bind("<Button-1>", lambda e: self._select_import_method("obs"))
         obs_options = ttk.Frame(obs_card)
         obs_options.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         obs_options.columnconfigure(0, weight=1)
@@ -453,17 +460,20 @@ class ImportUtilityApp:
         )
         streamlabs_card.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         streamlabs_card.columnconfigure(0, weight=1)
-        streamlabs_header = ttk.Frame(streamlabs_card)
+        streamlabs_header = tk.Frame(streamlabs_card, bg=self.current_palette.surface, cursor="hand2")
         streamlabs_header.grid(row=0, column=0, sticky="ew")
-        streamlabs_header.columnconfigure(0, weight=1)
-        self.streamlabs_method_radio = ttk.Radiobutton(
+        streamlabs_header.columnconfigure(1, weight=1)
+        self.streamlabs_accent = tk.Frame(streamlabs_header, width=4, bg=self.current_palette.border)
+        self.streamlabs_accent.grid(row=0, column=0, sticky="ns")
+        self.method_accents["streamlabs"] = self.streamlabs_accent
+        self.streamlabs_label = ttk.Label(
             streamlabs_header,
             text="Extract, convert, and import a Streamlabs package into OBS",
-            value="streamlabs",
-            variable=self.import_method_var,
-            command=lambda: self._select_import_method("streamlabs"),
+            wraplength=600,
+            style="MethodSelector.TLabel",
         )
-        self.streamlabs_method_radio.grid(row=0, column=0, sticky="w")
+        self.streamlabs_label.grid(row=0, column=1, sticky="w", padx=(10, 8), pady=14)
+        self.method_labels["streamlabs"] = self.streamlabs_label
         self.streamlabs_arrow = ttk.Button(
             streamlabs_header,
             text="▸",
@@ -471,11 +481,11 @@ class ImportUtilityApp:
             command=lambda: self._toggle_import_method("streamlabs"),
             style="Arrow.TButton",
         )
-        self.streamlabs_arrow.grid(row=0, column=1, sticky="e")
+        self.streamlabs_arrow.grid(row=0, column=2, sticky="e")
         self.method_arrows["streamlabs"] = self.streamlabs_arrow
-        self.method_controls.extend(
-            (self.streamlabs_method_radio, self.streamlabs_arrow)
-        )
+        self.method_controls.append(self.streamlabs_arrow)
+        streamlabs_header.bind("<Button-1>", lambda e: self._select_import_method("streamlabs"))
+        self.streamlabs_label.bind("<Button-1>", lambda e: self._select_import_method("streamlabs"))
         streamlabs_options = ttk.Frame(streamlabs_card)
         streamlabs_options.columnconfigure(0, weight=1)
         self.method_options["streamlabs"] = streamlabs_options
@@ -521,17 +531,20 @@ class ImportUtilityApp:
         )
         automatic_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         automatic_card.columnconfigure(0, weight=1)
-        automatic_header = ttk.Frame(automatic_card)
+        automatic_header = tk.Frame(automatic_card, bg=self.current_palette.surface, cursor="hand2")
         automatic_header.grid(row=0, column=0, sticky="ew")
-        automatic_header.columnconfigure(0, weight=1)
-        self.automatic_method_radio = ttk.Radiobutton(
+        automatic_header.columnconfigure(1, weight=1)
+        self.automatic_accent = tk.Frame(automatic_header, width=4, bg=self.current_palette.border)
+        self.automatic_accent.grid(row=0, column=0, sticky="ns")
+        self.method_accents["automatic"] = self.automatic_accent
+        self.automatic_label = ttk.Label(
             automatic_header,
             text="Detect a Streamlabs package or OBS export and import it into OBS automatically",
-            value="automatic",
-            variable=self.import_method_var,
-            command=lambda: self._select_import_method("automatic"),
+            wraplength=600,
+            style="MethodSelector.TLabel",
         )
-        self.automatic_method_radio.grid(row=0, column=0, sticky="w")
+        self.automatic_label.grid(row=0, column=1, sticky="w", padx=(10, 8), pady=14)
+        self.method_labels["automatic"] = self.automatic_label
         self.automatic_arrow = ttk.Button(
             automatic_header,
             text="▸",
@@ -539,9 +552,11 @@ class ImportUtilityApp:
             command=lambda: self._toggle_import_method("automatic"),
             style="Arrow.TButton",
         )
-        self.automatic_arrow.grid(row=0, column=1, sticky="e")
+        self.automatic_arrow.grid(row=0, column=2, sticky="e")
         self.method_arrows["automatic"] = self.automatic_arrow
-        self.method_controls.extend((self.automatic_method_radio, self.automatic_arrow))
+        self.method_controls.append(self.automatic_arrow)
+        automatic_header.bind("<Button-1>", lambda e: self._select_import_method("automatic"))
+        self.automatic_label.bind("<Button-1>", lambda e: self._select_import_method("automatic"))
         automatic_options = ttk.Frame(automatic_card)
         automatic_options.columnconfigure(0, weight=1)
         self.method_options["automatic"] = automatic_options
@@ -642,6 +657,7 @@ class ImportUtilityApp:
             page,
             text="Package an OBS scene collection with its local media, plugin resources, and filter files.",
             wraplength=760,
+            style="PageSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
         options = ttk.LabelFrame(
@@ -751,6 +767,7 @@ class ImportUtilityApp:
             page,
             text="Resize an entire collection, one scene, or one source. The selected OBS collection is overwritten with an undo backup.",
             wraplength=760,
+            style="PageSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
         options = ttk.LabelFrame(
@@ -1147,6 +1164,12 @@ class ImportUtilityApp:
             foreground=palette.muted,
         )
         style.configure(
+            "MethodSelector.TLabel",
+            background=palette.surface,
+            foreground=palette.foreground,
+            font=self.fonts["body_bold"],
+        )
+        style.configure(
             "Sidebar.TLabel",
             background=palette.sidebar,
             foreground=palette.sidebar_foreground,
@@ -1411,6 +1434,13 @@ class ImportUtilityApp:
                     highlightcolor=palette.accent,
                     font=self.fonts["mono"],
                 )
+        if hasattr(self, "method_accents") and self.method_accents:
+            selected = self.import_method_var.get()
+            for name, accent in self.method_accents.items():
+                accent.configure(bg=palette.accent if name == selected else palette.border)
+                header = accent.master
+                if isinstance(header, tk.Frame):
+                    header.configure(bg=palette.surface)
 
     def _capture_scalable_ui(self) -> None:
         def descendants(widget: tk.Misc) -> list[tk.Misc]:
@@ -1630,6 +1660,9 @@ class ImportUtilityApp:
 
     def _select_import_method(self, method: str) -> None:
         self.import_method_var.set(method)
+        palette = self.current_palette
+        for name, accent in self.method_accents.items():
+            accent.configure(bg=palette.accent if name == method else palette.border)
         for name in self.method_expanded:
             self.method_expanded[name] = name == method
         self._update_import_method_panels()
