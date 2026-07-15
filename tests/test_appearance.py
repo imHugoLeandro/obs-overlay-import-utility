@@ -78,15 +78,17 @@ class AppearanceTests(unittest.TestCase):
     def test_ui_keeps_a_dependency_free_portable_runtime(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         deps = project["project"]["dependencies"]
-        allowed = {"svg.path"}
-        for dep in deps:
-            name = dep.split(">=")[0].split("<")[0].split("==")[0].strip()
-            self.assertIn(name, allowed, f"unexpected runtime dependency: {dep}")
+        self.assertEqual(deps, [], f"unexpected runtime dependencies: {deps}")
         source = (ROOT / "src" / "obs_overlay_import_utility" / "ui.py").read_text(
             encoding="utf-8"
         )
         for heavyweight in ("PySide", "PyQt", "customtkinter", "ttkbootstrap"):
             self.assertNotIn(heavyweight, source)
+        self.assertNotIn("ctypes", source)
+        self.assertNotIn("MDI_CODEPOINTS", source)
+        self.assertNotIn("_register_mdi_font", source)
+        self.assertNotIn("materialdesignicons-webfont.ttf", source)
+        self.assertNotIn("from .svg_renderer import", source)
 
 
 if __name__ == "__main__":

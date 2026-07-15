@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import queue
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable
@@ -85,12 +85,46 @@ THEME_LABELS = {
 }
 THEME_NAMES = {value: label for label, value in THEME_LABELS.items()}
 
-MDI_CODEPOINTS: dict[str, str] = {
-    "folder-arrow-left": "\U000F19EA",
-    "folder-arrow-right": "\U000F19EE",
-    "cog": "\U000F0493",
-    "fit-to-screen": "\U000F18F4",
-}
+_ICON_SIZES = (32, 40, 48, 64)
+
+
+def _pick_icon_size(desired: int) -> int:
+    """Return the nearest available pre-rendered icon size >= *desired*."""
+    for sz in _ICON_SIZES:
+        if sz >= desired:
+            return sz
+    return _ICON_SIZES[-1]
+
+
+def _nav_icon_path(assets_dir: Path, kind: str, size: int, red: bool) -> Path:
+    colour = "red" if red else "white"
+    return assets_dir / f"icon-{kind}-{colour}-{size}.png"
+
+
+class _NavIcons:
+    """Loads and caches pre-rendered icon PNGs at the needed size."""
+
+    def __init__(self, assets_dir: Path, base_size: int = 29) -> None:
+        self._assets = assets_dir
+        self._base = base_size
+        self._images: dict[tuple[str, bool], tk.PhotoImage] = {}
+
+    def load(self, kind: str, red: bool, scale: float = 1.0) -> tk.PhotoImage:
+        size = _pick_icon_size(max(16, round(self._base * scale)))
+        key = (kind, red)
+        if key in self._images:
+            existing = self._images[key]
+            if existing.width() == size:
+                return existing
+        path = _nav_icon_path(self._assets, kind, size, red)
+        if not path.is_file():
+            raise FileNotFoundError(f"Icon asset missing: {path}")
+        img = tk.PhotoImage(file=str(path))
+        self._images[key] = img
+        return img
+
+    def clear(self) -> None:
+        self._images.clear()
 
 
 def bundled_asset(name: str) -> Path:
@@ -123,7 +157,6 @@ class ImportUtilityApp:
         self.root.update_idletasks()
         self.current_dpi = window_dpi(self.root.winfo_id())
         self.root.tk.call("tk", "scaling", self.current_dpi / 72.0)
-        self._register_mdi_font()
         self._set_initial_window_size()
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
@@ -297,26 +330,46 @@ class ImportUtilityApp:
                 self.current_dpi = dpi
                 self.root.tk.call("tk", "scaling", dpi / 72.0)
                 self._apply_ui_scale(self.ui_scale_var.get())
+                self._refresh_sidebar_layout()
         except tk.TclError:
             return
         self.root.after(750, self._watch_window_dpi)
 
-    def _register_mdi_font(self) -> None:
-        font_path = bundled_asset("materialdesignicons-webfont.ttf")
-        if not font_path.is_file():
-            self.mdi_family = None
-            return
-        try:
-            FR_PRIVATE = 0x10
-            ctypes.windll.gdi32.AddFontResourceExW(
-                str(font_path.resolve()), FR_PRIVATE, 0
-            )
-            self.mdi_family = "Material Design Icons"
-        except OSError:
-            self.mdi_family = None
+    @dataclass
+    class _SidebarMetrics:
+        collapsed_width: int
+        icon_size: int
+        logo_width: int
+        arrow_font_size: int
 
-    def _mdi_icon_text(self, kind: str) -> str:
-        return MDI_CODEPOINTS.get(kind, "·")
+    def _compute_sidebar_metrics(self) -> _SidebarMetrics:
+        dpi = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+        zoom = max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
+        scale = dpi * zoom
+
+        icon_size = max(22, round(29 * scale))
+        logo_width = max(48, round(109 * scale))
+        arrow_font_size = max(9, round(13 * scale))
+
+        content = max(icon_size, logo_width, round(arrow_font_size * 0.75))
+        collapsed = max(72, round(content + 36 * scale))
+
+        return self._SidebarMetrics(
+            collapsed_width=collapsed,
+            icon_size=icon_size,
+            logo_width=logo_width,
+            arrow_font_size=arrow_font_size,
+        )
+
+    def _refresh_sidebar_layout(self) -> None:
+        m = self._compute_sidebar_metrics()
+        if getattr(self, "sidebar_collapsed", False):
+            self._collapsed_sidebar_width = m.collapsed_width
+            self.root.columnconfigure(
+                0, weight=0, minsize=m.collapsed_width
+            )
+            self._apply_collapsed_layout(m)
+        self._update_nav_styles()
 
     def _build_interface(self) -> None:
         nav_font = self.fonts["body_bold"]
@@ -376,6 +429,7 @@ class ImportUtilityApp:
             "resizer": "fit-to-screen",
             "settings": "cog",
         }
+        self._nav_icons = _NavIcons(bundled_asset("."), base_size=29)
         for row, (section, label) in enumerate(self.SECTIONS, start=2):
             button = tk.Label(
                 navigation,
@@ -400,9 +454,7 @@ class ImportUtilityApp:
             self.navigation_buttons.append(button)
 
         self.sidebar_collapsed = False
-        self._collapsed_sidebar_width = max(
-            50, round(50 * max(1.0, self.current_dpi / 96.0))
-        )
+        self._collapsed_sidebar_width = self._compute_sidebar_metrics().collapsed_width
 
         sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
         sidebar_bottom.grid(row=len(self.SECTIONS) + 4, column=0, sticky="ew")
@@ -1222,67 +1274,86 @@ class ImportUtilityApp:
         else:
             self._collapse_sidebar()
 
-    def _collapse_sidebar(self) -> None:
-        self.sidebar_collapsed = True
-        self.root.columnconfigure(0, weight=0, minsize=self._collapsed_sidebar_width)
-        self.sidebar_version_label.grid_remove()
-        self.sidebar_caption_label.grid_remove()
-        self.sidebar_collapse_arrow.configure(text="▶")
-        self.sidebar_handle.configure(cursor="arrow")
-        self.sidebar_collapse_arrow.grid_remove()
-        self.sidebar_collapse_arrow.place(
-            relx=0.5, rely=1.0, anchor="s"
+    def _apply_collapsed_layout(self, m: _SidebarMetrics | None = None) -> None:
+        if m is None:
+            m = self._compute_sidebar_metrics()
+        scale = (
+            max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+            * max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
         )
-        if self.logo_label:
-            self.logo_label.grid_configure(sticky="")
-        dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-        arrow_font_size = max(9, round(13 * dpi_factor))
-        self.sidebar_collapse_arrow.configure(
-            font=(self.font_family, arrow_font_size)
-        )
-        icon_font_size = -max(22, round(29 * dpi_factor))
         for section, button in zip(
             (s for s, _ in self.SECTIONS), self.navigation_buttons
         ):
             kind = self._nav_icon_kinds.get(section, "")
-            ch = self._mdi_icon_text(kind)
-            if self.mdi_family:
+            if not kind:
                 button.configure(
-                    text=ch,
-                    font=(self.mdi_family, icon_font_size),
-                    compound="center",
-                    anchor="center",
-                    padx=0,
-                    pady=8,
-                )
-            else:
-                button.configure(
-                    text=ch, font=self.fonts["body_bold"],
+                    text=section[:1], font=self.fonts["body_bold"],
                     compound="center", anchor="center", padx=0, pady=8,
                 )
+                continue
+            try:
+                is_selected = section == self.section_var.get()
+                icon = self._nav_icons.load(kind, red=is_selected, scale=scale)
+                button.configure(
+                    image=icon, text="", compound="center",
+                    anchor="center", padx=0, pady=8,
+                )
+                button._current_icon = icon
+            except Exception:
+                button.configure(
+                    text="?", font=self.fonts["body_bold"],
+                    compound="center", anchor="center", padx=0, pady=8,
+                )
+        self.sidebar_collapse_arrow.configure(
+            font=(self.font_family, m.arrow_font_size)
+        )
+        if self.logo_label:
+            self.logo_label.grid_configure(sticky="")
+        self._update_logo_to_width(m.logo_width)
+
+    def _collapse_sidebar(self) -> None:
+        self.sidebar_collapsed = True
+        m = self._compute_sidebar_metrics()
+        self._collapsed_sidebar_width = m.collapsed_width
+        self.root.columnconfigure(0, weight=0, minsize=m.collapsed_width)
+        self.sidebar_version_label.grid_remove()
+        self.sidebar_caption_label.grid_remove()
+        self.sidebar_collapse_arrow.configure(text="\u25b6")
+        self.sidebar_handle.configure(cursor="arrow")
+        self.sidebar_collapse_arrow.grid_configure(column=0, sticky="")
+        self.sidebar_collapse_arrow.master.columnconfigure(0, weight=1, uniform="")
+        self.sidebar_collapse_arrow.master.columnconfigure(
+            1, weight=0, minsize=0
+        )
+        self._apply_collapsed_layout(m)
         self._update_nav_styles()
-        self._update_logo_to_width(109)
 
     def _expand_sidebar(self) -> None:
         self.sidebar_collapsed = False
         self.root.columnconfigure(0, weight=0, minsize=self._min_sidebar_width)
         self.sidebar_version_label.grid()
         self.sidebar_caption_label.grid()
-        self.sidebar_collapse_arrow.configure(text="◀")
+        self.sidebar_collapse_arrow.configure(text="\u25c0")
         self.sidebar_handle.configure(cursor="sb_h_double_arrow")
-        self.sidebar_collapse_arrow.place_forget()
-        self.sidebar_collapse_arrow.grid(row=0, column=1, sticky="e")
-        arrow_font_size = max(8, round(12 * max(1.0, getattr(self, "current_dpi", 96) / 96.0)))
+        self.sidebar_collapse_arrow.grid_configure(column=1, sticky="e")
+        self.sidebar_collapse_arrow.master.columnconfigure(0, weight=1, uniform="")
+        self.sidebar_collapse_arrow.master.columnconfigure(
+            1,             weight=0, minsize=0
+        )
         self.sidebar_collapse_arrow.configure(
-            font=(self.font_family, arrow_font_size)
+            font=(self.font_family, max(9, round(12 * (
+                max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+                * max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
+            ))))
         )
         if self.logo_label:
             self.logo_label.grid_configure(sticky="w")
         for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
             button.configure(
-                text=label, font=self.fonts["body_bold"],
+                image="", text=label, font=self.fonts["body_bold"],
                 compound="left", anchor="w", padx=14, pady=10,
             )
+        self._nav_icons.clear()
         self._update_nav_styles()
         self._apply_ui_scale(self.ui_scale_var.get())
 
@@ -1290,16 +1361,29 @@ class ImportUtilityApp:
         """Apply selection/hover background colors to nav labels."""
         palette = self.current_palette
         selected = self.section_var.get()
+        is_collapsed = getattr(self, "sidebar_collapsed", False)
+        scale = (
+            max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+            * max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
+        )
         for section, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
             is_selected = section == selected
-            is_collapsed = getattr(self, "sidebar_collapsed", False)
             if getattr(btn, "_is_hovering", False) and not is_selected:
                 btn.configure(bg=palette.sidebar_hover, fg=palette.sidebar_foreground)
-            elif is_selected and is_collapsed:
-                btn.configure(bg=palette.sidebar, fg=palette.accent)
             else:
                 bg = palette.sidebar_selected if is_selected else palette.sidebar
                 btn.configure(bg=bg, fg=palette.sidebar_foreground)
+            if is_collapsed:
+                kind = self._nav_icon_kinds.get(section, "")
+                if kind:
+                    try:
+                        icon = self._nav_icons.load(
+                            kind, red=is_selected, scale=scale
+                        )
+                        btn.configure(image=icon)
+                        btn._current_icon = icon
+                    except Exception:
+                        pass
 
     def _hover_nav(self, section: str, entering: bool) -> None:
         for s, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
@@ -1622,40 +1706,18 @@ class ImportUtilityApp:
                 bg=palette.sidebar, fg=palette.sidebar_muted
             )
         if hasattr(self, "sidebar_collapsed") and self.sidebar_collapsed:
-            dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-            icon_font_size = -max(22, round(29 * dpi_factor))
-            for section, button in zip(
-                (s for s, _ in self.SECTIONS), self.navigation_buttons
-            ):
-                kind = self._nav_icon_kinds.get(section, "")
-                ch = self._mdi_icon_text(kind)
-                if self.mdi_family:
-                    button.configure(
-                        text=ch,
-                        font=(self.mdi_family, icon_font_size),
-                        compound="center",
-                        anchor="center",
-                        padx=0,
-                        pady=8,
-                    )
-                else:
-                    button.configure(
-                        text=ch,
-                        font=self.fonts["body_bold"],
-                        compound="center",
-                        anchor="center",
-                        padx=0,
-                        pady=8,
-                    )
+            m = self._compute_sidebar_metrics()
+            self._apply_collapsed_layout(m)
             self._update_nav_styles()
         elif hasattr(self, "sidebar_collapsed") and not self.sidebar_collapsed:
             for (section, label), button in zip(
                 self.SECTIONS, self.navigation_buttons
             ):
                 button.configure(
-                    text=label, font=self.fonts["body_bold"],
+                    image="", text=label, font=self.fonts["body_bold"],
                     compound="left", anchor="w", padx=14, pady=10,
                 )
+            self._nav_icons.clear()
             self._update_nav_styles()
         if hasattr(self, "method_accents") and self.method_accents:
             selected = self.import_method_var.get()
@@ -1776,6 +1838,7 @@ class ImportUtilityApp:
             ratio = max(1, src_w // target_w)
             self.logo_image = self.logo_source.subsample(ratio, ratio)
         self.logo_label.configure(image=self.logo_image)
+        self._refresh_sidebar_layout()
 
     def _update_custom_path_states(self) -> None:
         python_state = "normal" if self.use_custom_python_var.get() else "disabled"

@@ -94,7 +94,6 @@ src/obs_overlay_import_utility/
   resizer.py        File-based transforms, backups, and resize calculations
   settings.py       Settings validation and atomic persistence
   streamlabs.py     Archive validation, extraction, conversion, installation
-  svg_renderer.py   Runtime SVG→tk.PhotoImage rasterizer with supersampling
   ui.py             Tk/ttk shell, pages, dialogs, queues, workflows
   assets/           Packaged branding assets (SVGs, PNGs, logo)
 
