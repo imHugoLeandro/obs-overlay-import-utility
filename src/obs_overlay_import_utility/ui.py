@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import base64
+import ctypes
 import os
 import queue
 import subprocess
@@ -23,7 +23,6 @@ from .appearance import (
 )
 from .constants import APP_TITLE, __version__
 from .core import convert_collection, find_scene_collections, load_json
-from .svg_renderer import render_svg_icon
 from .device_setup import (
     DeviceCandidate,
     DeviceRequirement,
@@ -86,6 +85,13 @@ THEME_LABELS = {
 }
 THEME_NAMES = {value: label for label, value in THEME_LABELS.items()}
 
+MDI_CODEPOINTS: dict[str, str] = {
+    "folder-arrow-left": "\U000F19EA",
+    "folder-arrow-right": "\U000F19EE",
+    "cog": "\U000F0493",
+    "fit-to-screen": "\U000F18F4",
+}
+
 
 def bundled_asset(name: str) -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -117,6 +123,7 @@ class ImportUtilityApp:
         self.root.update_idletasks()
         self.current_dpi = window_dpi(self.root.winfo_id())
         self.root.tk.call("tk", "scaling", self.current_dpi / 72.0)
+        self._register_mdi_font()
         self._set_initial_window_size()
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
@@ -294,6 +301,23 @@ class ImportUtilityApp:
             return
         self.root.after(750, self._watch_window_dpi)
 
+    def _register_mdi_font(self) -> None:
+        font_path = bundled_asset("materialdesignicons-webfont.ttf")
+        if not font_path.is_file():
+            self.mdi_family = None
+            return
+        try:
+            FR_PRIVATE = 0x10
+            ctypes.windll.gdi32.AddFontResourceExW(
+                str(font_path.resolve()), FR_PRIVATE, 0
+            )
+            self.mdi_family = "Material Design Icons"
+        except OSError:
+            self.mdi_family = None
+
+    def _mdi_icon_text(self, kind: str) -> str:
+        return MDI_CODEPOINTS.get(kind, "·")
+
     def _build_interface(self) -> None:
         nav_font = self.fonts["body_bold"]
         text_widths = [nav_font.measure(label) for _, label in self.SECTIONS]
@@ -346,7 +370,6 @@ class ImportUtilityApp:
         )
         self.sidebar_caption_label.grid(row=1, column=0, sticky="w", pady=(0, 18))
 
-        self._nav_icon_imgs: dict[str, tk.PhotoImage] = {}
         self._nav_icon_kinds = {
             "import": "folder-arrow-left",
             "export": "folder-arrow-right",
@@ -378,7 +401,7 @@ class ImportUtilityApp:
 
         self.sidebar_collapsed = False
         self._collapsed_sidebar_width = max(
-            64, round(64 * max(1.0, self.current_dpi / 96.0))
+            72, round(72 * max(1.0, self.current_dpi / 96.0))
         )
 
         sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
@@ -1211,19 +1234,36 @@ class ImportUtilityApp:
         self.sidebar_caption_label.grid_remove()
         self.sidebar_collapse_arrow.configure(text="▶")
         self.sidebar_handle.configure(cursor="arrow")
+        self._arrow_frame.grid_configure(sticky="s")
+        if self.logo_label:
+            self.logo_label.grid_configure(sticky="")
         dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-        collapsed_icon_px = max(22, round(29 * dpi_factor))
-        self._nav_icon_imgs = self._nav_icon_images(size=collapsed_icon_px)
-        for (section, _label), button in zip(self.SECTIONS, self.navigation_buttons):
-            icon_img = self._nav_icon_imgs.get(section)
-            if icon_img is not None:
+        arrow_font_size = max(12, round(18 * dpi_factor))
+        self.sidebar_collapse_arrow.configure(
+            font=(self.font_family, arrow_font_size)
+        )
+        icon_font_size = -max(22, round(29 * dpi_factor))
+        for section, button in zip(
+            (s for s, _ in self.SECTIONS), self.navigation_buttons
+        ):
+            kind = self._nav_icon_kinds.get(section, "")
+            ch = self._mdi_icon_text(kind)
+            if self.mdi_family:
                 button.configure(
-                    image=icon_img, text="", compound="center", anchor="center"
+                    text=ch,
+                    font=(self.mdi_family, icon_font_size),
+                    compound="center",
+                    anchor="center",
+                    padx=0,
+                    pady=8,
                 )
             else:
-                button.configure(text="·", image="", compound="text", anchor="center")
+                button.configure(
+                    text=ch, font=self.fonts["body_bold"],
+                    compound="center", anchor="center", padx=0, pady=8,
+                )
         self._update_nav_styles()
-        self._update_logo_to_width(84)
+        self._update_logo_to_width(109)
 
     def _expand_sidebar(self) -> None:
         self.sidebar_collapsed = False
@@ -1232,9 +1272,17 @@ class ImportUtilityApp:
         self.sidebar_caption_label.grid()
         self.sidebar_collapse_arrow.configure(text="◀")
         self.sidebar_handle.configure(cursor="sb_h_double_arrow")
-        self._nav_icon_imgs.clear()
+        self._arrow_frame.grid_configure(sticky="se")
+        if self.logo_label:
+            self.logo_label.grid_configure(sticky="w")
+        self.sidebar_collapse_arrow.configure(
+            font=self.fonts["small"]
+        )
         for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
-            button.configure(image="", text=label, compound="left", anchor="w")
+            button.configure(
+                text=label, font=self.fonts["body_bold"],
+                compound="left", anchor="w", padx=14, pady=10,
+            )
         self._update_nav_styles()
         self._apply_ui_scale(self.ui_scale_var.get())
 
@@ -1267,42 +1315,6 @@ class ImportUtilityApp:
             ratio = max(1, src_w // target_w)
             self.logo_image = self.logo_source.subsample(ratio, ratio)
         self.logo_label.configure(image=self.logo_image)
-
-    def _nav_icon_images(
-        self, color: str = "", size: int = 22
-    ) -> dict[str, tk.PhotoImage]:
-        """Return a dict of PhotoImage icons keyed by section id.
-
-        ``color`` is the hex fill colour (default #F7F8FA). ``size`` is the
-        output pixel height/width. SVGs are rendered at runtime with
-        supersampling anti-aliasing and cached per (section, colour, size).
-        """
-        result: dict[str, tk.PhotoImage] = {}
-        if not hasattr(self, "_nav_icon_kinds"):
-            return result
-        colour = color or "#F7F8FA"
-
-        cache_key = (colour, size)
-        cache = getattr(self, "_nav_icon_cache", None)
-        if cache is None:
-            self._nav_icon_cache: dict[tuple[str, int], dict[str, tk.PhotoImage]] = {}
-            cache = self._nav_icon_cache
-
-        if cache_key in cache:
-            return cache[cache_key]
-
-        assets_dir = bundled_asset(".")
-        for section, kind in self._nav_icon_kinds.items():
-            svg_path = assets_dir / f"{kind}.svg"
-            try:
-                png_bytes = render_svg_icon(svg_path, size, color_hex=colour)
-                b64 = base64.b64encode(png_bytes).decode("ascii")
-                result[section] = tk.PhotoImage(data=b64)
-            except Exception:
-                continue
-
-        cache[cache_key] = result
-        return result
 
     def _apply_theme(self) -> None:
         theme = THEME_LABELS.get(self.theme_var.get(), "system")
@@ -1610,22 +1622,29 @@ class ImportUtilityApp:
             self._arrow_frame.configure(bg=palette.sidebar)
         if hasattr(self, "sidebar_collapsed") and self.sidebar_collapsed:
             dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-            collapsed_icon_px = max(22, round(29 * dpi_factor))
-            self._nav_icon_imgs = self._nav_icon_images(size=collapsed_icon_px)
-            for (section, _label), button in zip(
-                self.SECTIONS, self.navigation_buttons
+            icon_font_size = -max(22, round(29 * dpi_factor))
+            for section, button in zip(
+                (s for s, _ in self.SECTIONS), self.navigation_buttons
             ):
-                icon_img = self._nav_icon_imgs.get(section)
-                if icon_img is not None:
+                kind = self._nav_icon_kinds.get(section, "")
+                ch = self._mdi_icon_text(kind)
+                if self.mdi_family:
                     button.configure(
-                        image=icon_img,
-                        text="",
+                        text=ch,
+                        font=(self.mdi_family, icon_font_size),
                         compound="center",
                         anchor="center",
+                        padx=0,
+                        pady=8,
                     )
                 else:
                     button.configure(
-                        text="·", image="", compound="text", anchor="center"
+                        text=ch,
+                        font=self.fonts["body_bold"],
+                        compound="center",
+                        anchor="center",
+                        padx=0,
+                        pady=8,
                     )
             self._update_nav_styles()
         elif hasattr(self, "sidebar_collapsed") and not self.sidebar_collapsed:
@@ -1633,7 +1652,8 @@ class ImportUtilityApp:
                 self.SECTIONS, self.navigation_buttons
             ):
                 button.configure(
-                    image="", text=label, compound="left", anchor="w"
+                    text=label, font=self.fonts["body_bold"],
+                    compound="left", anchor="w", padx=14, pady=10,
                 )
             self._update_nav_styles()
         if hasattr(self, "method_accents") and self.method_accents:
