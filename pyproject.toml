@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Multimedia :: Video",
 ]
-dependencies = []
+dependencies = ["svg.path>=6.0,<7"]
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0,<7"]

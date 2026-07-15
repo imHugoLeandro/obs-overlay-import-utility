@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import io
+import base64
 import os
 import queue
 import subprocess
@@ -23,6 +23,7 @@ from .appearance import (
 )
 from .constants import APP_TITLE, __version__
 from .core import convert_collection, find_scene_collections, load_json
+from .svg_renderer import render_svg_icon
 from .device_setup import (
     DeviceCandidate,
     DeviceRequirement,
@@ -193,7 +194,7 @@ class ImportUtilityApp:
         self.obs_websocket_password: str | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
-        self.navigation_buttons: list[ttk.Radiobutton] = []
+        self.navigation_buttons: list[tk.Label] = []
         self.logo_source: tk.PhotoImage | None = None
         self.logo_image: tk.PhotoImage | None = None
         self.logo_label: ttk.Label | None = None
@@ -345,20 +346,37 @@ class ImportUtilityApp:
         )
         self.sidebar_caption_label.grid(row=1, column=0, sticky="w", pady=(0, 18))
 
+        self._nav_icon_imgs: dict[str, tk.PhotoImage] = {}
+        self._nav_icon_kinds = {
+            "import": "folder-arrow-left",
+            "export": "folder-arrow-right",
+            "resizer": "fit-to-screen",
+            "settings": "cog",
+        }
         for row, (section, label) in enumerate(self.SECTIONS, start=2):
-            button = ttk.Radiobutton(
+            button = tk.Label(
                 navigation,
                 text=label,
-                value=section,
-                variable=self.section_var,
-                command=self._show_section,
-                style="Nav.Toolbutton",
+                compound="left",
+                anchor="w",
+                padx=14,
+                pady=10,
+                cursor="hand2",
+                font=self.fonts["body_bold"],
             )
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+            button.bind(
+                "<Button-1>", lambda _e, s=section: self._select_section(s)
+            )
+            button.bind(
+                "<Enter>", lambda _e, s=section: self._hover_nav(s, True)
+            )
+            button.bind(
+                "<Leave>", lambda _e, s=section: self._hover_nav(s, False)
+            )
             self.navigation_buttons.append(button)
 
         self.sidebar_collapsed = False
-        self._nav_icon_imgs: dict[str, tk.PhotoImage] = {}
         self._collapsed_sidebar_width = max(
             64, round(64 * max(1.0, self.current_dpi / 96.0))
         )
@@ -374,16 +392,24 @@ class ImportUtilityApp:
         )
         self.sidebar_version_label.grid(row=0, column=0, sticky="w")
 
+        arrow_frame = tk.Frame(
+            self.root,
+            bg=self.current_palette.sidebar,
+        )
+        arrow_frame.grid(row=0, column=0, sticky="se")
         self.sidebar_collapse_arrow = tk.Label(
-            sidebar_bottom,
+            arrow_frame,
             text="◀",
             font=self.fonts["small"],
             bg=self.current_palette.sidebar,
             fg=self.current_palette.sidebar_muted,
             cursor="hand2",
         )
-        self.sidebar_collapse_arrow.grid(row=0, column=1, sticky="e")
-        self.sidebar_collapse_arrow.bind("<Button-1>", lambda e: self._toggle_sidebar())
+        self.sidebar_collapse_arrow.pack()
+        self.sidebar_collapse_arrow.bind(
+            "<Button-1>", lambda e: self._toggle_sidebar()
+        )
+        self._arrow_frame = arrow_frame
 
         self.page_container = ttk.Frame(self.root, style="Page.TFrame")
         self.page_container.grid(row=0, column=2, sticky="nsew")
@@ -1136,6 +1162,7 @@ class ImportUtilityApp:
     def _select_section(self, section: str) -> None:
         self.section_var.set(section)
         self._show_section()
+        self._update_nav_styles()
 
     def _show_section(self) -> None:
         section = self.section_var.get()
@@ -1184,15 +1211,18 @@ class ImportUtilityApp:
         self.sidebar_caption_label.grid_remove()
         self.sidebar_collapse_arrow.configure(text="▶")
         self.sidebar_handle.configure(cursor="arrow")
-        self._nav_icon_imgs = self._nav_icon_images(
-            self.current_palette.sidebar_foreground
-        )
+        dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+        collapsed_icon_px = max(22, round(29 * dpi_factor))
+        self._nav_icon_imgs = self._nav_icon_images(size=collapsed_icon_px)
         for (section, _label), button in zip(self.SECTIONS, self.navigation_buttons):
             icon_img = self._nav_icon_imgs.get(section)
             if icon_img is not None:
-                button.configure(image=icon_img, text="")
+                button.configure(
+                    image=icon_img, text="", compound="center", anchor="center"
+                )
             else:
-                button.configure(text="·")
+                button.configure(text="·", image="", compound="text", anchor="center")
+        self._update_nav_styles()
         self._update_logo_to_width(84)
 
     def _expand_sidebar(self) -> None:
@@ -1204,8 +1234,27 @@ class ImportUtilityApp:
         self.sidebar_handle.configure(cursor="sb_h_double_arrow")
         self._nav_icon_imgs.clear()
         for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
-            button.configure(image="", text=label)
+            button.configure(image="", text=label, compound="left", anchor="w")
+        self._update_nav_styles()
         self._apply_ui_scale(self.ui_scale_var.get())
+
+    def _update_nav_styles(self) -> None:
+        """Apply selection/hover background colors to nav labels."""
+        palette = self.current_palette
+        selected = self.section_var.get()
+        for section, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
+            is_selected = section == selected
+            if getattr(btn, "_is_hovering", False) and not is_selected:
+                btn.configure(bg=palette.sidebar_hover, fg=palette.sidebar_foreground)
+            else:
+                bg = palette.sidebar_selected if is_selected else palette.sidebar
+                btn.configure(bg=bg, fg=palette.sidebar_foreground)
+
+    def _hover_nav(self, section: str, entering: bool) -> None:
+        for s, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
+            if s == section:
+                btn._is_hovering = entering  # type: ignore[attr-defined]
+        self._update_nav_styles()
 
     def _update_logo_to_width(self, target_w: int) -> None:
         if not self.logo_source or not self.logo_label:
@@ -1219,100 +1268,40 @@ class ImportUtilityApp:
             self.logo_image = self.logo_source.subsample(ratio, ratio)
         self.logo_label.configure(image=self.logo_image)
 
-    def _draw_nav_icon(
-        self, kind: str, color: str, size: int = 22
-    ) -> tk.PhotoImage | None:
-        from PIL import Image, ImageDraw
-        from math import cos, sin
+    def _nav_icon_images(
+        self, color: str = "", size: int = 22
+    ) -> dict[str, tk.PhotoImage]:
+        """Return a dict of PhotoImage icons keyed by section id.
 
-        hi = size * 4
-        img = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-        fill = (r, g, b, 255)
-        m = hi * 0.12
-        cx = hi / 2
-        cy = hi / 2
-
-        if kind == "folder-arrow-left" or kind == "folder-arrow-right":
-            w = hi - 2 * m
-            h = hi * 0.52
-            y0 = hi * 0.30
-            draw.rectangle([m, y0, m + w, y0 + h], fill=fill)
-            tab_w = w * 0.32
-            tab_h = h * 0.20
-            draw.rectangle([m, y0 - tab_h, m + tab_w, y0], fill=fill)
-            ay = y0 + h / 2
-            asz = w * 0.16
-            left = kind == "folder-arrow-left"
-            ax = cx + (w * 0.06 if left else -w * 0.06)
-            draw.polygon(
-                [
-                    (ax + (-asz if left else asz), ay),
-                    (ax, ay - asz * 0.6),
-                    (ax, ay + asz * 0.6),
-                ],
-                fill=fill,
-            )
-
-        elif kind == "fit-to-screen":
-            gap = hi * 0.18
-            thick = max(3, hi * 0.06)
-            arm = hi * 0.20
-            for sx, sy, dx, dy in [
-                (gap, gap, 1, 1),
-                (hi - gap, gap, -1, 1),
-                (gap, hi - gap, 1, -1),
-                (hi - gap, hi - gap, -1, -1),
-            ]:
-                draw.line([sx, sy, sx + dx * arm, sy], fill=fill, width=int(thick))
-                draw.line([sx, sy, sx, sy + dy * arm], fill=fill, width=int(thick))
-                ah = thick * 1.8
-                draw.polygon(
-                    [
-                        (sx + dx * arm, sy),
-                        (sx + dx * (arm - ah), sy - ah * 0.5),
-                        (sx + dx * (arm - ah), sy + ah * 0.5),
-                    ],
-                    fill=fill,
-                )
-                draw.polygon(
-                    [
-                        (sx, sy + dy * arm),
-                        (sx - ah * 0.5, sy + dy * (arm - ah)),
-                        (sx + ah * 0.5, sy + dy * (arm - ah)),
-                    ],
-                    fill=fill,
-                )
-
-        elif kind == "cog":
-            outer_r = hi * 0.38
-            inner_r = hi * 0.26
-            teeth = 8
-            pts = []
-            for i in range(teeth * 2):
-                a = i * 3.14159 / teeth
-                r = outer_r if i % 2 == 0 else inner_r
-                pts.append((cx + r * cos(a), cy + r * sin(a)))
-            draw.polygon(pts, fill=fill)
-
-        img = img.resize((size, size), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return tk.PhotoImage(data=buf.read())
-
-    def _nav_icon_images(self, color: str, size: int = 22) -> dict[str, tk.PhotoImage]:
-        names = ("folder-arrow-left", "folder-arrow-right", "fit-to-screen", "cog")
-        sections = ("import", "export", "resizer", "settings")
+        ``color`` is the hex fill colour (default #F7F8FA). ``size`` is the
+        output pixel height/width. SVGs are rendered at runtime with
+        supersampling anti-aliasing and cached per (section, colour, size).
+        """
         result: dict[str, tk.PhotoImage] = {}
-        for section, kind in zip(sections, names):
+        if not hasattr(self, "_nav_icon_kinds"):
+            return result
+        colour = color or "#F7F8FA"
+
+        cache_key = (colour, size)
+        cache = getattr(self, "_nav_icon_cache", None)
+        if cache is None:
+            self._nav_icon_cache: dict[tuple[str, int], dict[str, tk.PhotoImage]] = {}
+            cache = self._nav_icon_cache
+
+        if cache_key in cache:
+            return cache[cache_key]
+
+        assets_dir = bundled_asset(".")
+        for section, kind in self._nav_icon_kinds.items():
+            svg_path = assets_dir / f"{kind}.svg"
             try:
-                icon = self._draw_nav_icon(kind, color, size)
-                if icon is not None:
-                    result[section] = icon
+                png_bytes = render_svg_icon(svg_path, size, color_hex=colour)
+                b64 = base64.b64encode(png_bytes).decode("ascii")
+                result[section] = tk.PhotoImage(data=b64)
             except Exception:
-                pass
+                continue
+
+        cache[cache_key] = result
         return result
 
     def _apply_theme(self) -> None:
@@ -1477,28 +1466,6 @@ class ImportUtilityApp:
             foreground=[("active", palette.foreground)],
         )
         style.configure(
-            "Nav.Toolbutton",
-            background=palette.sidebar,
-            foreground=palette.sidebar_foreground,
-            bordercolor=palette.sidebar,
-            lightcolor=palette.sidebar,
-            darkcolor=palette.sidebar,
-            focuscolor=palette.accent,
-            anchor="w",
-            relief="flat",
-            font=self.fonts["body_bold"],
-        )
-        style.map(
-            "Nav.Toolbutton",
-            background=[
-                ("selected", palette.sidebar_selected),
-                ("pressed", palette.sidebar_selected),
-                ("active", palette.sidebar_hover),
-            ],
-            foreground=[("disabled", palette.muted)],
-            bordercolor=[("focus", palette.accent)],
-        )
-        style.configure(
             "TCheckbutton",
             background=palette.surface,
             foreground=palette.foreground,
@@ -1639,16 +1606,36 @@ class ImportUtilityApp:
             self.sidebar_collapse_arrow.configure(
                 bg=palette.sidebar, fg=palette.sidebar_muted
             )
+        if hasattr(self, "_arrow_frame"):
+            self._arrow_frame.configure(bg=palette.sidebar)
         if hasattr(self, "sidebar_collapsed") and self.sidebar_collapsed:
-            self._nav_icon_imgs = self._nav_icon_images(palette.sidebar_foreground)
+            dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+            collapsed_icon_px = max(22, round(29 * dpi_factor))
+            self._nav_icon_imgs = self._nav_icon_images(size=collapsed_icon_px)
             for (section, _label), button in zip(
                 self.SECTIONS, self.navigation_buttons
             ):
                 icon_img = self._nav_icon_imgs.get(section)
                 if icon_img is not None:
-                    button.configure(image=icon_img, text="")
+                    button.configure(
+                        image=icon_img,
+                        text="",
+                        compound="center",
+                        anchor="center",
+                    )
                 else:
-                    button.configure(text="·")
+                    button.configure(
+                        text="·", image="", compound="text", anchor="center"
+                    )
+            self._update_nav_styles()
+        elif hasattr(self, "sidebar_collapsed") and not self.sidebar_collapsed:
+            for (section, label), button in zip(
+                self.SECTIONS, self.navigation_buttons
+            ):
+                button.configure(
+                    image="", text=label, compound="left", anchor="w"
+                )
+            self._update_nav_styles()
         if hasattr(self, "method_accents") and self.method_accents:
             selected = self.import_method_var.get()
             for name, accent in self.method_accents.items():
@@ -1739,10 +1726,6 @@ class ImportUtilityApp:
         style.configure(
             "Arrow.TButton",
             padding=(round(7 * dimension_factor), round(5 * dimension_factor)),
-        )
-        style.configure(
-            "Nav.Toolbutton",
-            padding=(round(14 * dimension_factor), round(11 * dimension_factor)),
         )
         style.configure(
             "TEntry",

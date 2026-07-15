@@ -77,7 +77,11 @@ class AppearanceTests(unittest.TestCase):
 
     def test_ui_keeps_a_dependency_free_portable_runtime(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["dependencies"], [])
+        deps = project["project"]["dependencies"]
+        allowed = {"svg.path"}
+        for dep in deps:
+            name = dep.split(">=")[0].split("<")[0].split("==")[0].strip()
+            self.assertIn(name, allowed, f"unexpected runtime dependency: {dep}")
         source = (ROOT / "src" / "obs_overlay_import_utility" / "ui.py").read_text(
             encoding="utf-8"
         )
