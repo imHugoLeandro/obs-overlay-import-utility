@@ -49,6 +49,9 @@ if (Test-Path $PortableApp) {
     --manifest (Join-Path $Root "scripts\app.manifest") `
     --name "OBS Overlay Import Utility" `
     --paths (Join-Path $Root "src") `
+    --hidden-import "PIL" `
+    --hidden-import "PIL.Image" `
+    --hidden-import "PIL.ImageDraw" `
     --collect-data "obs_overlay_import_utility" `
     --distpath (Join-Path $Root "dist") `
     --workpath (Join-Path $Root "build") `

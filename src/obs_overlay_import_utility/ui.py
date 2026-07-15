@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import queue
 import subprocess
@@ -9,7 +10,6 @@ import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from math import gcd
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable
@@ -294,22 +294,42 @@ class ImportUtilityApp:
         self.root.after(750, self._watch_window_dpi)
 
     def _build_interface(self) -> None:
-        sidebar_width = round(214 * max(1.0, self.current_dpi / 96.0))
-        self.root.columnconfigure(0, weight=0, minsize=sidebar_width)
-        self.root.columnconfigure(1, weight=1)
+        nav_font = self.fonts["body_bold"]
+        text_widths = [nav_font.measure(label) for _, label in self.SECTIONS]
+        max_text_width = max(text_widths) if text_widths else 0
+        self._min_sidebar_width = max(max_text_width + 56, 160)
+        initial_width = max(
+            self._min_sidebar_width,
+            round(214 * max(1.0, self.current_dpi / 96.0)),
+        )
+        self._max_sidebar_width = round(self.root.winfo_screenwidth() * 0.35)
+        self._sidebar_dragging = False
+
+        self.root.columnconfigure(0, weight=0, minsize=initial_width)
+        self.root.columnconfigure(1, weight=0)
+        self.root.columnconfigure(2, weight=1)
         self.root.rowconfigure(0, weight=1)
 
         navigation = ttk.Frame(
             self.root,
             padding=(18, 22),
             style="Sidebar.TFrame",
-            width=sidebar_width,
         )
         self.navigation_frame = navigation
         navigation.grid(row=0, column=0, sticky="nsew")
-        navigation.grid_propagate(False)
         navigation.columnconfigure(0, weight=1)
         navigation.rowconfigure(len(self.SECTIONS) + 3, weight=1)
+
+        self.sidebar_handle = tk.Frame(
+            self.root,
+            width=5,
+            cursor="sb_h_double_arrow",
+            bg=self.current_palette.border,
+        )
+        self.sidebar_handle.grid(row=0, column=1, sticky="ns")
+        self.sidebar_handle.bind("<Button-1>", self._start_sidebar_drag)
+        self.sidebar_handle.bind("<B1-Motion>", self._sidebar_drag)
+        self.root.bind("<ButtonRelease-1>", self._stop_sidebar_drag)
 
         logo_path = bundled_asset("social-space-logo.png")
         try:
@@ -318,11 +338,12 @@ class ImportUtilityApp:
             self.logo_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
         except tk.TclError:
             self.logo_label = None
-        ttk.Label(
+        self.sidebar_caption_label = ttk.Label(
             navigation,
             text="OVERLAY TOOLS",
             style="SidebarCaption.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(0, 18))
+        )
+        self.sidebar_caption_label.grid(row=1, column=0, sticky="w", pady=(0, 18))
 
         for row, (section, label) in enumerate(self.SECTIONS, start=2):
             button = ttk.Radiobutton(
@@ -332,19 +353,40 @@ class ImportUtilityApp:
                 variable=self.section_var,
                 command=self._show_section,
                 style="Nav.Toolbutton",
-                width=23,
             )
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
             self.navigation_buttons.append(button)
 
-        ttk.Label(
-            navigation,
+        self.sidebar_collapsed = False
+        self._nav_icon_imgs: dict[str, tk.PhotoImage] = {}
+        self._collapsed_sidebar_width = max(
+            64, round(64 * max(1.0, self.current_dpi / 96.0))
+        )
+
+        sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
+        sidebar_bottom.grid(row=len(self.SECTIONS) + 4, column=0, sticky="ew")
+        sidebar_bottom.columnconfigure(0, weight=1)
+
+        self.sidebar_version_label = ttk.Label(
+            sidebar_bottom,
             text=f"Portable • v{__version__}",
             style="SidebarMuted.TLabel",
-        ).grid(row=len(self.SECTIONS) + 4, column=0, sticky="sw")
+        )
+        self.sidebar_version_label.grid(row=0, column=0, sticky="w")
+
+        self.sidebar_collapse_arrow = tk.Label(
+            sidebar_bottom,
+            text="◀",
+            font=self.fonts["small"],
+            bg=self.current_palette.sidebar,
+            fg=self.current_palette.sidebar_muted,
+            cursor="hand2",
+        )
+        self.sidebar_collapse_arrow.grid(row=0, column=1, sticky="e")
+        self.sidebar_collapse_arrow.bind("<Button-1>", lambda e: self._toggle_sidebar())
 
         self.page_container = ttk.Frame(self.root, style="Page.TFrame")
-        self.page_container.grid(row=0, column=1, sticky="nsew")
+        self.page_container.grid(row=0, column=2, sticky="nsew")
         self.page_container.columnconfigure(0, weight=1)
         self.page_container.rowconfigure(0, weight=1)
 
@@ -1116,6 +1158,163 @@ class ImportUtilityApp:
             self.settings_page.grid(row=0, column=0, sticky="nsew")
             return
 
+    def _start_sidebar_drag(self, event: tk.Event) -> None:
+        self._sidebar_dragging = True
+
+    def _sidebar_drag(self, event: tk.Event) -> None:
+        if not self._sidebar_dragging or self.sidebar_collapsed:
+            return
+        new_width = event.x_root - self.root.winfo_rootx()
+        new_width = max(self._min_sidebar_width, min(new_width, self._max_sidebar_width))
+        self.root.columnconfigure(0, weight=0, minsize=new_width)
+
+    def _stop_sidebar_drag(self, event: tk.Event | None = None) -> None:
+        self._sidebar_dragging = False
+
+    def _toggle_sidebar(self) -> None:
+        if self.sidebar_collapsed:
+            self._expand_sidebar()
+        else:
+            self._collapse_sidebar()
+
+    def _collapse_sidebar(self) -> None:
+        self.sidebar_collapsed = True
+        self.root.columnconfigure(0, weight=0, minsize=self._collapsed_sidebar_width)
+        self.sidebar_version_label.grid_remove()
+        self.sidebar_caption_label.grid_remove()
+        self.sidebar_collapse_arrow.configure(text="▶")
+        self.sidebar_handle.configure(cursor="arrow")
+        self._nav_icon_imgs = self._nav_icon_images(
+            self.current_palette.sidebar_foreground
+        )
+        for (section, _label), button in zip(self.SECTIONS, self.navigation_buttons):
+            icon_img = self._nav_icon_imgs.get(section)
+            if icon_img is not None:
+                button.configure(image=icon_img, text="")
+            else:
+                button.configure(text="·")
+        self._update_logo_to_width(84)
+
+    def _expand_sidebar(self) -> None:
+        self.sidebar_collapsed = False
+        self.root.columnconfigure(0, weight=0, minsize=self._min_sidebar_width)
+        self.sidebar_version_label.grid()
+        self.sidebar_caption_label.grid()
+        self.sidebar_collapse_arrow.configure(text="◀")
+        self.sidebar_handle.configure(cursor="sb_h_double_arrow")
+        self._nav_icon_imgs.clear()
+        for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
+            button.configure(image="", text=label)
+        self._apply_ui_scale(self.ui_scale_var.get())
+
+    def _update_logo_to_width(self, target_w: int) -> None:
+        if not self.logo_source or not self.logo_label:
+            return
+        src_w = self.logo_source.width()
+        target_w = min(src_w, max(48, target_w))
+        if target_w >= src_w:
+            self.logo_image = self.logo_source
+        else:
+            ratio = max(1, src_w // target_w)
+            self.logo_image = self.logo_source.subsample(ratio, ratio)
+        self.logo_label.configure(image=self.logo_image)
+
+    def _draw_nav_icon(
+        self, kind: str, color: str, size: int = 22
+    ) -> tk.PhotoImage | None:
+        from PIL import Image, ImageDraw
+        from math import cos, sin
+
+        hi = size * 4
+        img = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        fill = (r, g, b, 255)
+        m = hi * 0.12
+        cx = hi / 2
+        cy = hi / 2
+
+        if kind == "folder-arrow-left" or kind == "folder-arrow-right":
+            w = hi - 2 * m
+            h = hi * 0.52
+            y0 = hi * 0.30
+            draw.rectangle([m, y0, m + w, y0 + h], fill=fill)
+            tab_w = w * 0.32
+            tab_h = h * 0.20
+            draw.rectangle([m, y0 - tab_h, m + tab_w, y0], fill=fill)
+            ay = y0 + h / 2
+            asz = w * 0.16
+            left = kind == "folder-arrow-left"
+            ax = cx + (w * 0.06 if left else -w * 0.06)
+            draw.polygon(
+                [
+                    (ax + (-asz if left else asz), ay),
+                    (ax, ay - asz * 0.6),
+                    (ax, ay + asz * 0.6),
+                ],
+                fill=fill,
+            )
+
+        elif kind == "fit-to-screen":
+            gap = hi * 0.18
+            thick = max(3, hi * 0.06)
+            arm = hi * 0.20
+            for sx, sy, dx, dy in [
+                (gap, gap, 1, 1),
+                (hi - gap, gap, -1, 1),
+                (gap, hi - gap, 1, -1),
+                (hi - gap, hi - gap, -1, -1),
+            ]:
+                draw.line([sx, sy, sx + dx * arm, sy], fill=fill, width=int(thick))
+                draw.line([sx, sy, sx, sy + dy * arm], fill=fill, width=int(thick))
+                ah = thick * 1.8
+                draw.polygon(
+                    [
+                        (sx + dx * arm, sy),
+                        (sx + dx * (arm - ah), sy - ah * 0.5),
+                        (sx + dx * (arm - ah), sy + ah * 0.5),
+                    ],
+                    fill=fill,
+                )
+                draw.polygon(
+                    [
+                        (sx, sy + dy * arm),
+                        (sx - ah * 0.5, sy + dy * (arm - ah)),
+                        (sx + ah * 0.5, sy + dy * (arm - ah)),
+                    ],
+                    fill=fill,
+                )
+
+        elif kind == "cog":
+            outer_r = hi * 0.38
+            inner_r = hi * 0.26
+            teeth = 8
+            pts = []
+            for i in range(teeth * 2):
+                a = i * 3.14159 / teeth
+                r = outer_r if i % 2 == 0 else inner_r
+                pts.append((cx + r * cos(a), cy + r * sin(a)))
+            draw.polygon(pts, fill=fill)
+
+        img = img.resize((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return tk.PhotoImage(data=buf.read())
+
+    def _nav_icon_images(self, color: str, size: int = 22) -> dict[str, tk.PhotoImage]:
+        names = ("folder-arrow-left", "folder-arrow-right", "fit-to-screen", "cog")
+        sections = ("import", "export", "resizer", "settings")
+        result: dict[str, tk.PhotoImage] = {}
+        for section, kind in zip(sections, names):
+            try:
+                icon = self._draw_nav_icon(kind, color, size)
+                if icon is not None:
+                    result[section] = icon
+            except Exception:
+                pass
+        return result
+
     def _apply_theme(self) -> None:
         theme = THEME_LABELS.get(self.theme_var.get(), "system")
         palette = palette_for(theme)
@@ -1434,6 +1633,22 @@ class ImportUtilityApp:
                     highlightcolor=palette.accent,
                     font=self.fonts["mono"],
                 )
+        if hasattr(self, "sidebar_handle"):
+            self.sidebar_handle.configure(bg=palette.border)
+        if hasattr(self, "sidebar_collapse_arrow"):
+            self.sidebar_collapse_arrow.configure(
+                bg=palette.sidebar, fg=palette.sidebar_muted
+            )
+        if hasattr(self, "sidebar_collapsed") and self.sidebar_collapsed:
+            self._nav_icon_imgs = self._nav_icon_images(palette.sidebar_foreground)
+            for (section, _label), button in zip(
+                self.SECTIONS, self.navigation_buttons
+            ):
+                icon_img = self._nav_icon_imgs.get(section)
+                if icon_img is not None:
+                    button.configure(image=icon_img, text="")
+                else:
+                    button.configure(text="·")
         if hasattr(self, "method_accents") and self.method_accents:
             selected = self.import_method_var.get()
             for name, accent in self.method_accents.items():
@@ -1547,15 +1762,15 @@ class ImportUtilityApp:
         self.root.update_idletasks()
 
     def _update_logo_scale(self, factor: float) -> None:
-        if not self.logo_source or not self.logo_label:
+        if self.sidebar_collapsed or not self.logo_source or not self.logo_label:
             return
-        target_width = min(self.logo_source.width(), max(72, round(120 * factor)))
-        common = gcd(target_width, self.logo_source.width())
-        numerator = target_width // common
-        denominator = self.logo_source.width() // common
-        self.logo_image = self.logo_source.subsample(
-            denominator, denominator
-        ).zoom(numerator, numerator)
+        src_w = self.logo_source.width()
+        target_w = min(src_w, max(72, round(120 * factor)))
+        if target_w >= src_w:
+            self.logo_image = self.logo_source
+        else:
+            ratio = max(1, src_w // target_w)
+            self.logo_image = self.logo_source.subsample(ratio, ratio)
         self.logo_label.configure(image=self.logo_image)
 
     def _update_custom_path_states(self) -> None:
