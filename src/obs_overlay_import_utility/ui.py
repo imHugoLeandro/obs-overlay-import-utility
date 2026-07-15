@@ -37,6 +37,7 @@ from .exporter import (
     active_obs_scene_collection,
     list_obs_scene_collections,
 )
+from . import dialogs as dlgs
 from .obs_live import (
     ObsAuthenticationRequired,
     ObsLiveError,
@@ -189,6 +190,10 @@ class ImportUtilityApp:
         ("resizer", "Auto Resizer"),
         ("settings", "Settings"),
     )
+
+    @property
+    def ui_zoom(self) -> float:
+        return max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -1767,6 +1772,9 @@ class ImportUtilityApp:
                 if isinstance(header, tk.Frame):
                     header.configure(bg=palette.surface)
 
+        dlgs.configure_dialog_styles(style, palette, self.ui_zoom)
+        dlgs.refresh_all_open_dialogs(palette, self.ui_zoom)
+
     def _capture_scalable_ui(self) -> None:
         def descendants(widget: tk.Misc) -> list[tk.Misc]:
             items: list[tk.Misc] = []
@@ -1867,6 +1875,7 @@ class ImportUtilityApp:
         self._update_logo_scale(dimension_factor)
         self._refresh_sidebar_layout()
         self.root.update_idletasks()
+        dlgs.refresh_all_open_dialogs(self.current_palette, self.ui_zoom)
 
     def _update_logo_scale(self, factor: float) -> None:
         if not self.logo_source or not self.logo_label:
@@ -1894,6 +1903,7 @@ class ImportUtilityApp:
         selected = filedialog.askopenfilename(
             title="Choose Python executable",
             filetypes=(("Python executable", "python*.exe"), ("Executables", "*.exe")),
+            parent=self.root,
         )
         if selected:
             self.python_path_var.set(selected)
@@ -1902,6 +1912,7 @@ class ImportUtilityApp:
         selected = filedialog.askopenfilename(
             title="Choose OBS executable",
             filetypes=(("OBS executable", "obs64.exe"), ("Executables", "*.exe")),
+            parent=self.root,
         )
         if selected:
             self.obs_path_var.set(selected)
@@ -1935,7 +1946,7 @@ class ImportUtilityApp:
             (settings.use_custom_obs, settings.obs_path, "OBS executable"),
         ):
             if enabled and not Path(path_value).is_file():
-                messagebox.showerror(APP_TITLE, f"Choose a valid {label.lower()} file.")
+                messagebox.showerror(APP_TITLE, f"Choose a valid {label.lower()} file.", parent=self.root)
                 self.settings_status_var.set(f"{label} was not saved.")
                 return False
         try:
@@ -2083,160 +2094,130 @@ class ImportUtilityApp:
         candidates_by_source_id: dict[str, list[DeviceCandidate]],
         on_complete: Callable[[], None] | None = None,
     ) -> None:
-        window = tk.Toplevel(self.root)
-        window.title("Overlay Device Setup")
-        window.transient(self.root)
-        window.geometry("760x520")
-        window.minsize(640, 380)
-        window.columnconfigure(0, weight=1)
-        window.rowconfigure(1, weight=1)
+        palette = self.current_palette
+        zoom = self.ui_zoom
+        space = dlgs.scaled_space(zoom)
+        met = dlgs.dialog_metrics(ui_zoom=zoom, base_width=800, base_height=520,
+                                  base_min_width=640, base_min_height=380)
+        dlg = dlgs.ThemedDialog(
+            self.root, "Overlay Device Setup", palette,
+            ui_zoom=zoom, width=800, height=520,
+            min_width=640, min_height=380, modal=True,
+        )
+        dlg.header(
+            "Overlay Device Setup",
+            "Choose an exact-type device source already configured in OBS. "
+            "Only device-selector values are copied; imported filters and "
+            "capture settings remain intact.",
+        )
 
-        header = ttk.Frame(window, padding=(18, 18, 18, 8))
-        header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(
-            header,
-            text="Overlay Device Setup",
-            style="DialogTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            header,
-            text=(
-                "Choose an exact-type device source already configured in OBS. "
-                "Only device-selector values are copied; imported filters and capture settings remain intact."
-            ),
-            wraplength=700,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
-        body = ttk.Frame(window, padding=(18, 0, 18, 0))
-        body.grid(row=1, column=0, sticky="nsew")
+        body = dlg.body
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
-        canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0)
-        canvas_background = ttk.Style().lookup(
-            "TFrame", "background"
-        ) or self.root.cget("background")
-        canvas.configure(background=canvas_background)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        canvas.configure(yscrollcommand=scrollbar.set)
 
-        form = ttk.Frame(canvas)
-        form.columnconfigure(1, weight=1)
+        canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
+                           background=palette.background)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=sb.set)
+
+        form = ttk.Frame(canvas, style="DialogBody.TFrame")
+        form.columnconfigure(0, weight=1)
         form_window = canvas.create_window((0, 0), window=form, anchor="nw")
 
-        def update_scroll_region(_event: tk.Event | None = None) -> None:
+        def _on_form_conf(_e: tk.Event | None = None) -> None:
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        def fit_form_width(event: tk.Event) -> None:
-            canvas.itemconfigure(form_window, width=event.width)
+        def _on_canvas_conf(ev: tk.Event) -> None:
+            w = ev.width - space.LG
+            if w > 0:
+                canvas.itemconfigure(form_window, width=w)
 
-        form.bind("<Configure>", update_scroll_region)
-        canvas.bind("<Configure>", fit_form_width)
-        window.bind(
-            "<MouseWheel>",
-            lambda event: canvas.yview_scroll(-1 * int(event.delta / 120), "units"),
-        )
+        form.bind("<Configure>", _on_form_conf)
+        canvas.bind("<Configure>", _on_canvas_conf)
+
+        # Scroll with mouse wheel
+        def _on_mwheel(ev: tk.Event) -> None:
+            canvas.yview_scroll(-1 * int(ev.delta / 120), "units")
+        dlg.dialog.bind("<MouseWheel>", _on_mwheel)
 
         choice_vars: dict[str, tk.StringVar] = {}
         choice_maps: dict[str, dict[str, DeviceCandidate | str | None]] = {}
-        for row, requirement in enumerate(requirements):
-            source_label = f"{requirement.name} ({requirement.kind})"
-            ttk.Label(form, text=source_label, wraplength=300).grid(
-                row=row,
-                column=0,
-                sticky="w",
-                padx=(0, 12),
-                pady=5,
+        for idx, req in enumerate(requirements):
+            # Device card — name on its own line, type muted below, combobox full-width
+            name_lbl = ttk.Label(
+                form, text=req.name,
+                style="DialogSection.TLabel",
             )
-            options: dict[str, DeviceCandidate | str | None] = {
+            name_lbl.grid(row=idx * 3, column=0, sticky="w",
+                          pady=(space.SM if idx > 0 else 0, 0))
+
+            kind_lbl = ttk.Label(
+                form, text=req.kind,
+                style="DialogMuted.TLabel",
+            )
+            kind_lbl.grid(row=idx * 3 + 1, column=0, sticky="w",
+                          pady=(space.XS, space.MD))
+
+            opts: dict[str, DeviceCandidate | str | None] = {
                 "Keep imported setting": None,
                 "Disable this source": "disable",
             }
-            for candidate in candidates_by_source_id.get(
-                requirement.source_id.casefold(), []
-            ):
-                label = candidate.label
-                number = 2
-                while label in options:
-                    label = f"{candidate.label} ({number})"
-                    number += 1
-                options[label] = candidate
-            variable = tk.StringVar(value="Keep imported setting")
+            for c in candidates_by_source_id.get(req.source_id.casefold(), []):
+                label = c.label
+                n = 2
+                while label in opts:
+                    label = f"{c.label} ({n})"
+                    n += 1
+                opts[label] = c
+            var = tk.StringVar(value="Keep imported setting")
             combo = ttk.Combobox(
-                form,
-                textvariable=variable,
-                values=list(options),
-                state="readonly",
+                form, textvariable=var, values=list(opts),
+                state="readonly", style="Dialog.TCombobox",
             )
-            combo.grid(row=row, column=1, sticky="ew", pady=5)
-            choice_vars[requirement.key] = variable
-            choice_maps[requirement.key] = options
+            combo.grid(row=idx * 3 + 2, column=0, sticky="ew",
+                       padx=(0, space.LG))
+
+            choice_vars[req.key] = var
+            choice_maps[req.key] = opts
 
         has_candidates = any(
-            candidates_by_source_id.get(item.source_id.casefold())
-            for item in requirements
+            candidates_by_source_id.get(it.source_id.casefold())
+            for it in requirements
         )
+        info_row = len(requirements) * 3
         if not has_candidates:
             ttk.Label(
                 form,
-                text=(
-                    "No exact-type local device sources were found. Keep each placeholder "
-                    "or disable it, then configure the source manually in OBS."
-                ),
-                style="Muted.TLabel",
-                wraplength=680,
-            ).grid(
-                row=len(requirements),
-                column=0,
-                columnspan=2,
-                sticky="w",
-                pady=(12, 0),
-            )
+                text="No exact-type local device sources were found. Keep each "
+                     "placeholder or disable it, then configure the source "
+                     "manually in OBS.",
+                style="DialogMuted.TLabel",
+                wraplength=met.body_wraplength,
+            ).grid(row=info_row, column=0, sticky="w",
+                   pady=(space.XL, 0))
 
-        actions = ttk.Frame(window, padding=18)
-        actions.grid(row=2, column=0, sticky="e")
-        completed = False
-
-        def close_window() -> None:
-            nonlocal completed
-            if completed:
-                return
-            completed = True
-            try:
-                window.grab_release()
-            except tk.TclError:
-                pass
-            window.destroy()
-            if on_complete:
-                self.root.after_idle(on_complete)
-
-        def apply_setup() -> None:
-            choices = {
-                key: choice_maps[key][variable.get()]
-                for key, variable in choice_vars.items()
-            }
-            error = apply_device_choices(collection_path, choices)
-            if error:
-                messagebox.showerror(APP_TITLE, error, parent=window)
+        # Footer
+        def _apply() -> None:
+            choices = {k: choice_maps[k][v.get()] for k, v in choice_vars.items()}
+            err = apply_device_choices(collection_path, choices)
+            if err:
+                messagebox.showerror(APP_TITLE, err, parent=dlg.dialog)
                 return
             self._append_import_results(
                 "\n\nDevice setup choices were applied to the imported collection."
             )
-            close_window()
+            dlg.close()
+            if on_complete:
+                self.root.after_idle(on_complete)
 
-        ttk.Button(actions, text="Skip for now", command=close_window).grid(
-            row=0,
-            column=0,
-            padx=(0, 8),
-        )
-        ttk.Button(actions, text="Apply Setup", command=apply_setup).grid(
-            row=0,
-            column=1,
-        )
-        window.protocol("WM_DELETE_WINDOW", close_window)
-        window.grab_set()
-        window.focus_set()
+        dlg.set_on_close(lambda: on_complete and self.root.after_idle(on_complete) if not dlg._completed else None)
+        dlg.footer_buttons([
+            ("Skip for now", dlg.cancel, False),
+            ("Apply Setup", _apply, True),
+        ])
+        dlg.show()
 
     def _refresh_export_collections(self) -> None:
         if self.busy:
@@ -2986,120 +2967,241 @@ class ImportUtilityApp:
         self._show_export_inventory_confirmation(inventory)
 
     def _show_export_inventory_confirmation(self, inventory: ExportInventory) -> None:
-        window = tk.Toplevel(self.root)
-        window.title("Confirm Overlay Export")
-        window.transient(self.root)
-        window.geometry("820x540")
-        window.minsize(680, 420)
-        window.columnconfigure(0, weight=1)
-        window.rowconfigure(2, weight=1)
-
-        header = ttk.Frame(window, padding=(18, 18, 18, 8))
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        ttk.Label(
-            header,
-            text="Export inventory",
-            style="DialogTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            header,
-            text=(
-                f"{len(inventory.items)} unique files • "
-                f"{format_file_size(inventory.total_bytes)} • "
-                f"{len(inventory.missing_references)} missing references"
-            ),
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        plan = inventory.plan
-        ttk.Label(
-            header,
-            text=f"Package: {plan.output_path if plan else inventory.package_path}",
-            wraplength=760,
-        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
-
-        if inventory.missing_references:
-            ttk.Label(
-                window,
-                text=(
-                    "Missing references will remain unchanged in the exported JSON. "
-                    "Review the rows marked Manual review before continuing."
-                ),
-                wraplength=760,
-            ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 8))
-
-        table_frame = ttk.Frame(window, padding=(18, 0, 18, 0))
-        table_frame.grid(row=2, column=0, sticky="nsew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-        tree = ttk.Treeview(
-            table_frame,
-            columns=("category", "size", "path"),
-            show="headings",
+        palette = self.current_palette
+        zoom = self.ui_zoom
+        space = dlgs.scaled_space(zoom)
+        met = dlgs.dialog_metrics(ui_zoom=zoom, base_width=1000, base_height=720,
+                                  base_min_width=680, base_min_height=500)
+        dlg = dlgs.ThemedDialog(
+            self.root, "Confirm Overlay Export", palette,
+            ui_zoom=zoom, width=1000, height=720,
+            min_width=680, min_height=500, modal=True,
         )
+        plan = inventory.plan
+        compressed = plan.compressed if plan else False
+        output_label = "ZIP archive" if compressed else "Package folder"
+        output_path = str(plan.output_path) if plan else (str(inventory.package_path) + (".zip" if compressed else ""))
+
+        dr = plan.dependency_report if plan and plan.dependency_report else None
+
+        # --- Header ---
+        hdr = dlg.header(
+            "Review Export Package",
+            f"{inventory.scene_count} scenes, {inventory.source_count} sources — "
+            f"{len(inventory.items)} local files, {format_file_size(inventory.total_bytes)}"
+        )
+        hdr.columnconfigure(0, weight=1)
+
+        # Package path
+        ttk.Label(
+            hdr,
+            text=f"Output: {output_path} ({output_label})",
+            style="DialogBody.TLabel",
+            wraplength=met.body_wraplength,
+        ).grid(row=2, column=0, sticky="w", pady=(space.XS, 0))
+
+        # Summary grid in header
+        summary_vars = {
+            "Unique files": str(len(inventory.items)),
+            "Total uncompressed": format_file_size(inventory.total_bytes),
+            "Browser files": str(inventory.browser_files),
+            "Missing references": str(len(inventory.missing_references)),
+            "Format": output_label,
+        }
+        if dr:
+            if dr.plugin_source_ids:
+                summary_vars["Plugin source IDs"] = str(len(dr.plugin_source_ids))
+            if dr.plugin_filter_ids:
+                summary_vars["Plugin filter IDs"] = str(len(dr.plugin_filter_ids))
+            if dr.fonts:
+                summary_vars["Fonts"] = str(len(dr.fonts))
+            if dr.remote_resources:
+                summary_vars["Remote resources"] = str(len(dr.remote_resources))
+            if dr.devices:
+                summary_vars["Devices"] = str(len(dr.devices))
+
+        summary_row = 3
+        items_per = 3
+        keys = list(summary_vars)
+        for i in range(0, len(keys), items_per):
+            batch = keys[i:i + items_per]
+            for j, k in enumerate(batch):
+                col = j * 2
+                ttk.Label(hdr, text=f"{k}:", style="DialogMuted.TLabel").grid(
+                    row=summary_row, column=col, sticky="w",
+                    padx=(0, space.XS), pady=(space.XS, 0))
+                ttk.Label(hdr, text=summary_vars[k], style="DialogBody.TLabel").grid(
+                    row=summary_row, column=col + 1, sticky="w",
+                    padx=(0, space.XL), pady=(space.XS, 0))
+            summary_row += 1
+
+        # --- Warning ---
+        warn = inventory.missing_references
+        sensitive = dr and dr.has_sensitive_urls
+        if warn or sensitive:
+            wf = ttk.Frame(dlg.body, style="DialogWarning.TFrame")
+            wf.grid(row=0, column=0, sticky="ew", pady=(0, space.MD))
+            wf.columnconfigure(0, weight=1)
+            wpad = space.MD
+            msgs = []
+            if warn:
+                msgs.append(
+                    f"{len(warn)} referenced file(s) could not be found and will "
+                    "not be included. Review the Missing / Manual Review tab."
+                )
+            if sensitive:
+                msgs.append(
+                    "Remote URLs with sensitive query parameters were detected. "
+                    "Credentials are not copied into the manifest."
+                )
+            for mi, msg in enumerate(msgs):
+                ttk.Label(wf, text=msg, style="DialogWarning.TLabel",
+                          wraplength=met.body_wraplength).grid(
+                    row=mi, column=0, sticky="w", padx=wpad, pady=(wpad, wpad if mi == len(msgs) - 1 else 0))
+
+        # --- Notebook ---
+        note_row = 1 if warn or sensitive else 0
+        nb = ttk.Notebook(dlg.body, style="Dialog.TNotebook")
+        nb.grid(row=note_row, column=0, sticky="nsew")
+        dlg.body.rowconfigure(note_row, weight=1)
+
+        # Files tab
+        files_frame = ttk.Frame(nb, style="DialogBody.TFrame")
+        files_frame.columnconfigure(0, weight=1)
+        files_frame.rowconfigure(0, weight=1)
+        tree_cols = ("category", "size", "used_by", "source_path", "package_path")
+        tree = ttk.Treeview(files_frame, columns=tree_cols, show="headings",
+                            style="Dialog.Treeview")
         tree.heading("category", text="Category")
         tree.heading("size", text="Size")
-        tree.heading("path", text="Source path")
-        tree.column("category", width=135, stretch=False)
+        tree.heading("used_by", text="Used by")
+        tree.heading("source_path", text="Source path")
+        tree.heading("package_path", text="Package path")
+        tree.column("category", width=100, stretch=False)
         tree.column("size", width=85, anchor="e", stretch=False)
-        tree.column("path", width=520, stretch=True)
+        tree.column("used_by", width=180, stretch=False)
+        tree.column("source_path", width=260, stretch=True)
+        tree.column("package_path", width=260, stretch=True)
         tree.grid(row=0, column=0, sticky="nsew")
-        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        vertical.grid(row=0, column=1, sticky="ns")
-        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
-        horizontal.grid(row=1, column=0, sticky="ew")
-        tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        vs = ttk.Scrollbar(files_frame, orient="vertical", command=tree.yview)
+        vs.grid(row=0, column=1, sticky="ns")
+        hs = ttk.Scrollbar(files_frame, orient="horizontal", command=tree.xview)
+        hs.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
 
-        for item in inventory.items:
-            tree.insert(
-                "",
-                "end",
-                values=(item.category, format_file_size(item.size), str(item.path)),
-            )
+        if inventory.items:
+            for item in inventory.items:
+                tree.insert("", "end", values=(
+                    item.category, format_file_size(item.size),
+                    item.source_name, str(item.path), item.package_path))
+        else:
+            ttk.Label(files_frame, text="No local files to package.",
+                      style="DialogMuted.TLabel").grid(
+                row=2, column=0, sticky="w", pady=space.MD)
+
+        tree.insert("", "end", values=("", "", "", "", ""))
         for missing in inventory.missing_references:
-            tree.insert("", "end", values=("Manual review", "—", missing))
+            tree.insert("", "end", values=("Missing", "\u2014", "", missing, ""))
 
-        actions = ttk.Frame(window, padding=18)
-        actions.grid(row=3, column=0, sticky="e")
+        nb.add(files_frame, text="Files")
 
-        def destroy_window() -> None:
-            try:
-                window.grab_release()
-            except tk.TclError:
-                pass
-            window.destroy()
+        # Requirements tab
+        req_frame = ttk.Frame(nb, style="DialogBody.TFrame")
+        req_frame.columnconfigure(0, weight=1)
+        req_frame.rowconfigure(0, weight=1)
+        req_tree = ttk.Treeview(req_frame, columns=("type", "detail"), show="headings",
+                                style="Dialog.Treeview")
+        req_tree.heading("type", text="Type")
+        req_tree.heading("detail", text="Detail")
+        req_tree.column("type", width=180, stretch=False)
+        req_tree.column("detail", width=500, stretch=True)
+        req_tree.grid(row=0, column=0, sticky="nsew")
+        rvs = ttk.Scrollbar(req_frame, orient="vertical", command=req_tree.yview)
+        rvs.grid(row=0, column=1, sticky="ns")
+        req_tree.configure(yscrollcommand=rvs.set)
 
-        def cancel_export() -> None:
-            destroy_window()
+        has_reqs = False
+        if dr:
+            for f in dr.fonts:
+                req_tree.insert("", "end", values=("Font", f))
+                has_reqs = True
+            for d in dr.devices:
+                req_tree.insert("", "end", values=(
+                    "Device", f"{d.get('source_name', '')} ({d.get('source_id', '')}) [{d.get('kind', '')}]"))
+                has_reqs = True
+            for r in dr.remote_resources:
+                req_tree.insert("", "end", values=(
+                    "Remote", f"{r.get('host', '')} {'[sensitive]' if r.get('sensitive') == 'yes' else ''}"))
+                has_reqs = True
+            for p in dr.plugin_source_ids:
+                req_tree.insert("", "end", values=("Plugin source", f"{p['name']} ({p['id']})"))
+                has_reqs = True
+            for p in dr.plugin_filter_ids:
+                req_tree.insert("", "end", values=("Plugin filter", f"{p['name']} ({p['id']})"))
+                has_reqs = True
+        if not has_reqs:
+            ttk.Label(req_frame, text="No additional requirements detected.",
+                      style="DialogMuted.TLabel").grid(
+                row=1, column=0, sticky="w", pady=space.MD)
+        nb.add(req_frame, text="Requirements")
+
+        # Missing tab
+        miss_frame = ttk.Frame(nb, style="DialogBody.TFrame")
+        miss_frame.columnconfigure(0, weight=1)
+        miss_frame.rowconfigure(0, weight=1)
+        miss_tree = ttk.Treeview(miss_frame,
+                                 columns=("source", "setting", "filename", "reason"),
+                                 show="headings", style="Dialog.Treeview")
+        miss_tree.heading("source", text="Source")
+        miss_tree.heading("setting", text="Setting")
+        miss_tree.heading("filename", text="Filename")
+        miss_tree.heading("reason", text="Reason")
+        miss_tree.column("source", width=150, stretch=False)
+        miss_tree.column("setting", width=120, stretch=False)
+        miss_tree.column("filename", width=200, stretch=True)
+        miss_tree.column("reason", width=200, stretch=True)
+        miss_tree.grid(row=0, column=0, sticky="nsew")
+        mvs = ttk.Scrollbar(miss_frame, orient="vertical", command=miss_tree.yview)
+        mvs.grid(row=0, column=1, sticky="ns")
+        miss_tree.configure(yscrollcommand=mvs.set)
+
+        if plan and plan.missing_references:
+            for m in plan.missing_references:
+                miss_tree.insert("", "end", values=(
+                    m.get("source", ""), m.get("setting", ""),
+                    m.get("basename", ""), m.get("reason", "")))
+        else:
+            ttk.Label(miss_frame, text="No missing files. All referenced files were found.",
+                      style="DialogMuted.TLabel").grid(
+                row=1, column=0, sticky="w", pady=space.MD)
+        nb.add(miss_frame, text="Missing / Manual Review")
+
+        # --- Footer ---
+        def _cancel() -> None:
+            dlg.close()
             self.export_status_var.set("Export cancelled after inventory review.")
             self._set_busy(False, "Overlay export cancelled.")
 
-        def confirm_export() -> None:
-            collection = inventory.collection_path
-            destination = inventory.destination
-            plan = inventory.plan
-            compressed = plan.compressed if plan else self.export_compress_var.get()
-            destroy_window()
+        def _confirm() -> None:
+            coll = inventory.collection_path
+            dest = inventory.destination
+            p = inventory.plan
+            comp = p.compressed if p else self.export_compress_var.get()
+            dlg.close()
             self.export_status_var.set("Packaging the confirmed OBS collection…")
             self._write_export_results("Inventory confirmed. Exporting the package…")
             threading.Thread(
                 target=self._export_worker,
-                args=(collection, destination, compressed, plan),
+                args=(coll, dest, comp, p),
                 daemon=True,
             ).start()
 
-        ttk.Button(actions, text="Cancel", command=cancel_export, width=12).grid(
-            row=0, column=0, padx=(0, 8)
-        )
-        ttk.Button(
-            actions,
-            text="Confirm Export",
-            command=confirm_export,
-            width=18,
-        ).grid(row=0, column=1)
-        window.protocol("WM_DELETE_WINDOW", cancel_export)
-        window.grab_set()
-        window.focus_set()
+        dlg.set_on_close(_cancel)
+        dlg.footer_buttons([
+            ("Cancel", _cancel, False),
+            ("Confirm Export", _confirm, True),
+        ])
+        dlg.show()
 
     def _finish_export(self, result: ExportResult) -> None:
         if result.error:
