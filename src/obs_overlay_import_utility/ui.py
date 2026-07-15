@@ -401,7 +401,7 @@ class ImportUtilityApp:
 
         self.sidebar_collapsed = False
         self._collapsed_sidebar_width = max(
-            72, round(72 * max(1.0, self.current_dpi / 96.0))
+            50, round(50 * max(1.0, self.current_dpi / 96.0))
         )
 
         sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
@@ -415,24 +415,19 @@ class ImportUtilityApp:
         )
         self.sidebar_version_label.grid(row=0, column=0, sticky="w")
 
-        arrow_frame = tk.Frame(
-            self.root,
-            bg=self.current_palette.sidebar,
-        )
-        arrow_frame.grid(row=0, column=0, sticky="se")
+        expanded_arrow_size = max(8, round(12 * max(1.0, self.current_dpi / 96.0)))
         self.sidebar_collapse_arrow = tk.Label(
-            arrow_frame,
+            sidebar_bottom,
             text="◀",
-            font=self.fonts["small"],
+            font=(self.font_family, expanded_arrow_size),
             bg=self.current_palette.sidebar,
             fg=self.current_palette.sidebar_muted,
             cursor="hand2",
         )
-        self.sidebar_collapse_arrow.pack()
+        self.sidebar_collapse_arrow.grid(row=0, column=1, sticky="e")
         self.sidebar_collapse_arrow.bind(
             "<Button-1>", lambda e: self._toggle_sidebar()
         )
-        self._arrow_frame = arrow_frame
 
         self.page_container = ttk.Frame(self.root, style="Page.TFrame")
         self.page_container.grid(row=0, column=2, sticky="nsew")
@@ -1234,11 +1229,14 @@ class ImportUtilityApp:
         self.sidebar_caption_label.grid_remove()
         self.sidebar_collapse_arrow.configure(text="▶")
         self.sidebar_handle.configure(cursor="arrow")
-        self._arrow_frame.grid_configure(sticky="s")
+        self.sidebar_collapse_arrow.grid_remove()
+        self.sidebar_collapse_arrow.place(
+            relx=0.5, rely=1.0, anchor="s"
+        )
         if self.logo_label:
             self.logo_label.grid_configure(sticky="")
         dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-        arrow_font_size = max(12, round(18 * dpi_factor))
+        arrow_font_size = max(9, round(13 * dpi_factor))
         self.sidebar_collapse_arrow.configure(
             font=(self.font_family, arrow_font_size)
         )
@@ -1272,12 +1270,14 @@ class ImportUtilityApp:
         self.sidebar_caption_label.grid()
         self.sidebar_collapse_arrow.configure(text="◀")
         self.sidebar_handle.configure(cursor="sb_h_double_arrow")
-        self._arrow_frame.grid_configure(sticky="se")
+        self.sidebar_collapse_arrow.place_forget()
+        self.sidebar_collapse_arrow.grid(row=0, column=1, sticky="e")
+        arrow_font_size = max(8, round(12 * max(1.0, getattr(self, "current_dpi", 96) / 96.0)))
+        self.sidebar_collapse_arrow.configure(
+            font=(self.font_family, arrow_font_size)
+        )
         if self.logo_label:
             self.logo_label.grid_configure(sticky="w")
-        self.sidebar_collapse_arrow.configure(
-            font=self.fonts["small"]
-        )
         for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
             button.configure(
                 text=label, font=self.fonts["body_bold"],
@@ -1292,8 +1292,11 @@ class ImportUtilityApp:
         selected = self.section_var.get()
         for section, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
             is_selected = section == selected
+            is_collapsed = getattr(self, "sidebar_collapsed", False)
             if getattr(btn, "_is_hovering", False) and not is_selected:
                 btn.configure(bg=palette.sidebar_hover, fg=palette.sidebar_foreground)
+            elif is_selected and is_collapsed:
+                btn.configure(bg=palette.sidebar, fg=palette.accent)
             else:
                 bg = palette.sidebar_selected if is_selected else palette.sidebar
                 btn.configure(bg=bg, fg=palette.sidebar_foreground)
@@ -1618,8 +1621,6 @@ class ImportUtilityApp:
             self.sidebar_collapse_arrow.configure(
                 bg=palette.sidebar, fg=palette.sidebar_muted
             )
-        if hasattr(self, "_arrow_frame"):
-            self._arrow_frame.configure(bg=palette.sidebar)
         if hasattr(self, "sidebar_collapsed") and self.sidebar_collapsed:
             dpi_factor = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
             icon_font_size = -max(22, round(29 * dpi_factor))
