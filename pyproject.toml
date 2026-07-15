@@ -23,7 +23,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-build = ["pyinstaller>=6.0,<7"]
+build = ["pyinstaller>=6.0,<7", "numpy>=1.24", "Pillow>=10.0"]
+icons = ["numpy>=1.24", "Pillow>=10.0", "svg.path>=6.3"]
 
 [project.gui-scripts]
 obs-overlay-import-utility = "obs_overlay_import_utility.ui:main"

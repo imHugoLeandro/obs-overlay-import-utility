@@ -101,7 +101,7 @@ tests/              Unit and failure-oriented regression tests
 scripts/build_portable.ps1  Official Windows build entry point
 scripts/app.manifest       Per-Monitor V2 manifest
 tools/launcher.py          Packaged entry point
-tools/render_icons.py      Design-time icon PNG generator (Pillow + svg.path)
+tools/render_icons.py      Design-time icon PNG generator (numpy + Pillow + svg.path, scanline nonzero-fill)
 ```
 
 Update this map when responsibilities change.

@@ -7,6 +7,9 @@ import tomllib
 import unittest
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
@@ -64,7 +67,6 @@ class SidebarRuntimeTests(unittest.TestCase):
         self.assertNotIn("mdi_family", source)
 
     def test_clean_module_imports(self) -> None:
-        """Every production module must import successfully."""
         modules = [
             "obs_overlay_import_utility.ui",
             "obs_overlay_import_utility.appearance",
@@ -83,60 +85,202 @@ class SidebarRuntimeTests(unittest.TestCase):
         tool = ROOT / "tools" / "render_icons.py"
         self.assertTrue(tool.is_file(), f"render_icons.py missing: {tool}")
         source = tool.read_text(encoding="utf-8")
-        self.assertIn("icon-", source)  # generates icon-* PNGs
+        self.assertIn("icon-", source)
         self.assertIn("COLORS", source)
         self.assertIn("SIZES", source)
+        self.assertNotIn("ImageDraw", source,
+                          "render_icons.py must not use ImageDraw.polygon()")
+        self.assertNotIn("_flatten_path", source,
+                          "render_icons.py must not implement manual path flattening")
+        self.assertNotIn("_subpath_polygons", source,
+                          "render_icons.py must not guess subpaths from duplicate points")
+        self.assertIn("nonzero", source,
+                       "render_icons.py must use nonzero fill rule")
+        self.assertIn("scan", source.lower(),
+                       "render_icons.py must use scanline-based fill")
 
 
 class SidebarMetricsTests(unittest.TestCase):
-    """Verify _SidebarMetrics calculation from pure inputs.
+    """Verify SidebarMetrics using the real production helper."""
 
-    Does not require Tk — uses a mock-like wrapper around the static math.
-    """
+    @classmethod
+    def setUpClass(cls) -> None:
+        from obs_overlay_import_utility.ui import (
+            compute_sidebar_metrics,
+            subsample_ratio,
+            COLLAPSED_SIDEBAR_BASE_WIDTH,
+            COLLAPSED_LOGO_BASE_WIDTH,
+            COLLAPSED_ICON_BASE_SIZE,
+            SIDEBAR_HORIZONTAL_PADDING,
+        )
+        cls.compute_sidebar_metrics = staticmethod(compute_sidebar_metrics)
+        cls.subsample_ratio = staticmethod(subsample_ratio)
+        cls.COLLAPSED_SIDEBAR_BASE_WIDTH = COLLAPSED_SIDEBAR_BASE_WIDTH
+        cls.COLLAPSED_LOGO_BASE_WIDTH = COLLAPSED_LOGO_BASE_WIDTH
+        cls.COLLAPSED_ICON_BASE_SIZE = COLLAPSED_ICON_BASE_SIZE
+        cls.SIDEBAR_HORIZONTAL_PADDING = SIDEBAR_HORIZONTAL_PADDING
 
-    def _compute(self, dpi: int, zoom_pct: int) -> tuple[int, int, int, int]:
-        """Return (collapsed_width, icon_size, logo_width, arrow_font_size)."""
-        dpi_scale = dpi / 96.0
-        zoom_scale = zoom_pct / 100.0
-        scale = dpi_scale * zoom_scale
-        icon_size = max(22, round(29 * scale))
-        logo_width = max(48, round(109 * scale))
-        arrow_font_size = max(9, round(13 * scale))
-        content = max(icon_size, logo_width, round(arrow_font_size * 0.75))
-        collapsed = max(72, round(content + 36 * scale))
-        return (collapsed, icon_size, logo_width, arrow_font_size)
+    def _metrics(self, dpi: int, zoom_pct: float):
+        return self.compute_sidebar_metrics(dpi, zoom_pct)
 
-    def test_metrics_at_96dpi_100pct(self) -> None:
-        cw, icon, logo, arrow = self._compute(96, 100)
-        self.assertGreaterEqual(cw, 72)
-        self.assertEqual(icon, 29)
-        self.assertGreaterEqual(logo, 48)
-        self.assertGreaterEqual(arrow, 9)
+    # --- exact width targets ---
 
-    def test_metrics_at_144dpi_100pct(self) -> None:
-        cw, icon, logo, arrow = self._compute(144, 100)
-        self.assertGreaterEqual(cw, 96)
-        self.assertGreaterEqual(icon, 33)
-        self.assertGreaterEqual(logo, 72)
+    def test_96dpi_75pct_approx_75px(self) -> None:
+        m = self._metrics(96, 75)
+        self.assertAlmostEqual(m.collapsed_width, 75, delta=2)
 
-    def test_metrics_at_96dpi_75pct(self) -> None:
-        cw, icon, logo, arrow = self._compute(96, 75)
-        self.assertGreaterEqual(cw, 72)
-        self.assertGreaterEqual(icon, 22)
+    def test_96dpi_100pct_approx_100px(self) -> None:
+        m = self._metrics(96, 100)
+        self.assertAlmostEqual(m.collapsed_width, 100, delta=2)
 
-    def test_metrics_at_96dpi_150pct(self) -> None:
-        cw, icon, logo, arrow = self._compute(96, 150)
-        self.assertGreaterEqual(cw, 72)
-        self.assertGreaterEqual(icon, 33)
+    def test_96dpi_150pct_approx_150px(self) -> None:
+        m = self._metrics(96, 150)
+        self.assertAlmostEqual(m.collapsed_width, 150, delta=2)
 
-    def test_collapsed_width_not_less_than_content(self) -> None:
-        cw, icon, logo, arrow = self._compute(96, 100)
-        content_max = max(icon, logo, round(arrow * 0.75))
-        self.assertGreaterEqual(cw, content_max + 18)
+    def test_144dpi_100pct_approx_150px(self) -> None:
+        m = self._metrics(144, 100)
+        self.assertAlmostEqual(m.collapsed_width, 150, delta=2)
+
+    def test_144dpi_150pct_approx_225px(self) -> None:
+        m = self._metrics(144, 150)
+        self.assertAlmostEqual(m.collapsed_width, 225, delta=2)
+
+    # --- logo + padding fits inside collapsed width ---
+
+    def test_logo_plus_padding_fits(self) -> None:
+        for dpi, zoom in ((96, 75), (96, 100), (96, 150), (144, 100), (144, 150)):
+            with self.subTest(dpi=dpi, zoom=zoom):
+                m = self._metrics(dpi, zoom)
+                needed = m.logo_width + 2 * m.horizontal_padding
+                self.assertLessEqual(needed, m.collapsed_width + 2,
+                                     f"logo {m.logo_width} + 2*{m.horizontal_padding} "
+                                     f"exceeds {m.collapsed_width} at {dpi}dpi/{zoom}%")
+
+    def test_icon_plus_padding_fits(self) -> None:
+        for dpi, zoom in ((96, 75), (96, 100), (96, 150), (144, 100), (144, 150)):
+            with self.subTest(dpi=dpi, zoom=zoom):
+                m = self._metrics(dpi, zoom)
+                needed = m.icon_size + 2 * m.horizontal_padding
+                self.assertLessEqual(needed, m.collapsed_width + 2,
+                                     f"icon {m.icon_size} + 2*{m.horizontal_padding} "
+                                     f"exceeds {m.collapsed_width} at {dpi}dpi/{zoom}%")
+
+    # --- subsample_ratio (logo ceiling division) ---
+
+    def test_subsample_480_to_109_not_120(self) -> None:
+        r = self.subsample_ratio(480, 109)
+        self.assertEqual(r, 5)
+        self.assertLessEqual(480 // r, 109)
+
+    def test_subsample_480_to_164_not_240(self) -> None:
+        r = self.subsample_ratio(480, 164)
+        self.assertEqual(r, 3)
+        self.assertLessEqual(480 // r, 164)
+
+    def test_subsample_never_exceeds_target(self) -> None:
+        for src in (480, 256, 128, 64):
+            for tgt in (109, 164, 60, 100, 245):
+                with self.subTest(src=src, tgt=tgt):
+                    r = self.subsample_ratio(src, tgt)
+                    actual = src // r
+                    self.assertLessEqual(actual, tgt,
+                                         f"src={src} tgt={tgt} ratio={r} actual={actual}")
+
+    def test_subsample_480_to_60(self) -> None:
+        r = self.subsample_ratio(480, 60)
+        self.assertEqual(r, 8)
+        self.assertLessEqual(480 // r, 60)
+
+    # --- constants are sensible ---
+
+    def test_base_constants_are_in_range(self) -> None:
+        self.assertGreaterEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 90)
+        self.assertLessEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 110)
+        self.assertGreaterEqual(self.COLLAPSED_LOGO_BASE_WIDTH, 50)
+        self.assertLessEqual(self.COLLAPSED_LOGO_BASE_WIDTH, 70)
+        self.assertGreaterEqual(self.COLLAPSED_ICON_BASE_SIZE, 25)
+        self.assertLessEqual(self.COLLAPSED_ICON_BASE_SIZE, 35)
+        self.assertGreaterEqual(self.SIDEBAR_HORIZONTAL_PADDING, 15)
+        self.assertLessEqual(self.SIDEBAR_HORIZONTAL_PADDING, 22)
+
+
+class GeneratedPngQualityTests(unittest.TestCase):
+    """Verify generated PNG visual correctness without Tk."""
+
+    ASSETS = SRC / "obs_overlay_import_utility" / "assets"
+    ICONS = ("folder-arrow-left", "folder-arrow-right", "fit-to-screen", "cog")
+
+    def _load(self, name: str, colour: str, size: int = 64) -> np.ndarray:
+        png = self.ASSETS / f"icon-{name}-{colour}-{size}.png"
+        return np.array(Image.open(str(png)))
+
+    def test_every_png_has_alpha_channel(self) -> None:
+        for name in self.ICONS:
+            for colour in ("white", "red"):
+                for size in (32, 40, 48, 64):
+                    arr = self._load(name, colour, size)
+                    self.assertEqual(arr.shape[2], 4,
+                                     f"{name} {colour} {size} missing alpha")
+
+    def test_red_and_white_have_identical_alpha(self) -> None:
+        for name in self.ICONS:
+            ra = self._load(name, "red")[:, :, 3]
+            wa = self._load(name, "white")[:, :, 3]
+            diff = np.sum(np.abs(ra.astype(int) - wa.astype(int)))
+            self.assertEqual(diff, 0,
+                             f"{name} red/white alpha differ by {diff} px")
+
+    def test_no_opaque_black_pixels(self) -> None:
+        for name in self.ICONS:
+            arr = self._load(name, "red")
+            alpha = arr[:, :, 3]
+            opaque = alpha > 128
+            rgb = arr[opaque][:, :3]
+            black = np.sum(np.all(rgb == (0, 0, 0), axis=1))
+            self.assertEqual(black, 0, f"{name} has {black} opaque black pixels")
+
+    def test_cog_center_transparent(self) -> None:
+        arr = self._load("cog", "red")
+        c = arr[32, 32]
+        self.assertEqual(c[3], 0, f"cog center should be transparent, got {tuple(c)}")
+
+    def test_fit_to_screen_not_blank_in_center(self) -> None:
+        arr = self._load("fit-to-screen", "red")
+        alpha = arr[:, :, 3]
+        visible = np.sum(alpha > 50)
+        self.assertGreater(visible, 500, f"fit-to-screen only {visible} visible px")
+
+    def test_folder_left_and_right_differ(self) -> None:
+        fl = self._load("folder-arrow-left", "red")
+        fr = self._load("folder-arrow-right", "red")
+        diff = np.sum(fl != fr)
+        self.assertGreater(diff, 100,
+                           f"folder-left vs folder-right differ by only {diff} px")
+
+    def test_no_output_touches_all_four_edges(self) -> None:
+        for name in self.ICONS:
+            arr = self._load(name, "red")
+            alpha = arr[:, :, 3]
+            h, w = alpha.shape
+            top = np.any(alpha[0, :] > 50)
+            bottom = np.any(alpha[-1, :] > 50)
+            left = np.any(alpha[:, 0] > 50)
+            right = np.any(alpha[:, -1] > 50)
+            touching = sum([top, bottom, left, right])
+            self.assertLess(touching, 4,
+                            f"{name} touches {touching}/4 edges")
+
+    def test_all_sizes_of_each_icon_exist_32_40_48_64(self) -> None:
+        for name in self.ICONS:
+            for colour in ("white", "red"):
+                for size in (32, 40, 48, 64):
+                    arr = self._load(name, colour, size)
+                    self.assertEqual(arr.shape[0], size)
+                    self.assertEqual(arr.shape[1], size)
 
 
 class SidebarLayoutTests(unittest.TestCase):
-    """Verify collapsed/expanded alignment rules."""
+    """Verify collapsed/expanded alignment rules.  Requires one Tk root."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -230,8 +374,81 @@ class SidebarLayoutTests(unittest.TestCase):
         try:
             self.app.section_var.set("import")
             self.app._update_nav_styles()
+            import_btn = self.app.navigation_buttons[0]
+            import_img = import_btn.cget("image")
+            self.assertNotEqual(str(import_img), "",
+                                "import button must have an image when selected")
+
+            old_icon = getattr(import_btn, "_current_icon", None)
+            self.assertIsNotNone(old_icon,
+                                 "import _current_icon must be set")
+
             self.app.section_var.set("export")
             self.app._update_nav_styles()
+            export_btn = self.app.navigation_buttons[1]
+            export_img = export_btn.cget("image")
+            self.assertNotEqual(str(export_img), "",
+                                "export button must have an image when selected")
+
+            new_icon = getattr(export_btn, "_current_icon", None)
+            self.assertIsNotNone(new_icon,
+                                 "export _current_icon must be set")
+            self.assertIsNot(new_icon, old_icon,
+                             "selected icon must change to a different PhotoImage")
+
+            prev_icon = getattr(import_btn, "_current_icon", None)
+            self.assertIsNotNone(prev_icon,
+                                 "previously selected button retains _current_icon")
+        finally:
+            self.app._expand_sidebar()
+
+    def test_selected_keeps_correct_icon_kind(self) -> None:
+        self.app._collapse_sidebar()
+        try:
+            for idx, (section, _label) in enumerate(self.app.SECTIONS):
+                self.app.section_var.set(section)
+                self.app._update_nav_styles()
+                btn = self.app.navigation_buttons[idx]
+                img = btn.cget("image")
+                self.assertNotEqual(str(img), "",
+                                    f"section {section} button should have an image")
+        finally:
+            self.app._expand_sidebar()
+
+    def test_collapsed_width_less_than_expanded(self) -> None:
+        self.assertFalse(self.app.sidebar_collapsed)
+        self.app.root.update_idletasks()
+        expanded_w = self.app.root.grid_bbox(0, 0)[2]
+        self.app._collapse_sidebar()
+        try:
+            self.app.root.update_idletasks()
+            collapsed_w = self.app.root.grid_bbox(0, 0)[2]
+            self.assertLess(collapsed_w, expanded_w,
+                            f"collapsed {collapsed_w} must be < expanded {expanded_w}")
+        finally:
+            self.app._expand_sidebar()
+
+    def test_collapsed_expand_preserves_previous_width(self) -> None:
+        self.assertFalse(self.app.sidebar_collapsed)
+        self.app.root.update_idletasks()
+        before = self.app.root.grid_bbox(0, 0)[2]
+        self.app._collapse_sidebar()
+        self.app._expand_sidebar()
+        self.app.root.update_idletasks()
+        after = self.app.root.grid_bbox(0, 0)[2]
+        self.assertEqual(after, before,
+                         f"expanded width {after} != previous {before}")
+
+    def test_collapsed_width_near_metric(self) -> None:
+        from obs_overlay_import_utility.ui import compute_sidebar_metrics
+        m = compute_sidebar_metrics(self.app.current_dpi, self.app.ui_scale_var.get())
+        self.app._collapse_sidebar()
+        try:
+            self.app.root.update_idletasks()
+            actual = self.app.root.grid_bbox(0, 0)[2]
+            self.assertAlmostEqual(actual, m.collapsed_width,
+                                   msg=f"actual {actual} not near metric {m.collapsed_width}",
+                                   delta=4)
         finally:
             self.app._expand_sidebar()
 
@@ -263,6 +480,19 @@ class SidebarLayoutTests(unittest.TestCase):
             )
         finally:
             self.app.ui_scale_var.set(100)
+            self.app._expand_sidebar()
+
+    def test_apply_ui_scale_updates_collapsed_sidebar(self) -> None:
+        self.app._collapse_sidebar()
+        try:
+            self.app.root.update_idletasks()
+            old_minsize = self.app.root.grid_bbox(0, 0)[2]
+            self.app._apply_ui_scale(150)
+            new_minsize = self.app.root.grid_bbox(0, 0)[2]
+            self.assertGreaterEqual(new_minsize, old_minsize,
+                                    "collapsed sidebar must grow after zoom increase")
+        finally:
+            self.app._apply_ui_scale(100)
             self.app._expand_sidebar()
 
     def test_arrow_font_size_doubled_from_base(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import queue
 import subprocess
@@ -86,6 +87,46 @@ THEME_LABELS = {
 THEME_NAMES = {value: label for label, value in THEME_LABELS.items()}
 
 _ICON_SIZES = (32, 40, 48, 64)
+
+COLLAPSED_SIDEBAR_BASE_WIDTH = 100
+COLLAPSED_LOGO_BASE_WIDTH = 60
+COLLAPSED_ICON_BASE_SIZE = 29
+COLLAPSED_ARROW_BASE_SIZE = 13
+SIDEBAR_HORIZONTAL_PADDING = 18
+
+
+@dataclass(frozen=True)
+class SidebarMetrics:
+    collapsed_width: int
+    icon_size: int
+    logo_width: int
+    arrow_font_size: int
+    horizontal_padding: int
+
+
+def compute_sidebar_metrics(dpi: int, zoom_percent: float) -> SidebarMetrics:
+    dpi_scale = max(1.0, dpi / 96.0)
+    zoom_scale = max(0.75, min(1.5, zoom_percent / 100.0))
+    scale = dpi_scale * zoom_scale
+
+    collapsed_width = round(COLLAPSED_SIDEBAR_BASE_WIDTH * scale)
+    logo_width = round(COLLAPSED_LOGO_BASE_WIDTH * scale)
+    icon_size = max(22, round(COLLAPSED_ICON_BASE_SIZE * scale))
+    arrow_font_size = max(9, round(COLLAPSED_ARROW_BASE_SIZE * scale))
+    horizontal_padding = round(SIDEBAR_HORIZONTAL_PADDING * scale)
+
+    return SidebarMetrics(
+        collapsed_width=collapsed_width,
+        icon_size=icon_size,
+        logo_width=logo_width,
+        arrow_font_size=arrow_font_size,
+        horizontal_padding=horizontal_padding,
+    )
+
+
+def subsample_ratio(source_width: int, target_width: int) -> int:
+    """Ceiling division so the subsampled image never exceeds *target_width*."""
+    return max(1, math.ceil(source_width / target_width))
 
 
 def _pick_icon_size(desired: int) -> int:
@@ -330,35 +371,14 @@ class ImportUtilityApp:
                 self.current_dpi = dpi
                 self.root.tk.call("tk", "scaling", dpi / 72.0)
                 self._apply_ui_scale(self.ui_scale_var.get())
-                self._refresh_sidebar_layout()
         except tk.TclError:
             return
         self.root.after(750, self._watch_window_dpi)
 
-    @dataclass
-    class _SidebarMetrics:
-        collapsed_width: int
-        icon_size: int
-        logo_width: int
-        arrow_font_size: int
-
-    def _compute_sidebar_metrics(self) -> _SidebarMetrics:
-        dpi = max(1.0, getattr(self, "current_dpi", 96) / 96.0)
-        zoom = max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
-        scale = dpi * zoom
-
-        icon_size = max(22, round(29 * scale))
-        logo_width = max(48, round(109 * scale))
-        arrow_font_size = max(9, round(13 * scale))
-
-        content = max(icon_size, logo_width, round(arrow_font_size * 0.75))
-        collapsed = max(72, round(content + 36 * scale))
-
-        return self._SidebarMetrics(
-            collapsed_width=collapsed,
-            icon_size=icon_size,
-            logo_width=logo_width,
-            arrow_font_size=arrow_font_size,
+    def _compute_sidebar_metrics(self) -> SidebarMetrics:
+        return compute_sidebar_metrics(
+            dpi=getattr(self, "current_dpi", 96),
+            zoom_percent=self.ui_scale_var.get(),
         )
 
     def _refresh_sidebar_layout(self) -> None:
@@ -429,7 +449,7 @@ class ImportUtilityApp:
             "resizer": "fit-to-screen",
             "settings": "cog",
         }
-        self._nav_icons = _NavIcons(bundled_asset("."), base_size=29)
+        self._nav_icons = _NavIcons(bundled_asset("."), base_size=COLLAPSED_ICON_BASE_SIZE)
         for row, (section, label) in enumerate(self.SECTIONS, start=2):
             button = tk.Label(
                 navigation,
@@ -455,6 +475,7 @@ class ImportUtilityApp:
 
         self.sidebar_collapsed = False
         self._collapsed_sidebar_width = self._compute_sidebar_metrics().collapsed_width
+        self._last_expanded_sidebar_width = 0
 
         sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
         sidebar_bottom.grid(row=len(self.SECTIONS) + 4, column=0, sticky="ew")
@@ -1267,6 +1288,10 @@ class ImportUtilityApp:
 
     def _stop_sidebar_drag(self, event: tk.Event | None = None) -> None:
         self._sidebar_dragging = False
+        if not self.sidebar_collapsed:
+            self._last_expanded_sidebar_width = (
+                self.root.grid_bbox(0, 0)[2]
+            )
 
     def _toggle_sidebar(self) -> None:
         if self.sidebar_collapsed:
@@ -1274,7 +1299,7 @@ class ImportUtilityApp:
         else:
             self._collapse_sidebar()
 
-    def _apply_collapsed_layout(self, m: _SidebarMetrics | None = None) -> None:
+    def _apply_collapsed_layout(self, m: SidebarMetrics | None = None) -> None:
         if m is None:
             m = self._compute_sidebar_metrics()
         scale = (
@@ -1312,6 +1337,8 @@ class ImportUtilityApp:
         self._update_logo_to_width(m.logo_width)
 
     def _collapse_sidebar(self) -> None:
+        self.root.update_idletasks()
+        self._last_expanded_sidebar_width = self.root.grid_bbox(0, 0)[2]
         self.sidebar_collapsed = True
         m = self._compute_sidebar_metrics()
         self._collapsed_sidebar_width = m.collapsed_width
@@ -1330,7 +1357,11 @@ class ImportUtilityApp:
 
     def _expand_sidebar(self) -> None:
         self.sidebar_collapsed = False
-        self.root.columnconfigure(0, weight=0, minsize=self._min_sidebar_width)
+        restored = max(
+            self._min_sidebar_width,
+            getattr(self, "_last_expanded_sidebar_width", 0),
+        )
+        self.root.columnconfigure(0, weight=0, minsize=restored)
         self.sidebar_version_label.grid()
         self.sidebar_caption_label.grid()
         self.sidebar_collapse_arrow.configure(text="\u25c0")
@@ -1395,11 +1426,11 @@ class ImportUtilityApp:
         if not self.logo_source or not self.logo_label:
             return
         src_w = self.logo_source.width()
-        target_w = min(src_w, max(48, target_w))
+        target_w = min(src_w, max(36, target_w))
         if target_w >= src_w:
             self.logo_image = self.logo_source
         else:
-            ratio = max(1, src_w // target_w)
+            ratio = subsample_ratio(src_w, target_w)
             self.logo_image = self.logo_source.subsample(ratio, ratio)
         self.logo_label.configure(image=self.logo_image)
 
@@ -1825,20 +1856,21 @@ class ImportUtilityApp:
             sliderthickness=max(10, round(16 * dimension_factor)),
         )
         self._update_logo_scale(dimension_factor)
+        self._refresh_sidebar_layout()
         self.root.update_idletasks()
 
     def _update_logo_scale(self, factor: float) -> None:
-        if self.sidebar_collapsed or not self.logo_source or not self.logo_label:
+        if not self.logo_source or not self.logo_label:
             return
-        src_w = self.logo_source.width()
-        target_w = min(src_w, max(72, round(120 * factor)))
-        if target_w >= src_w:
-            self.logo_image = self.logo_source
-        else:
-            ratio = max(1, src_w // target_w)
-            self.logo_image = self.logo_source.subsample(ratio, ratio)
-        self.logo_label.configure(image=self.logo_image)
-        self._refresh_sidebar_layout()
+        if not self.sidebar_collapsed:
+            src_w = self.logo_source.width()
+            target_w = min(src_w, max(72, round(120 * factor)))
+            if target_w >= src_w:
+                self.logo_image = self.logo_source
+            else:
+                ratio = subsample_ratio(src_w, target_w)
+                self.logo_image = self.logo_source.subsample(ratio, ratio)
+            self.logo_label.configure(image=self.logo_image)
 
     def _update_custom_path_states(self) -> None:
         python_state = "normal" if self.use_custom_python_var.get() else "disabled"
