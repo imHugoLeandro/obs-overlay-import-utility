@@ -36,7 +36,6 @@ from .exporter import (
     ExportInventory,
     build_export_inventory,
     active_obs_scene_collection,
-    export_scene_collection,
     list_obs_scene_collections,
 )
 from .obs_live import (
@@ -221,6 +220,7 @@ class ImportUtilityApp:
         self.automatic_folder_var = tk.StringVar(value=initial_folder)
         self.export_collection_var = tk.StringVar()
         self.export_destination_var = tk.StringVar()
+        self.export_compress_var = tk.BooleanVar(value=True)
         self.export_status_var = tk.StringVar(
             value="Choose a scene collection and destination folder."
         )
@@ -873,6 +873,16 @@ class ImportUtilityApp:
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=5, column=0, sticky="w", pady=(4, 0))
+
+        compress_frame = ttk.Frame(options)
+        compress_frame.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        self.export_compress_check = ttk.Checkbutton(
+            compress_frame,
+            text="Compress exported package to ZIP",
+            variable=self.export_compress_var,
+        )
+        self.export_compress_check.grid(row=0, column=0, sticky="w")
+        self.export_controls.append(self.export_compress_check)
 
         run_row = ttk.Frame(page)
         run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
@@ -2283,19 +2293,30 @@ class ImportUtilityApp:
         self._set_busy(True, "Inspecting the scene collection before export…")
         self.export_status_var.set("Building the export inventory…")
         self._write_export_results("")
+        compressed = self.export_compress_var.get()
         threading.Thread(
             target=self._export_inventory_worker,
-            args=(collection, destination),
+            args=(collection, destination, compressed),
             daemon=True,
         ).start()
 
-    def _export_inventory_worker(self, collection: Path, destination: Path) -> None:
-        self.events.put(
-            ("export_inventory", build_export_inventory(collection, destination))
-        )
+    def _export_inventory_worker(self, collection: Path, destination: Path, compressed: bool) -> None:
+        try:
+            from .exporter import build_export_plan
+            plan = build_export_plan(collection, destination, compressed=compressed)
+            inventory = build_export_inventory(collection, destination)
+            inventory.plan = plan
+            self.events.put(("export_inventory", inventory))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
 
-    def _export_worker(self, collection: Path, destination: Path) -> None:
-        self.events.put(("export", export_scene_collection(collection, destination)))
+    def _export_worker(self, collection: Path, destination: Path, compressed: bool, plan: object) -> None:
+        try:
+            from .exporter import export_scene_collection
+            result = export_scene_collection(collection, destination, compressed=compressed, plan=plan)
+            self.events.put(("export", result))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
 
     def _refresh_resize_collections(self) -> None:
         if self.busy:
@@ -2933,17 +2954,32 @@ class ImportUtilityApp:
             self._write_export_results("The export inventory is incomplete.")
             self._set_busy(False, "Could not inspect the scene collection.")
             return
+        plan = inventory.plan
+        compressed = plan.compressed if plan else False
+        output_label = "ZIP archive" if compressed else "Package folder"
 
         summary_lines = [
-            f"Proposed package: {inventory.package_path}",
+            f"Proposed output: {inventory.package_path}{'.zip' if compressed else ''}",
+            f"Output format: {output_label}",
             f"Unique files: {len(inventory.items)}",
             f"Total size: {format_file_size(inventory.total_bytes)}",
             f"Browser-overlay files: {inventory.browser_files}",
             f"Local references inspected: {inventory.source_references}",
             f"Missing references: {len(inventory.missing_references)}",
-            "",
-            "Review the inventory window, then confirm or cancel the export.",
         ]
+        if plan and plan.dependency_report:
+            dr = plan.dependency_report
+            if dr.plugin_source_ids:
+                summary_lines.append(f"Plugin/unknown source IDs: {len(dr.plugin_source_ids)}")
+            if dr.plugin_filter_ids:
+                summary_lines.append(f"Plugin/unknown filter IDs: {len(dr.plugin_filter_ids)}")
+            if dr.fonts:
+                summary_lines.append(f"Fonts: {len(dr.fonts)}")
+            if dr.remote_resources:
+                summary_lines.append(f"Remote resources: {len(dr.remote_resources)}")
+            if dr.has_sensitive_urls:
+                summary_lines.append("WARNING: Remote URLs contain sensitive query parameters")
+        summary_lines.extend(["", "Review the inventory window, then confirm or cancel the export."])
         self._write_export_results("\n".join(summary_lines))
         self.export_status_var.set("Review the export inventory before continuing.")
         self._show_export_inventory_confirmation(inventory)
@@ -3039,12 +3075,14 @@ class ImportUtilityApp:
         def confirm_export() -> None:
             collection = inventory.collection_path
             destination = inventory.destination
+            plan = inventory.plan
+            compressed = plan.compressed if plan else self.export_compress_var.get()
             destroy_window()
             self.export_status_var.set("Packaging the confirmed OBS collection…")
             self._write_export_results("Inventory confirmed. Exporting the package…")
             threading.Thread(
                 target=self._export_worker,
-                args=(collection, destination),
+                args=(collection, destination, compressed, plan),
                 daemon=True,
             ).start()
 
@@ -3069,22 +3107,41 @@ class ImportUtilityApp:
             )
             self._set_busy(False, "Could not export the scene collection.")
             return
-        lines = [
-            f"Package folder: {result.package_path}",
-            f"OBS export JSON: {result.collection_path}",
-            f"Referenced files copied: {result.copied_files}",
+        if result.compressed and result.archive_path:
+            lines = [
+                f"ZIP archive: {result.archive_path}",
+                f"Archive size: {format_file_size(result.archive_bytes)}",
+                f"Uncompressed size: {format_file_size(result.uncompressed_bytes)}",
+                f"Files included: {result.copied_files}",
+            ]
+        else:
+            lines = [
+                f"Package folder: {result.package_path}",
+                f"OBS export JSON: {result.collection_path}",
+                f"Referenced files copied: {result.copied_files}",
+            ]
+        lines.extend([
             f"Local file references rewritten: {result.source_references}",
             "",
             "The JSON preserves OBS, plugin-source, and filter settings. Install required OBS plugins and fonts separately on the destination computer.",
-        ]
+        ])
+        if result.verification:
+            if result.verification.ok:
+                lines.append("Package verification: PASSED")
+            else:
+                lines.append("Package verification: ISSUES FOUND")
+                lines.extend(f"  - {e}" for e in result.verification.errors[:5])
         if result.skipped_references:
             lines.extend(("", "References requiring manual review:"))
             lines.extend(f"• {item}" for item in result.skipped_references)
         self._write_export_results("\n".join(lines))
         self.export_status_var.set("Overlay package exported successfully.")
         self._set_busy(False, "Overlay package exported successfully.")
-        if self.open_output_var.get() and result.package_path:
-            self._open_folder(result.package_path)
+        if self.open_output_var.get():
+            if result.compressed and result.archive_path:
+                self._open_folder(result.archive_path.parent)
+            elif result.package_path:
+                self._open_folder(result.package_path)
 
     def _finish_streamlabs(self, result: StreamlabsImportResult) -> None:
         if result.error:

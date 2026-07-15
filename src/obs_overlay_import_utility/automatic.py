@@ -42,11 +42,23 @@ def automatically_import_overlay(
     strict: bool = True,
     case_sensitive: bool = True,
 ) -> AutomaticImportResult:
-    """Detect one supported pack, favoring an OBS export, and install it safely."""
+    """Detect one supported pack, favoring manifest, then OBS export, then Streamlabs."""
     result = AutomaticImportResult()
     try:
         overlay_root = overlay_root.expanduser().resolve()
         obs_scenes_directory = obs_scenes_directory.expanduser().resolve()
+
+        from .exporter import detect_portable_package, materialize_portable_collection, validate_portable_manifest
+
+        manifest_path = detect_portable_package(overlay_root)
+        if manifest_path is not None:
+            manifest_data = validate_portable_manifest(manifest_path)
+            collection_path = materialize_portable_collection(manifest_path, obs_scenes_directory)
+            result.kind = "portable"
+            result.success = True
+            result.collection_name = manifest_data.get("collection", {}).get("name", "")
+            result.collection_path = collection_path
+            return result
 
         # An OBS export has the most complete source and transform information, so use
         # it when a pack includes both its original JSON and a Streamlabs package.
