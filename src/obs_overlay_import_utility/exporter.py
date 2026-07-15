@@ -23,7 +23,7 @@ import stat
 import tempfile
 import uuid
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -91,6 +91,7 @@ SENSITIVE_URL_RE = re.compile(r'[?&](token|key|secret|password|auth|api_key|acce
 
 MANIFEST_SCHEMA = "obs-overlay-portable-package"
 MANIFEST_VERSION = 1
+MISSING_PLACEHOLDER_PREFIX = "../missing/"
 
 
 # ---------------------------------------------------------------------------
@@ -163,16 +164,21 @@ class ExportResult:
 
 @dataclass
 class ExportInventory:
-    """Compatibility wrapper — UI code may reference this, but the real plan is ExportPlan."""
     success: bool = False
     collection_path: Path | None = None
     destination: Path | None = None
     package_path: Path | None = None
+    compressed: bool = False
     source_references: int = 0
     total_bytes: int = 0
+    scene_count: int = 0
+    source_count: int = 0
     browser_files: int = 0
     items: list[ExportInventoryItem] = field(default_factory=list)
     missing_references: list[str] = field(default_factory=list)
+    dependency_report: DependencyReport | None = None
+    canvas_width: int | None = None
+    canvas_height: int | None = None
     error: str | None = None
     plan: ExportPlan | None = None
 
@@ -292,18 +298,15 @@ def _category_for(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def portable_package_path(category: str, filename: str) -> str:
-    """Return a collection-relative portable path like ``../assets/images/bg.png``."""
     return f"../assets/{category}/{filename}"
 
 
 def portable_browser_path(project_dir_name: str, relative: str) -> str:
-    """Return a collection-relative portable path for a browser file."""
     rel = relative.replace("\\", "/")
     return f"../browser/{project_dir_name}/{rel}"
 
 
 def is_safe_portable_path(path: str) -> bool:
-    """Check that a portable path stays within the package after resolving ``..``."""
     if not path or path.startswith("\\\\"):
         return False
     if len(path) >= 2 and path[1] == ":":
@@ -319,7 +322,7 @@ def is_safe_portable_path(path: str) -> bool:
         elif part != "." and part:
             depth += 1
         if depth < 0:
-            pass  # allow initial ../ for collection-relative paths
+            pass
     if depth < 0:
         return False
     return True
@@ -329,31 +332,69 @@ def is_safe_portable_path(path: str) -> bool:
 # Dependency analysis
 # ---------------------------------------------------------------------------
 
+def _detect_device_kind(source_id: str, settings: Any) -> str | None:
+    sid = source_id.casefold()
+    if sid in {"av_capture_input", "dshow_input", "decklink-input", "v4l2_input"}:
+        return "Camera or capture device"
+    if sid in {
+        "wasapi_input_capture", "wasapi_output_capture",
+        "coreaudio_input_capture", "coreaudio_output_capture",
+        "pulse_input_capture", "pulse_output_capture",
+        "jack_input_capture",
+    }:
+        return "Audio device"
+    if sid in {
+        "monitor_capture", "display_capture", "window_capture",
+        "game_capture", "macos_screen_capture", "xshm_input",
+    }:
+        return "Display, window, or game capture"
+    if isinstance(settings, dict):
+        device_keys = {
+            "audio_device_id", "capture_window", "device", "device_hash",
+            "device_id", "device_name", "display", "display_uuid",
+            "input_device_id", "monitor", "monitor_id",
+            "output_device_id", "screen", "screen_id",
+            "video_device_id", "window", "window_id",
+        }
+        if any(key in settings for key in device_keys):
+            return "Other device source"
+    return None
+
+
 def _analyse_dependencies(data: dict[str, Any]) -> DependencyReport:
     report = DependencyReport()
     seen_fonts: set[str] = set()
-    seen_devices: set[tuple[str, str]] = set()
+    seen_devices: set[tuple[str, str, str]] = set()
     seen_remote: set[tuple[str, str, str]] = set()
     seen_plugin_src: set[tuple[str, str]] = set()
     seen_plugin_flt: set[tuple[str, str]] = set()
+    source_ids_seen: set[str] = set()
+    filter_ids_seen: set[str] = set()
 
-    def _walk(value: Any, source_name: str = "", source_id: str = "") -> None:
+    def _collect_ids(value: Any, *, in_sources: bool = False, in_filters: bool = False) -> None:
         if isinstance(value, dict):
-            name = value.get("name", source_name) if isinstance(value.get("name"), str) else source_name
-            sid = value.get("id", source_id) if isinstance(value.get("id"), str) else source_id
+            sid = value.get("id")
+            if isinstance(sid, str):
+                if in_sources and not in_filters:
+                    source_ids_seen.add(sid)
+                elif in_filters:
+                    filter_ids_seen.add(sid)
 
-            if sid and sid not in BUILTIN_SOURCE_IDS and "source" in sid.casefold():
-                seen_plugin_src.add((sid, name))
-            if sid and sid not in BUILTIN_FILTER_IDS and "filter" in sid.casefold():
-                seen_plugin_flt.add((sid, name))
+            name = value.get("name", "")
+            if not isinstance(name, str):
+                name = ""
+
+            settings = value.get("settings")
+
+            kind = _detect_device_kind(str(sid) if isinstance(sid, str) else "", settings)
+            if kind:
+                seen_devices.add((str(name), str(sid) if isinstance(sid, str) else "", kind))
 
             for key, child in value.items():
                 if key == "font" and isinstance(child, dict) and isinstance(child.get("face"), str):
                     seen_fonts.add(child["face"])
                 elif key == "font" and isinstance(child, str):
                     seen_fonts.add(child)
-                elif key == "style" and isinstance(child, str):
-                    pass
 
                 if isinstance(child, str) and REMOTE_URL_RE.match(child):
                     sensitive = bool(SENSITIVE_URL_RE.search(child))
@@ -364,20 +405,48 @@ def _analyse_dependencies(data: dict[str, Any]) -> DependencyReport:
                         host = parsed.netloc
                     except Exception:
                         pass
-                    seen_remote.add((child.split("?")[0] if sensitive else child, host, "yes" if sensitive else "no"))
-                elif isinstance(child, (dict, list)):
-                    _walk(child, source_name=name, source_id=sid)
+                    seen_remote.add((
+                        child.split("?")[0] if sensitive else child,
+                        host,
+                        "yes" if sensitive else "no",
+                    ))
+
+                next_sources = in_sources
+                next_filters = in_filters
+                if key == "sources":
+                    next_sources = True
+                    next_filters = False
+                if key == "filters":
+                    next_sources = False
+                    next_filters = True
+
+                if isinstance(child, (dict, list)):
+                    _collect_ids(child, in_sources=next_sources, in_filters=next_filters)
+
+            if isinstance(sid, str) and sid not in BUILTIN_SOURCE_IDS:
+                seen_plugin_src.add((sid, str(name)))
+            if isinstance(sid, str) and sid not in BUILTIN_FILTER_IDS and in_filters:
+                seen_plugin_flt.add((sid, str(name)))
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, (dict, list)):
-                    _walk(item, source_name=source_name, source_id=source_id)
+                    _collect_ids(item, in_sources=in_sources, in_filters=in_filters)
 
-    _walk(data)
+    _collect_ids(data, in_sources=True, in_filters=False)
+
     report.fonts = sorted(seen_fonts)
-    for item in seen_devices:
-        report.devices.append({"source_name": item[0], "source_id": item[1]})
+    for item in sorted(seen_devices):
+        report.devices.append({
+            "source_name": item[0],
+            "source_id": item[1],
+            "kind": item[2],
+        })
     for item in sorted(seen_remote):
-        report.remote_resources.append({"url": item[0], "host": item[1], "sensitive": item[2]})
+        report.remote_resources.append({
+            "url": item[0],
+            "host": item[1],
+            "sensitive": item[2],
+        })
     report.has_sensitive_urls = any(r["sensitive"] == "yes" for r in report.remote_resources)
     for item in sorted(seen_plugin_src):
         report.plugin_source_ids.append({"id": item[0], "name": item[1]})
@@ -395,14 +464,19 @@ def _count_scenes_and_sources(data: dict[str, Any]) -> tuple[int, int, int | Non
     scene_count = len(scene_order) if isinstance(scene_order, list) else 0
     sources = data.get("sources", [])
     non_scene = 0
-    canvas_w = None
-    canvas_h = None
     if isinstance(sources, list):
         for src in sources:
-            if isinstance(src, dict):
-                sid = src.get("id", "")
-                if sid != "scene":
-                    non_scene += 1
+            if isinstance(src, dict) and src.get("id") != "scene":
+                non_scene += 1
+    resolution = data.get("resolution")
+    canvas_w = None
+    canvas_h = None
+    if isinstance(resolution, dict):
+        x = resolution.get("x")
+        y = resolution.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            canvas_w = int(x)
+            canvas_h = int(y)
     return scene_count, non_scene, canvas_w, canvas_h
 
 
@@ -423,7 +497,7 @@ def _next_package_path(destination: Path, collection_name: str, compressed: bool
     suffix = ".zip" if compressed else ""
     candidate = destination / f"{base}{suffix}"
     number = 1
-    while candidate.exists() or (not compressed and (destination / f"{base}.zip").exists() if compressed else (destination / base).exists()):
+    while candidate.exists():
         candidate = destination / f"{base} {number}{suffix}"
         number += 1
     return candidate
@@ -506,13 +580,24 @@ def _next_browser_directory(parent: Path, source_directory: Path) -> Path:
     return candidate
 
 
-def _next_asset_path(folder: Path, source: Path) -> Path:
-    candidate = folder / source.name
+# ---------------------------------------------------------------------------
+# Collision-safe filename for asset packaging
+# ---------------------------------------------------------------------------
+
+def _unique_asset_filename(proposed: str, used_names: set[str]) -> str:
+    """Return *proposed* or a deterministic unique variant within *used_names*."""
+    lower_proposed = proposed.casefold()
+    if lower_proposed not in {n.casefold() for n in used_names}:
+        used_names.add(proposed)
+        return proposed
+    base, ext = os.path.splitext(proposed)
     number = 2
-    while candidate.exists():
-        candidate = folder / f"{source.stem} {number}{source.suffix}"
+    while True:
+        candidate = f"{base} {number}{ext}"
+        if candidate.casefold() not in {n.casefold() for n in used_names}:
+            used_names.add(candidate)
+            return candidate
         number += 1
-    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +638,7 @@ def build_export_plan(
     planned: list[PlannedFile] = []
     missing: list[dict[str, str]] = []
     seen_sources: dict[Path, set[str]] = {}
-    category_counts: dict[str, int] = {}
+    used_asset_names: dict[str, set[str]] = {}
     browser_roots_scanned: set[Path] = set()
     browser_project_dirs: list[str] = []
 
@@ -564,6 +649,7 @@ def build_export_plan(
                 "source": reference.source_name,
                 "setting": str(reference.detection_key),
                 "basename": source.name,
+                "path": str(source),
                 "reason": "File not found",
             })
             continue
@@ -595,13 +681,8 @@ def build_export_plan(
         cat = _category_for(source)
         if source not in seen_sources:
             seen_sources[source] = {reference.source_name}
-            idx = category_counts.get(cat, 0)
-            category_counts[cat] = idx + 1
-            if idx > 0:
-                base, ext = os.path.splitext(source.name)
-                filename = f"{base} {idx + 1}{ext}"
-            else:
-                filename = source.name
+            used_asset_names.setdefault(cat, set())
+            filename = _unique_asset_filename(source.name, used_asset_names[cat])
             pkg = portable_package_path(cat, filename)
             planned.append(PlannedFile(
                 source_path=source,
@@ -613,10 +694,10 @@ def build_export_plan(
         else:
             seen_sources[source].add(reference.source_name)
 
-    for pf in planned:
-        pf_dict = pf.__dict__.copy()
-        pf_dict["source_names"] = tuple(sorted(seen_sources.get(pf.source_path, set())))
-
+    planned = [
+        replace(pf, source_names=tuple(sorted(seen_sources.get(pf.source_path, {pf.source_names[0]}))))
+        for pf in planned
+    ]
     planned = sorted(planned, key=lambda p: (p.category, p.package_path))
     total_bytes = sum(pf.size for pf in planned)
 
@@ -642,6 +723,43 @@ def build_export_plan(
 
 
 # ---------------------------------------------------------------------------
+# export_inventory_from_plan: read-only view of a frozen plan
+# ---------------------------------------------------------------------------
+
+def export_inventory_from_plan(plan: ExportPlan) -> ExportInventory:
+    """Build an ExportInventory read-only view from a frozen ExportPlan."""
+    inventory = ExportInventory()
+    inventory.success = True
+    inventory.collection_path = plan.collection_path
+    inventory.destination = plan.destination
+    inventory.package_path = plan.output_path
+    inventory.compressed = plan.compressed
+    inventory.source_references = len(plan.files) + len(plan.missing_references)
+    inventory.total_bytes = plan.total_bytes
+    inventory.scene_count = plan.scene_count
+    inventory.source_count = plan.source_count
+    inventory.browser_files = sum(1 for pf in plan.files if pf.category == "browser")
+    inventory.canvas_width = plan.canvas_width
+    inventory.canvas_height = plan.canvas_height
+    inventory.items = [
+        ExportInventoryItem(
+            path=pf.source_path,
+            category=pf.category,
+            size=pf.size,
+            source_name=", ".join(pf.source_names),
+            package_path=pf.package_path,
+        )
+        for pf in plan.files
+    ]
+    inventory.missing_references = [
+        f"{m['source']}: {m.get('basename', '')}" for m in plan.missing_references
+    ]
+    inventory.dependency_report = plan.dependency_report
+    inventory.plan = plan
+    return inventory
+
+
+# ---------------------------------------------------------------------------
 # build_export_inventory (compatibility wrapper)
 # ---------------------------------------------------------------------------
 
@@ -649,30 +767,11 @@ def build_export_inventory(
     collection_path: Path,
     destination: Path,
 ) -> ExportInventory:
+    """Build a folder-mode inventory. Prefer ``export_inventory_from_plan`` after ``build_export_plan``."""
     result = ExportInventory()
     try:
         plan = build_export_plan(collection_path, destination, compressed=False)
-        result.success = True
-        result.collection_path = plan.collection_path
-        result.destination = plan.destination
-        result.package_path = plan.output_path
-        result.source_references = len(plan.files) + len(plan.missing_references)
-        result.total_bytes = plan.total_bytes
-        result.browser_files = sum(1 for pf in plan.files if pf.category == "browser")
-        result.items = [
-            ExportInventoryItem(
-                path=pf.source_path,
-                category=pf.category,
-                size=pf.size,
-                source_name=", ".join(pf.source_names),
-                package_path=pf.package_path,
-            )
-            for pf in plan.files
-        ]
-        result.missing_references = [
-            f"{m['source']}: {m.get('basename', '')}" for m in plan.missing_references
-        ]
-        result.plan = plan
+        result = export_inventory_from_plan(plan)
     except (OSError, UtilityError) as exc:
         result.error = str(exc) if isinstance(exc, UtilityError) else f"Could not inspect the scene collection for export: {exc}"
     return result
@@ -681,6 +780,13 @@ def build_export_inventory(
 # ---------------------------------------------------------------------------
 # manifest.json generation
 # ---------------------------------------------------------------------------
+
+def _sanitise_missing_reference(original_path: str) -> str:
+    basename = os.path.basename(original_path.replace("\\", "/"))
+    safe = INVALID_WINDOWS_NAME_RE.sub("_", basename).strip().rstrip(". ")
+    safe = safe or "unresolved"
+    return f"{MISSING_PLACEHOLDER_PREFIX}{safe}"
+
 
 def _build_manifest(plan: ExportPlan, package_root_name: str) -> dict[str, Any]:
     files = []
@@ -727,7 +833,12 @@ def _build_manifest(plan: ExportPlan, package_root_name: str) -> dict[str, Any]:
             "plugin_or_unknown_filter_ids": plan.dependency_report.plugin_filter_ids,
         },
         "missing_resources": [
-            {"setting": m["setting"], "basename": m["basename"], "reason": m["reason"]}
+            {
+                "setting": m["setting"],
+                "basename": m["basename"],
+                "reason": m["reason"],
+                "portable_placeholder": _sanitise_missing_reference(m["path"]),
+            }
             for m in plan.missing_references
         ],
         "previews": plan.preview_files,
@@ -736,13 +847,13 @@ def _build_manifest(plan: ExportPlan, package_root_name: str) -> dict[str, Any]:
 
 def _build_instructions(plan: ExportPlan) -> str:
     lines = [
-        "OBS Overlay Import Utility — Portable Package",
+        "OBS Overlay Import Utility \u2014 Portable Package",
         "=" * 50,
         "",
         "How to use this package:",
         "",
         "1. If this is a ZIP file, extract it completely before proceeding.",
-        "2. Keep the extracted folder together — do not move individual files.",
+        "2. Keep the extracted folder together \u2014 do not move individual files.",
         "3. Open OBS Overlay Import Utility.",
         "4. Select Automatic Scene Collection.",
         "5. Choose the extracted package folder.",
@@ -767,7 +878,7 @@ def _build_instructions(plan: ExportPlan) -> str:
     if plan.dependency_report.devices:
         lines.append("Devices (must be re-selected after import):")
         for d in plan.dependency_report.devices:
-            lines.append(f"  - {d['source_name']} ({d['source_id']})")
+            lines.append(f"  - {d['source_name']} ({d['source_id']}) [{d.get('kind', '')}]")
     if plan.dependency_report.remote_resources:
         lines.append("Remote resources (require internet):")
         for r in plan.dependency_report.remote_resources:
@@ -789,63 +900,75 @@ def _build_instructions(plan: ExportPlan) -> str:
 # ---------------------------------------------------------------------------
 
 def _verify_folder_package(package_path: Path, plan: ExportPlan, package_root_name: str) -> PackageVerification:
-    errors = []
+    errors: list[str] = []
     manifest_path = package_path / "manifest.json"
     collection_path = package_path / "collection" / f"{plan.collection_stem}.json"
 
     if not manifest_path.is_file():
         errors.append("manifest.json missing")
-    else:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("schema") != MANIFEST_SCHEMA:
-                errors.append(f"Unknown manifest schema: {manifest.get('schema')}")
-            if manifest.get("schema_version") != MANIFEST_VERSION:
-                errors.append(f"Unsupported manifest version: {manifest.get('schema_version')}")
-            for f in manifest.get("files", []):
-                fp = package_path / f["path"]
-                if not fp.is_file():
-                    errors.append(f"Manifest file missing: {f['path']}")
-                elif fp.stat().st_size != f["size"]:
-                    errors.append(f"Size mismatch: {f['path']}")
-                else:
-                    actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
-                    if actual_sha != f["sha256"]:
-                        errors.append(f"SHA-256 mismatch: {f['path']}")
-        except Exception as exc:
-            errors.append(f"Manifest verification failed: {exc}")
+        return PackageVerification(ok=False, errors=errors)
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema") != MANIFEST_SCHEMA:
+            errors.append(f"Unknown manifest schema: {manifest.get('schema')}")
+        if manifest.get("schema_version") != MANIFEST_VERSION:
+            errors.append(f"Unsupported manifest version: {manifest.get('schema_version')}")
+        for f in manifest.get("files", []):
+            fp = package_path / f["path"]
+            if not fp.is_file():
+                errors.append(f"Manifest file missing: {f['path']}")
+            else:
+                actual_size = fp.stat().st_size
+                if actual_size != f["size"]:
+                    errors.append(f"Size mismatch: {f['path']} (expected {f['size']}, got {actual_size})")
+                actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
+                if actual_sha != f["sha256"]:
+                    errors.append(f"SHA-256 mismatch: {f['path']}")
+        missing_declared = {m.get("basename", "") for m in manifest.get("missing_resources", [])}
+        for mr in plan.missing_references:
+            if mr["basename"] not in missing_declared:
+                errors.append(f"Missing resource not declared in manifest: {mr['basename']}")
+    except Exception as exc:
+        errors.append(f"Manifest verification failed: {exc}")
 
     if not collection_path.is_file():
         errors.append("Collection JSON missing")
-    else:
-        try:
-            data = load_json(collection_path)
-            if not is_obs_scene_collection_data(data):
-                errors.append("Collection JSON not a valid OBS scene collection")
-        except Exception as exc:
-            errors.append(f"Collection verification failed: {exc}")
+        return PackageVerification(ok=len(errors) == 0, errors=errors)
+
+    try:
+        data = load_json(collection_path)
+        if not is_obs_scene_collection_data(data):
+            errors.append("Collection JSON not a valid OBS scene collection")
+        for ref in _iter_local_path_references(data):
+            val = ref.value
+            if looks_absolute_local_path(val) and not val.startswith("../") and not val.startswith(MISSING_PLACEHOLDER_PREFIX):
+                errors.append(f"Absolute path found in collection: {val}")
+    except Exception as exc:
+        errors.append(f"Collection verification failed: {exc}")
 
     for pf in plan.files:
         fp = package_path / pf.package_path.replace("../", "")
         if not fp.is_file():
             errors.append(f"Planned file missing: {pf.package_path}")
 
-    # Check no absolute paths in collection
-    for ref in _iter_local_path_references(json.loads(collection_path.read_text(encoding="utf-8"))):
-        if looks_absolute_local_path(ref.value) and not ref.value.startswith(".."):
-            errors.append(f"Absolute path found in collection: {ref.value}")
+    manifest_files = {f["path"] for f in manifest.get("files", [])}
+    for current, dirs, files in os.walk(package_path):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        for f in files:
+            rel = str(Path(current, f).relative_to(package_path)).replace("\\", "/")
+            if rel in ("manifest.json", "Import Instructions.txt") or rel.startswith("collection/"):
+                continue
+            if rel not in manifest_files and not rel.startswith(("assets/", "browser/")):
+                errors.append(f"Unexpected file in package: {rel}")
+            elif rel.startswith(("assets/", "browser/")) and rel not in manifest_files:
+                errors.append(f"File not declared in manifest: {rel}")
 
     return PackageVerification(ok=len(errors) == 0, errors=errors)
 
 
 def _verify_zip_package(zip_path: Path, plan: ExportPlan, package_root_name: str) -> PackageVerification:
-    errors = []
-    try:
-        result = zipfile.Path(zip_path)
-        if hasattr(result, "testzip"):
-            pass
-    except Exception:
-        pass
+    errors: list[str] = []
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -854,16 +977,32 @@ def _verify_zip_package(zip_path: Path, plan: ExportPlan, package_root_name: str
                 errors.append(f"ZIP CRC error in: {bad}")
 
             names = zf.namelist()
-            roots = set()
+            seen_normalized: set[str] = set()
+            roots: set[str] = set()
+
             for name in names:
-                if name.startswith("/") or ".." in name.split("/"):
+                normalized = name.replace("\\", "/").casefold()
+                if normalized in seen_normalized:
+                    errors.append(f"Duplicate normalized ZIP entry: {name}")
+                    continue
+                seen_normalized.add(normalized)
+
+                clean = name.replace("\\", "/")
+                if clean.startswith("/") or ".." in clean.split("/"):
                     errors.append(f"Unsafe ZIP entry: {name}")
                     continue
-                top = name.split("/")[0]
+                if len(clean) >= 2 and clean[1] == ":":
+                    errors.append(f"Unsafe ZIP entry (drive-qualified): {name}")
+                    continue
+                if clean.startswith("//"):
+                    errors.append(f"Unsafe ZIP entry (UNC): {name}")
+                    continue
+
+                top = clean.split("/")[0] if "/" in clean else clean
                 roots.add(top)
 
             if len(roots) != 1:
-                errors.append(f"ZIP must have exactly one top-level directory, got: {roots}")
+                errors.append(f"ZIP must have exactly one top-level directory, got {sorted(roots)}")
             else:
                 root = next(iter(roots))
                 manifest_zip_path = f"{root}/manifest.json"
@@ -871,6 +1010,11 @@ def _verify_zip_package(zip_path: Path, plan: ExportPlan, package_root_name: str
                     errors.append("manifest.json missing from ZIP")
                 else:
                     manifest_data = json.loads(zf.read(manifest_zip_path))
+                    if manifest_data.get("schema") != MANIFEST_SCHEMA:
+                        errors.append(f"Unknown manifest schema in ZIP: {manifest_data.get('schema')}")
+                    if manifest_data.get("schema_version") != MANIFEST_VERSION:
+                        errors.append(f"Unsupported manifest version in ZIP: {manifest_data.get('schema_version')}")
+
                     for f in manifest_data.get("files", []):
                         zip_fp = f"{root}/{f['path']}"
                         if zip_fp not in names:
@@ -878,10 +1022,26 @@ def _verify_zip_package(zip_path: Path, plan: ExportPlan, package_root_name: str
                         else:
                             info = zf.getinfo(zip_fp)
                             if info.file_size != f["size"]:
-                                errors.append(f"ZIP size mismatch: {f['path']}")
+                                errors.append(f"ZIP size mismatch: {f['path']} (expected {f['size']}, got {info.file_size})")
                             actual_sha = hashlib.sha256(zf.read(zip_fp)).hexdigest()
                             if actual_sha != f["sha256"]:
                                 errors.append(f"ZIP SHA-256 mismatch: {f['path']}")
+
+                    coll_zip_path = f"{root}/{manifest_data.get('collection', {}).get('path', '')}"
+                    if coll_zip_path not in names:
+                        errors.append("Collection JSON missing from ZIP")
+                    else:
+                        try:
+                            coll_data = json.loads(zf.read(coll_zip_path))
+                            if not is_obs_scene_collection_data(coll_data):
+                                errors.append("ZIP collection is not valid OBS data")
+                            for ref in _iter_local_path_references(coll_data):
+                                val = ref.value
+                                if looks_absolute_local_path(val) and not val.startswith("../") and not val.startswith(MISSING_PLACEHOLDER_PREFIX):
+                                    errors.append(f"Absolute path in ZIP collection: {val}")
+                        except Exception as exc:
+                            errors.append(f"ZIP collection verification failed: {exc}")
+
     except Exception as exc:
         errors.append(f"ZIP verification failed: {exc}")
 
@@ -904,8 +1064,15 @@ def _revalidate_plan(plan: ExportPlan) -> None:
     for pf in plan.files:
         if not pf.source_path.is_file():
             raise UtilityError(f"Source file no longer exists: {pf.source_path}")
-        if pf.source_path.stat().st_size != pf.size:
+        try:
+            stat_info = pf.source_path.stat()
+            current_size = stat_info.st_size
+        except OSError:
+            raise UtilityError(f"Cannot read source file attributes: {pf.source_path}")
+        if current_size != pf.size:
             raise UtilityError(f"Source file size changed: {pf.source_path}")
+        if _is_link_or_reparse_point(pf.source_path):
+            raise UtilityError(f"Source file is a link or reparse point: {pf.source_path}")
 
     if plan.output_path.exists():
         raise UtilityError("Output path already exists. Run the inventory again.")
@@ -937,7 +1104,7 @@ def _publish_folder(plan: ExportPlan, staging_path: Path, package_root_name: str
         (assets_dir / sub).mkdir()
 
     copied_paths: dict[Path, Path] = {}
-    browser_dirs: dict[Path, Path] = {}
+    browser_dirs: dict[str, Path] = {}
 
     for pf in plan.files:
         if pf.category == "browser":
@@ -959,6 +1126,10 @@ def _publish_folder(plan: ExportPlan, staging_path: Path, package_root_name: str
     for ref in _iter_local_path_references(portable):
         source = Path(normalized_output_path(ref.value)).resolve()
         if not source.is_file():
+            for mr in plan.missing_references:
+                if mr["path"] == ref.value:
+                    ref.parent[ref.key] = _sanitise_missing_reference(ref.value)
+                    break
             continue
         if source in copied_paths:
             rel_path = os.path.relpath(copied_paths[source], coll_dir).replace("\\", "/")
@@ -1017,6 +1188,11 @@ def _publish_zip(plan: ExportPlan, package_root_name: str) -> tuple[Path, int]:
                 source = Path(normalized_output_path(ref.value)).resolve()
                 if source in copied_sources:
                     ref.parent[ref.key] = copied_sources[source]
+                elif not source.is_file():
+                    for mr in plan.missing_references:
+                        if mr["path"] == ref.value:
+                            ref.parent[ref.key] = _sanitise_missing_reference(ref.value)
+                            break
 
             zf.writestr(coll_path, json.dumps(portable, indent=2, ensure_ascii=False),
                         compress_type=zipfile.ZIP_DEFLATED)
@@ -1034,9 +1210,9 @@ def _publish_zip(plan: ExportPlan, package_root_name: str) -> tuple[Path, int]:
         if not verify.ok:
             raise UtilityError(f"ZIP verification failed: {'; '.join(verify.errors)}")
 
-        shutil.move(str(temp_zip), str(plan.output_path))
+        os.replace(str(temp_zip), str(plan.output_path))
         archive_bytes = plan.output_path.stat().st_size
-        temp_dir.rmdir()
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return plan.output_path, archive_bytes
     except Exception:
         if temp_zip.exists():
@@ -1113,16 +1289,33 @@ def export_scene_collection(
 # ---------------------------------------------------------------------------
 
 def detect_portable_package(root: Path) -> Path | None:
-    """Return the manifest path if *root* contains a valid portable package."""
+    """Return the manifest path if *root* contains a valid portable package.
+
+    Returns ``None`` when no ``manifest.json`` exists.  Raises ``UtilityError``
+    when a manifest file is present but unreadable, does not match our schema,
+    or uses an unsupported version.
+    """
     manifest = root / "manifest.json"
-    if manifest.is_file():
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-            if data.get("schema") == MANIFEST_SCHEMA:
-                return manifest
-        except Exception:
-            pass
-    return None
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise UtilityError(
+            "This folder contains a manifest.json that could not be read. "
+            "The package may be corrupted."
+        ) from exc
+    if data.get("schema") != MANIFEST_SCHEMA:
+        raise UtilityError(
+            "The manifest.json in this folder is not a recognized OBS overlay portable package."
+        )
+    version = data.get("schema_version")
+    if not isinstance(version, int) or version != MANIFEST_VERSION:
+        raise UtilityError(
+            f"This package was created by a newer version of the utility "
+            f"(manifest version {version}). Please update OBS Overlay Import Utility."
+        )
+    return manifest
 
 
 def validate_portable_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -1130,8 +1323,8 @@ def validate_portable_manifest(manifest_path: Path) -> dict[str, Any]:
     if data.get("schema") != MANIFEST_SCHEMA:
         raise UtilityError("Not a recognized OBS overlay portable package manifest.")
     version = data.get("schema_version")
-    if not isinstance(version, int) or version < 1:
-        raise UtilityError(f"Unsupported manifest schema version: {version}")
+    if not isinstance(version, int) or version != MANIFEST_VERSION:
+        raise UtilityError(f"This package requires manifest version {version}. Update OBS Overlay Import Utility.")
     coll_info = data.get("collection", {})
     if not isinstance(coll_info, dict):
         raise UtilityError("Manifest is missing collection information.")
@@ -1139,18 +1332,30 @@ def validate_portable_manifest(manifest_path: Path) -> dict[str, Any]:
 
 
 def materialize_portable_collection(manifest_path: Path, target_collections_dir: Path) -> Path:
+    verify_result = verify_portable_package(manifest_path.parent)
+    if not verify_result.ok:
+        raise UtilityError(f"Package verification failed before import: {'; '.join(verify_result.errors[:3])}")
+
+    target_collections_dir = target_collections_dir.expanduser().resolve()
+    target_collections_dir.mkdir(parents=True, exist_ok=True)
+
     manifest_data = validate_portable_manifest(manifest_path)
     package_root = manifest_path.parent.resolve()
     coll_rel = manifest_data["collection"]["path"]
     coll_src = (package_root / coll_rel).resolve()
     if not coll_src.is_file():
         raise UtilityError(f"Collection file not found in package: {coll_rel}")
+    try:
+        coll_src.relative_to(package_root)
+    except ValueError:
+        raise UtilityError(f"Collection path escapes package root: {coll_rel}")
+
     data = load_json(coll_src)
 
     def _rewrite(value: Any) -> None:
         if isinstance(value, dict):
             for key, child in value.items():
-                if isinstance(child, str) and child.startswith("../"):
+                if isinstance(child, str) and (child.startswith("../") or child.startswith(MISSING_PLACEHOLDER_PREFIX)):
                     resolved = (coll_src.parent / child).resolve()
                     try:
                         resolved.relative_to(package_root)
@@ -1190,9 +1395,10 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
         fp = package_root / f["path"]
         if not fp.is_file():
             errors.append(f"Manifest file missing: {f['path']}")
-        elif fp.stat().st_size != f["size"]:
-            errors.append(f"Size mismatch: {f['path']}")
         else:
+            actual_size = fp.stat().st_size
+            if actual_size != f["size"]:
+                errors.append(f"Size mismatch: {f['path']} (expected {f['size']}, got {actual_size})")
             actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
             if actual_sha != f["sha256"]:
                 errors.append(f"SHA-256 mismatch: {f['path']}")

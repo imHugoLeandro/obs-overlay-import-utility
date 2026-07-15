@@ -34,7 +34,6 @@ from .device_setup import (
 from .exporter import (
     ExportResult,
     ExportInventory,
-    build_export_inventory,
     active_obs_scene_collection,
     list_obs_scene_collections,
 )
@@ -2302,10 +2301,9 @@ class ImportUtilityApp:
 
     def _export_inventory_worker(self, collection: Path, destination: Path, compressed: bool) -> None:
         try:
-            from .exporter import build_export_plan
+            from .exporter import build_export_plan, export_inventory_from_plan
             plan = build_export_plan(collection, destination, compressed=compressed)
-            inventory = build_export_inventory(collection, destination)
-            inventory.plan = plan
+            inventory = export_inventory_from_plan(plan)
             self.events.put(("export_inventory", inventory))
         except Exception as exc:
             self.events.put(("error", str(exc)))
@@ -2957,10 +2955,13 @@ class ImportUtilityApp:
         plan = inventory.plan
         compressed = plan.compressed if plan else False
         output_label = "ZIP archive" if compressed else "Package folder"
+        output_path = str(plan.output_path) if plan else (str(inventory.package_path) + (".zip" if compressed else ""))
 
         summary_lines = [
-            f"Proposed output: {inventory.package_path}{'.zip' if compressed else ''}",
+            f"Proposed output: {output_path}",
             f"Output format: {output_label}",
+            f"Scenes: {inventory.scene_count}",
+            f"Sources: {inventory.source_count}",
             f"Unique files: {len(inventory.items)}",
             f"Total size: {format_file_size(inventory.total_bytes)}",
             f"Browser-overlay files: {inventory.browser_files}",
@@ -3010,9 +3011,10 @@ class ImportUtilityApp:
             ),
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        plan = inventory.plan
         ttk.Label(
             header,
-            text=f"Package: {inventory.package_path}",
+            text=f"Package: {plan.output_path if plan else inventory.package_path}",
             wraplength=760,
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
 

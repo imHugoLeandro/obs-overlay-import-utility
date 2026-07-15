@@ -15,6 +15,7 @@ from obs_overlay_import_utility.exporter import (  # noqa: E402
     active_obs_scene_collection,
     build_export_inventory,
     build_export_plan,
+    export_inventory_from_plan,
     export_scene_collection,
     list_obs_scene_collections,
     detect_portable_package,
@@ -22,6 +23,9 @@ from obs_overlay_import_utility.exporter import (  # noqa: E402
     materialize_portable_collection,
     verify_portable_package,
     is_safe_portable_path,
+    _analyse_dependencies,
+    _count_scenes_and_sources,
+    _unique_asset_filename,
 )
 
 
@@ -90,7 +94,7 @@ class ExporterTests(unittest.TestCase):
             pkg = result.package_path
             self.assertTrue((pkg / "assets" / "images" / "background.png").is_file())
             self.assertTrue(
-                (pkg / "assets" / "other" / "layout 2.plugin-data").is_file()
+                (pkg / "assets" / "other" / "layout.plugin-data").is_file()
             )
             self.assertTrue(
                 (pkg / "assets" / "other" / "colour.cube").is_file()
@@ -104,7 +108,7 @@ class ExporterTests(unittest.TestCase):
             # Collection-relative paths
             self.assertIn("../assets/images/background.png",
                           source["settings"]["same_image"])
-            self.assertIn("../assets/other/layout 2.plugin-data",
+            self.assertIn("../assets/other/layout.plugin-data",
                           source["settings"]["resource_bundle"])
             image_source = next(
                 item for item in exported["sources"] if item["name"] == "Image"
@@ -605,6 +609,305 @@ class ExporterTests(unittest.TestCase):
             self.assertTrue(txt.is_file())
             content = txt.read_text(encoding="utf-8")
             self.assertIn("How to use", content)
+
+
+    # --- Collision-safe filename tests ---
+
+    def test_different_filenames_keep_original_names(self) -> None:
+        self.assertEqual(_unique_asset_filename("background.png", set()), "background.png")
+        used = {"background.png"}
+        self.assertEqual(_unique_asset_filename("logo.png", used), "logo.png")
+
+    def test_same_filenames_get_deterministic_suffix(self) -> None:
+        used = {"background.png"}
+        self.assertEqual(_unique_asset_filename("background.png", used), "background 2.png")
+        used.add("background 2.png")
+        self.assertEqual(_unique_asset_filename("background.png", used), "background 3.png")
+
+    def test_collision_is_case_insensitive(self) -> None:
+        used = {"Background.PNG"}
+        result = _unique_asset_filename("background.png", used)
+        self.assertNotEqual(result, "background.png")
+        self.assertIn("background", result.casefold())
+
+    # --- Device dependency tests ---
+
+    def test_device_requirements_are_populated(self) -> None:
+        data = {
+            "name": "DevReqs",
+            "current_scene": "Main",
+            "scene_order": [{"name": "Main"}],
+            "sources": [
+                {"name": "Webcam", "id": "dshow_input", "settings": {"device_id": "some-device"}},
+                {"name": "Mic", "id": "wasapi_input_capture", "settings": {"device_id": "some-mic"}},
+                {"name": "Main", "id": "scene", "settings": {"items": []}},
+            ],
+        }
+        deps = _analyse_dependencies(data)
+        self.assertGreater(len(deps.devices), 0, "device deps should be detected")
+        kinds = {d["kind"] for d in deps.devices}
+        self.assertIn("Camera or capture device", kinds)
+        self.assertIn("Audio device", kinds)
+
+    # --- Canvas detection tests ---
+
+    def test_canvas_dimensions_are_detected(self) -> None:
+        data = {
+            "name": "Canvas",
+            "current_scene": "Main",
+            "scene_order": [{"name": "Main"}],
+            "resolution": {"x": 1920, "y": 1080},
+            "sources": [{"name": "Main", "id": "scene", "settings": {"items": []}}],
+        }
+        _, _, cw, ch = _count_scenes_and_sources(data)
+        self.assertEqual(cw, 1920)
+        self.assertEqual(ch, 1080)
+
+    def test_missing_canvas_returns_none(self) -> None:
+        data = {
+            "name": "NoCanvas",
+            "current_scene": "Main",
+            "scene_order": [{"name": "Main"}],
+            "sources": [{"name": "Main", "id": "scene", "settings": {"items": []}}],
+        }
+        _, _, cw, ch = _count_scenes_and_sources(data)
+        self.assertIsNone(cw)
+        self.assertIsNone(ch)
+
+    # --- Inventory from plan tests ---
+
+    def test_inventory_from_plan_matches_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"img")
+            data = {
+                "name": "PlanInv",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "PlanInv.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=True)
+            inv = export_inventory_from_plan(plan)
+            self.assertTrue(inv.success)
+            self.assertEqual(inv.compressed, True)
+            self.assertIn(".zip", str(inv.package_path))
+            self.assertEqual(inv.total_bytes, plan.total_bytes)
+            self.assertEqual(len(inv.items), len(plan.files))
+
+    # --- Missing path privacy tests ---
+
+    def test_missing_absolute_paths_do_not_enter_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = root / "present.png"
+            image.write_bytes(b"img")
+            missing = root / "gone.png"
+            data = {
+                "name": "Missing",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "OK", "id": "image_source", "settings": {"file": str(image)}},
+                    {"name": "Gone", "id": "image_source", "settings": {"file": str(missing)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "Missing.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            r = export_scene_collection(cp, dest)
+            self.assertTrue(r.success, r.error)
+            exported = json.loads(r.collection_path.read_text(encoding="utf-8"))
+            gone = next(s for s in exported["sources"] if s["name"] == "Gone")
+            self.assertFalse(
+                gone["settings"]["file"].startswith(str(root)),
+                "seller's absolute path must not appear in exported package",
+            )
+            self.assertIn("../missing/", gone["settings"]["file"],
+                          f"missing path should use ../missing/ placeholder, got: {gone['settings']['file']}")
+
+    # --- Revalidation tests ---
+
+    def test_same_size_source_mutation_fails_revalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"same" * 1)
+            data = {
+                "name": "SameSize",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "SameSize.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=False)
+            img.write_bytes(b"DIFFERENT")
+            r = export_scene_collection(cp, dest, compressed=False, plan=plan)
+            self.assertFalse(r.success)
+            self.assertIn("changed", r.error)
+
+    # --- Manifest import tests ---
+
+    def test_malformed_manifest_prevents_fallback_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.json").write_text("{invalid json", encoding="utf-8")
+            (root / "collection.json").write_text(
+                json.dumps({"name": "Fallback", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+            from obs_overlay_import_utility.models import UtilityError
+            with self.assertRaises(UtilityError):
+                detect_portable_package(root)
+
+    def test_unsupported_manifest_version_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.json").write_text(
+                json.dumps({"schema": "obs-overlay-portable-package", "schema_version": 999}),
+                encoding="utf-8",
+            )
+            from obs_overlay_import_utility.models import UtilityError
+            with self.assertRaises(UtilityError):
+                detect_portable_package(root)
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(root / "manifest.json")
+
+    def test_materialization_verifies_package_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.json").write_text(
+                json.dumps({
+                    "schema": "obs-overlay-portable-package",
+                    "schema_version": 1,
+                    "collection": {"path": "collection/Test.json", "path_mode": "collection-relative"},
+                    "files": [],
+                }),
+                encoding="utf-8",
+            )
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            from obs_overlay_import_utility.models import UtilityError
+            with self.assertRaises(UtilityError):
+                materialize_portable_collection(root / "manifest.json", ocd)
+
+    # --- ZIP atomic publication tests ---
+
+    def test_zip_publication_uses_atomic_same_filesystem_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"img" * 50)
+            data = {
+                "name": "AtomicZip",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "AtomicZip.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=True)
+            r = export_scene_collection(cp, dest, compressed=True, plan=plan)
+            self.assertTrue(r.success, r.error)
+            self.assertTrue(r.archive_path.is_file())
+            self.assertTrue(str(plan.output_path) == str(r.archive_path))
+
+    # --- source_names in manifest tests ---
+
+    def test_file_referenced_by_multiple_sources_lists_all_used_by(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "shared.png"
+            img.write_bytes(b"shared")
+            data = {
+                "name": "Shared",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "SrcA", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "SrcB", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "Shared.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            r = export_scene_collection(cp, dest)
+            self.assertTrue(r.success, r.error)
+            manifest = json.loads((r.package_path / "manifest.json").read_text(encoding="utf-8"))
+            for f in manifest["files"]:
+                if f["category"] != "browser":
+                    self.assertIn("SrcA", f["used_by"])
+                    self.assertIn("SrcB", f["used_by"])
+
+    # --- Export result includes path_mode ---
+
+    def test_zip_inventory_displays_zip_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"img")
+            data = {
+                "name": "ZipPath",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "ZipPath.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=True)
+            inv = export_inventory_from_plan(plan)
+            self.assertTrue(inv.package_path is not None)
+            self.assertTrue(str(inv.package_path).endswith(".zip"))
+
+    def test_folder_inventory_displays_folder_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"img")
+            data = {
+                "name": "FolderPath",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "FolderPath.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=False)
+            inv = export_inventory_from_plan(plan)
+            self.assertTrue(inv.package_path is not None)
+            self.assertFalse(str(inv.package_path).endswith(".zip"))
 
 
 if __name__ == "__main__":

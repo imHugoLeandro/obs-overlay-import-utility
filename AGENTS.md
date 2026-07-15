@@ -86,7 +86,8 @@ src/obs_overlay_import_utility/
   constants.py      Application constants/version
   core.py           Collection discovery, validation, relinking, atomic helpers
   device_setup.py   Device detection and safe post-import mapping
-  exporter.py       Inventory, staging, resource collection, package publication
+  dialogs.py        Shared dialog creation, metrics, styles, theme/zoom refresh
+  exporter.py       Portable package plan, publication, manifest, verification
   live_resize.py    Live OBS resize and undo
   models.py         Shared models, results, UtilityError
   obs_live.py       Lightweight OBS WebSocket client
