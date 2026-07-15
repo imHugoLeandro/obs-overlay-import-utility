@@ -274,6 +274,12 @@ class ImportUtilityApp:
                 size=9,
                 name="AppMonoFont",
             ),
+            "arrow": tkfont.Font(
+                root=self.root,
+                family=self.font_family,
+                size=20,
+                name="AppArrowFont",
+            ),
         }
 
     def _watch_window_dpi(self) -> None:
@@ -353,7 +359,7 @@ class ImportUtilityApp:
         )
         ttk.Label(
             frame,
-            text="Select one import method, expand its options with the arrow, then run it from this page.",
+            text="Select one import option, expand it with the arrow, then run it from this page.",
             wraplength=760,
             style="PageSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
@@ -368,7 +374,7 @@ class ImportUtilityApp:
 
         obs_card = ttk.LabelFrame(
             methods,
-            text="Method 1 — Fix Scene Collection Paths",
+            text="Fix Scene Collection Paths",
             padding=14,
             style="Card.TLabelframe",
         )
@@ -390,7 +396,7 @@ class ImportUtilityApp:
             text="▾",
             width=3,
             command=lambda: self._toggle_import_method("obs"),
-            style="Icon.TButton",
+            style="Arrow.TButton",
         )
         self.obs_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["obs"] = self.obs_arrow
@@ -441,7 +447,7 @@ class ImportUtilityApp:
 
         streamlabs_card = ttk.LabelFrame(
             methods,
-            text="Method 2 — Import Streamlabs Scene File",
+            text="Import Streamlabs Scene File",
             padding=14,
             style="Card.TLabelframe",
         )
@@ -463,7 +469,7 @@ class ImportUtilityApp:
             text="▸",
             width=3,
             command=lambda: self._toggle_import_method("streamlabs"),
-            style="Icon.TButton",
+            style="Arrow.TButton",
         )
         self.streamlabs_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["streamlabs"] = self.streamlabs_arrow
@@ -509,7 +515,7 @@ class ImportUtilityApp:
 
         automatic_card = ttk.LabelFrame(
             methods,
-            text="Method 3 — Automatic Scene Collection",
+            text="Automatic Scene Collection",
             padding=14,
             style="Card.TLabelframe",
         )
@@ -531,7 +537,7 @@ class ImportUtilityApp:
             text="▸",
             width=3,
             command=lambda: self._toggle_import_method("automatic"),
-            style="Icon.TButton",
+            style="Arrow.TButton",
         )
         self.automatic_arrow.grid(row=0, column=1, sticky="e")
         self.method_arrows["automatic"] = self.automatic_arrow
@@ -578,7 +584,7 @@ class ImportUtilityApp:
         run_row.columnconfigure(0, weight=1)
         self.selected_method_label = ttk.Label(
             run_row,
-            text="Selected: Method 1 — Fix Scene Collection Paths",
+            text="Selected: Fix Scene Collection Paths",
             style="Muted.TLabel",
         )
         self.selected_method_label.grid(row=0, column=0, sticky="w")
@@ -612,7 +618,7 @@ class ImportUtilityApp:
         self.results.configure(yscrollcommand=scrollbar.set)
         ttk.Label(
             frame,
-            text="Method 1 never changes the original export. Methods 2 and 3 never overwrite an existing OBS collection.",
+            text="The original export is never modified. An existing OBS collection is never overwritten.",
             style="Muted.TLabel",
         ).grid(row=7, column=0, sticky="w", pady=(10, 0))
         self._update_import_method_panels()
@@ -956,9 +962,10 @@ class ImportUtilityApp:
             from_=MIN_UI_SCALE,
             to=MAX_UI_SCALE,
             variable=self.ui_scale_var,
-            command=self._on_scale_changed,
+            command=self._on_scale_drag,
         )
         self.ui_scale.grid(row=0, column=0, sticky="ew")
+        self.ui_scale.bind("<ButtonRelease-1>", self._on_scale_released)
         ttk.Label(scale_row, textvariable=self.ui_scale_label_var, width=6).grid(
             row=0, column=1, padx=(10, 0)
         )
@@ -1232,6 +1239,22 @@ class ImportUtilityApp:
             foreground=[("active", palette.foreground)],
         )
         style.configure(
+            "Arrow.TButton",
+            background=palette.surface,
+            foreground=palette.muted,
+            borderwidth=0,
+            relief="flat",
+            font=self.fonts["arrow"],
+        )
+        style.map(
+            "Arrow.TButton",
+            background=[
+                ("pressed", palette.surface_alt),
+                ("active", palette.surface_alt),
+            ],
+            foreground=[("active", palette.foreground)],
+        )
+        style.configure(
             "Nav.Toolbutton",
             background=palette.sidebar,
             foreground=palette.sidebar_foreground,
@@ -1275,7 +1298,8 @@ class ImportUtilityApp:
             "TRadiobutton",
             background=palette.surface,
             foreground=palette.foreground,
-            indicatorcolor=palette.field,
+            indicatorcolor=palette.border,
+            indicatordiameter=9,
             bordercolor=palette.border,
             focuscolor=palette.accent,
         )
@@ -1284,7 +1308,7 @@ class ImportUtilityApp:
             background=[("active", palette.surface)],
             indicatorcolor=[
                 ("selected", palette.accent),
-                ("active", palette.accent_hover),
+                ("active !selected", palette.foreground),
                 ("disabled", palette.disabled),
             ],
             foreground=[("disabled", palette.muted)],
@@ -1406,12 +1430,22 @@ class ImportUtilityApp:
             if padding:
                 self.scaled_widget_paddings.append((widget, padding))
 
-    def _on_scale_changed(self, value: str) -> None:
-        self._apply_ui_scale(float(value))
+    def _on_scale_drag(self, value: str) -> None:
+        self._snap_scale_label(float(value))
+
+    def _on_scale_released(self, event: tk.Event | None = None) -> None:
+        self._apply_ui_scale(self.ui_scale_var.get())
 
     def _set_scale(self, value: int) -> None:
         self.ui_scale_var.set(value)
         self._apply_ui_scale(value)
+
+    def _snap_scale_label(self, value: float) -> None:
+        percent = int(round(value / 5.0) * 5)
+        percent = max(MIN_UI_SCALE, min(MAX_UI_SCALE, percent))
+        self.ui_scale_label_var.set(f"{percent}%")
+        if round(self.ui_scale_var.get()) != percent:
+            self.ui_scale_var.set(percent)
 
     def _apply_ui_scale(self, value: float) -> None:
         percent = int(round(float(value) / 5.0) * 5)
@@ -1423,6 +1457,7 @@ class ImportUtilityApp:
         user_factor = percent / 100.0
         dimension_factor = user_factor * max(1.0, self.current_dpi / 96.0)
         base_font_sizes = {
+            "arrow": 20,
             "body": 10,
             "body_bold": 10,
             "title": 22,
@@ -1454,6 +1489,10 @@ class ImportUtilityApp:
         )
         style.configure(
             "Icon.TButton",
+            padding=(round(7 * dimension_factor), round(5 * dimension_factor)),
+        )
+        style.configure(
+            "Arrow.TButton",
             padding=(round(7 * dimension_factor), round(5 * dimension_factor)),
         )
         style.configure(
@@ -1604,9 +1643,9 @@ class ImportUtilityApp:
 
     def _update_import_method_panels(self) -> None:
         labels = {
-            "obs": "Method 1 — Fix Scene Collection Paths",
-            "streamlabs": "Method 2 — Import Streamlabs Scene File",
-            "automatic": "Method 3 — Automatic Scene Collection",
+            "obs": "Fix Scene Collection Paths",
+            "streamlabs": "Import Streamlabs Scene File",
+            "automatic": "Automatic Scene Collection",
         }
         for method, options in self.method_options.items():
             if self.method_expanded[method]:
