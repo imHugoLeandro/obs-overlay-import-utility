@@ -1484,9 +1484,9 @@ class ImportUtilityApp:
         common = gcd(target_width, self.logo_source.width())
         numerator = target_width // common
         denominator = self.logo_source.width() // common
-        self.logo_image = self.logo_source.zoom(numerator, numerator).subsample(
+        self.logo_image = self.logo_source.subsample(
             denominator, denominator
-        )
+        ).zoom(numerator, numerator)
         self.logo_label.configure(image=self.logo_image)
 
     def _update_custom_path_states(self) -> None:

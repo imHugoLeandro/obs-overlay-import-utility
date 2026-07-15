@@ -40,6 +40,8 @@ class ResizeResult:
     canvas_changed: bool = False
     error: str | None = None
     live: bool = False
+
+
 @dataclass(frozen=True)
 class SourceChoice:
     """One UUID-backed source option shown by Auto Resizer."""

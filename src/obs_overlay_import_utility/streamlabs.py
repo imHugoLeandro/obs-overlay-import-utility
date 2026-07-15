@@ -332,8 +332,8 @@ def _scene_item(
             "y": float(item.get("y", 0) or 0) * canvas_height,
         },
         "scale": {
-            "x": float(item.get("scaleX", 1 / STREAMLABS_CANVAS_WIDTH) or 0) * canvas_width,
-            "y": float(item.get("scaleY", 1 / STREAMLABS_CANVAS_HEIGHT) or 0) * canvas_height,
+            "x": float(item.get("scaleX", 1 / canvas_width) or 0) * canvas_width,
+            "y": float(item.get("scaleY", 1 / canvas_height) or 0) * canvas_height,
         },
         "bounds": {"x": 0.0, "y": 0.0},
         "scale_filter": "disable",

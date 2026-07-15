@@ -34,6 +34,7 @@ SUPPORTED_EXTENSIONS = frozenset(
         ".tiff",
         ".wav",
         ".webm",
+        ".webp",
         ".wma",
     }
 )
