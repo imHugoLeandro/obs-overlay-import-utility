@@ -1614,6 +1614,7 @@ class ImportUtilityApp:
             background=palette.surface,
             foreground=palette.foreground,
             indicatorcolor=palette.field,
+            indicatormargin=(2, 2, 4, 1),
             bordercolor=palette.border,
             focuscolor=palette.accent,
         )
@@ -1632,7 +1633,7 @@ class ImportUtilityApp:
             background=palette.surface,
             foreground=palette.foreground,
             indicatorcolor=palette.border,
-            indicatordiameter=9,
+            indicatormargin=(2, 2, 4, 1),
             bordercolor=palette.border,
             focuscolor=palette.accent,
         )
@@ -1866,11 +1867,23 @@ class ImportUtilityApp:
             "TCombobox",
             padding=(round(8 * dimension_factor), round(6 * dimension_factor)),
         )
+        style.configure(
+            "TCheckbutton",
+            indicatorsize=max(9, round(12 * dimension_factor)),
+        )
+        style.configure(
+            "TRadiobutton",
+            indicatordiameter=max(8, round(11 * dimension_factor)),
+        )
         style.configure("Treeview", rowheight=max(24, round(30 * dimension_factor)))
         style.configure(
             "Horizontal.TScale",
             sliderlength=max(14, round(22 * dimension_factor)),
             sliderthickness=max(10, round(16 * dimension_factor)),
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            sliderthickness=max(14, round(22 * dimension_factor)),
         )
         self._update_logo_scale(dimension_factor)
         self._refresh_sidebar_layout()
