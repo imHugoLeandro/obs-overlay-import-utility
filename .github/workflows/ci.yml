@@ -21,16 +21,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e .
-      - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q src tests
-      - run: python -m ruff check .
-        if: matrix.os == 'ubuntu-latest'
-      - name: Tk smoke test (Xvfb)
+      - name: Install Xvfb and Tk (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb python3-tk
-          xvfb-run python -m unittest tests.test_exporter -v
+      - name: Run tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m unittest discover -s tests -v
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q src tests
+      - run: python -m ruff check .
+        if: matrix.os == 'ubuntu-latest'
       - name: AST/import check
         run: |
           python -c "import ast; from pathlib import Path; paths = list(Path('src').rglob('*.py')); paths += list(Path('tests').rglob('*.py')); [ast.parse(p.read_text(encoding='utf-8')) for p in paths]; print(f'AST OK: {len(paths)} files')"

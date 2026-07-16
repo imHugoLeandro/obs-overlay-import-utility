@@ -4,7 +4,8 @@
 - Enlarged vertical scrollbars to approximately 28 px at 100% zoom (ranging 21-42 px from 75-150% zoom) with DPI-aware scaling, and introduced a centralized ``ScrollbarMetrics`` helper shared by main pages and dialogs.
 - Replaced the Settings UI-size slider (formerly a thin ttk ``Scale``) with a DPI-aware classic ``tk.Scale`` using a centralized ``UiScaleMetrics`` helper, approximately doubling its visible height (32 px at 100% zoom).
 - Reduced checkbox and radio-button indicator size by approximately 20% for a cleaner visual appearance.
-- Improved the Settings UI-size slider contrast with a permanently visible red thumb (#D9363E in dark mode, #C91E27 in light mode) and clearer hover, focus, and drag states via centralized ``UiScaleColors`` palette mapping.
+- Improved the Settings UI-size slider contrast with a permanently visible red thumb and clearer hover, focus, and drag states via centralized ``UiScaleColors`` and explicit interaction state tracking (hovered/focused/pressed) with a single refresh method, removing nested-closure and unbind/rebind cycles during theme and zoom changes.
+- Fixed CI for Ubuntu runners by installing Xvfb before running all Tk-dependent tests, and made slider geometry assertions platform-tolerant with recorded Tcl/Tk version diagnostics.
 - Added dependency-free obs-websocket 5.x live control for OBS 28+, with session-only password authentication.
 - Streamlabs and Automatic imports now finish device setup and activate the new collection in an open OBS session without a restart.
 - Auto Resizer now changes and undoes active collection transforms directly through OBS; it refuses unsafe active-JSON fallback writes when live control is unavailable.

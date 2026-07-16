@@ -191,14 +191,15 @@ For UI work, preserve the dependency-free Tk/ttk runtime and one-file build unle
 - The widget is safe-guarded with ``hasattr(self, "ui_scale")`` to avoid errors during early init before the Settings page is built.
 - Checkbox ``indicatorsize`` was reduced from base 12 px to 10 px (~20%): ``max(8, round(10 * dimension_factor))``. Radio ``indicatordiameter`` from 11 to 9 px. ``indicatormargin`` top reduced from 4 to 3.
 - Do not revert ``self.ui_scale`` to a ``ttk.Scale`` without first proving that the active ttk theme supports cross-axis thickness.
-- The slider thumb color is controlled by ``tk.Scale``'s ``background`` option. Use ``UiScaleColors`` via ``ui_scale_colors(palette)`` for all theme colors.
-- Dark normal thumb: ``#D9363E`` (``accent_hover``), dark active: ``#F0444C`` (``selection``). Light: ``#C91E27`` / ``#E1262F``.
-- Hover, focus, press, drag, and release states are handled via ``<Enter>``, ``<Leave>``, ``<FocusIn>``, ``<FocusOut>``, ``<ButtonPress-1>``, and ``<ButtonRelease-1>`` bindings in ``_apply_ui_scale_widget_theme()``.
-- A ``_scale_pressed`` flag prevents ``<Leave>`` from restoring normal color during a drag.
-- ``_on_release`` checks pointer position to restore the correct color after release.
-- All bindings are unbound and rebound on each call to avoid stale closure references.
-- Widget construction only sets geometry (``width``, ``sliderlength``, etc.); all colors come from ``_apply_ui_scale_widget_theme()`` called immediately after construction.
-- Duplicate color configuration (widget creation vs. theme refresh) has been removed.
+- Interaction state is tracked via three instance booleans: ``_ui_scale_hovered``, ``_ui_scale_focused``, ``_ui_scale_pressed``. Priority: pressed > focused or hovered > idle.
+- ``_refresh_ui_scale_visual_state()`` resolves the current idle/hover/focus/pressed appearance using ``dlgs.ui_scale_colors(self.current_palette)``. Theme changes while hovered, focused, or pressed automatically resolve the current state with the new palette.
+- ``_bind_ui_scale_interactions()`` is called once after slider construction and binds ``<Enter>``, ``<Leave>``, ``<FocusIn>``, ``<FocusOut>``, ``<ButtonPress-1>``, ``<ButtonRelease-1>`` to named methods. Bindings are not unbound or rebound during theme/zoom refreshes.
+- ``_apply_ui_scale_widget_theme()`` updates only palette-based colors (``troughcolor``, ``activebackground``, ``highlightbackground``) and dimensions (``width``, ``sliderlength``, ``highlightthickness``), then calls ``_refresh_ui_scale_visual_state()``.
+- ``_on_ui_scale_release()`` synchronizes ``_ui_scale_hovered`` from pointer position, calls ``_refresh_ui_scale_visual_state()``, then invokes ``_on_scale_released()`` once.
+- Binding closures and ``unbind``/``bind`` cycles during theme refresh have been removed.
+- ``UiScaleColors`` no longer exposes an unused ``widget_background`` field; ``tk.Scale`` ``background`` option controls the thumb color only and is mapped to ``thumb``/``thumb_active``.
+- Windows CI geometry tests now use a platform-tolerant ``assertGreaterEqual(h, 20)`` and ``assertLessEqual(h, 50)`` with Tcl/Tk version diagnostics.
+- Ubuntu CI tests run under ``xvfb-run`` from the main test step.
 ## Safe continuation checklist
 
 ```powershell

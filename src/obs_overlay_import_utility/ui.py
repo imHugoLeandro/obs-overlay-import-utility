@@ -1166,7 +1166,10 @@ class ImportUtilityApp:
             sliderlength=sm.slider_length,
         )
         self.ui_scale.grid(row=0, column=0, sticky="ew")
-        self._scale_pressed = False
+        self._ui_scale_hovered = False
+        self._ui_scale_focused = False
+        self._ui_scale_pressed = False
+        self._bind_ui_scale_interactions()
         self._apply_ui_scale_widget_theme()
         ttk.Label(scale_row, textvariable=self.ui_scale_label_var, width=6).grid(
             row=0, column=1, padx=(10, 0)
@@ -1829,6 +1832,71 @@ class ImportUtilityApp:
         self.ui_scale_var.set(value)
         self._apply_ui_scale(value)
 
+    def _bind_ui_scale_interactions(self) -> None:
+        self.ui_scale.bind("<Enter>", self._on_ui_scale_enter, add="+")
+        self.ui_scale.bind("<Leave>", self._on_ui_scale_leave, add="+")
+        self.ui_scale.bind("<FocusIn>", self._on_ui_scale_focus_in, add="+")
+        self.ui_scale.bind("<FocusOut>", self._on_ui_scale_focus_out, add="+")
+        self.ui_scale.bind("<ButtonPress-1>", self._on_ui_scale_press, add="+")
+        self.ui_scale.bind("<ButtonRelease-1>", self._on_ui_scale_release, add="+")
+
+    def _on_ui_scale_enter(self, _event: tk.Event) -> None:
+        self._ui_scale_hovered = True
+        self._refresh_ui_scale_visual_state()
+
+    def _on_ui_scale_leave(self, _event: tk.Event) -> None:
+        if self._ui_scale_pressed:
+            return
+        self._ui_scale_hovered = False
+        self._refresh_ui_scale_visual_state()
+
+    def _on_ui_scale_focus_in(self, _event: tk.Event) -> None:
+        self._ui_scale_focused = True
+        self._refresh_ui_scale_visual_state()
+
+    def _on_ui_scale_focus_out(self, _event: tk.Event) -> None:
+        self._ui_scale_focused = False
+        self._refresh_ui_scale_visual_state()
+
+    def _on_ui_scale_press(self, _event: tk.Event) -> None:
+        self._ui_scale_pressed = True
+        self._refresh_ui_scale_visual_state()
+
+    def _on_ui_scale_release(self, _event: tk.Event) -> None:
+        self._ui_scale_pressed = False
+        try:
+            px = self.ui_scale.winfo_pointerx() - self.ui_scale.winfo_rootx()
+            py = self.ui_scale.winfo_pointery() - self.ui_scale.winfo_rooty()
+            over_widget = (
+                0 <= px < self.ui_scale.winfo_width()
+                and 0 <= py < self.ui_scale.winfo_height()
+            )
+            if over_widget:
+                self._ui_scale_hovered = True
+            else:
+                self._ui_scale_hovered = False
+        except tk.TclError:
+            self._ui_scale_hovered = False
+        self._refresh_ui_scale_visual_state()
+        self._on_scale_released(_event)
+
+    def _refresh_ui_scale_visual_state(self) -> None:
+        if not hasattr(self, "ui_scale"):
+            return
+        active = (
+            self._ui_scale_pressed
+            or self._ui_scale_focused
+            or self._ui_scale_hovered
+        )
+        colors = dlgs.ui_scale_colors(self.current_palette)
+        try:
+            self.ui_scale.configure(
+                background=colors.thumb_active if active else colors.thumb,
+                highlightcolor=colors.focus_border if self._ui_scale_focused else colors.border,
+            )
+        except tk.TclError:
+            pass
+
     def _apply_ui_scale_widget_theme(self) -> None:
         if not hasattr(self, "ui_scale"):
             return
@@ -1837,82 +1905,15 @@ class ImportUtilityApp:
         try:
             self.ui_scale.configure(
                 troughcolor=colors.trough,
-                background=colors.thumb,
                 activebackground=colors.thumb_active,
                 highlightbackground=colors.border,
-                highlightcolor=colors.focus_border,
                 width=sm.trough_width,
                 sliderlength=sm.slider_length,
                 highlightthickness=sm.highlight_thickness,
             )
         except tk.TclError:
             return
-
-        self._scale_pressed = getattr(self, "_scale_pressed", False)
-
-        def _on_enter(_e: tk.Event) -> None:
-            try:
-                self.ui_scale.configure(background=colors.thumb_active)
-            except tk.TclError:
-                pass
-
-        def _on_leave(_e: tk.Event) -> None:
-            if self._scale_pressed:
-                return
-            try:
-                self.ui_scale.configure(background=colors.thumb)
-            except tk.TclError:
-                pass
-
-        def _on_focus_in(_e: tk.Event) -> None:
-            try:
-                self.ui_scale.configure(
-                    background=colors.thumb_active,
-                    highlightcolor=colors.focus_border,
-                )
-            except tk.TclError:
-                pass
-
-        def _on_focus_out(_e: tk.Event) -> None:
-            try:
-                self.ui_scale.configure(
-                    background=colors.thumb,
-                    highlightcolor=colors.border,
-                )
-            except tk.TclError:
-                pass
-
-        def _on_press(_e: tk.Event) -> None:
-            self._scale_pressed = True
-
-        def _on_release(_e: tk.Event) -> None:
-            self._scale_pressed = False
-            try:
-                px = self.ui_scale.winfo_pointerx() - self.ui_scale.winfo_rootx()
-                py = self.ui_scale.winfo_pointery() - self.ui_scale.winfo_rooty()
-                over_widget = (
-                    0 <= px < self.ui_scale.winfo_width()
-                    and 0 <= py < self.ui_scale.winfo_height()
-                )
-                self.ui_scale.configure(
-                    background=colors.thumb_active if over_widget else colors.thumb
-                )
-            except tk.TclError:
-                pass
-            self._on_scale_released(_e)
-
-        self.ui_scale.unbind("<Enter>")
-        self.ui_scale.unbind("<Leave>")
-        self.ui_scale.unbind("<FocusIn>")
-        self.ui_scale.unbind("<FocusOut>")
-        self.ui_scale.unbind("<ButtonPress-1>")
-        self.ui_scale.unbind("<ButtonRelease-1>")
-        self.ui_scale.bind("<Enter>", _on_enter, add="+")
-        self.ui_scale.bind("<Leave>", _on_leave, add="+")
-        self.ui_scale.bind("<FocusIn>", _on_focus_in, add="+")
-        self.ui_scale.bind("<FocusOut>", _on_focus_out, add="+")
-        self.ui_scale.bind("<ButtonPress-1>", _on_press, add="+")
-        self.ui_scale.bind("<ButtonRelease-1>", _on_release, add="+")
+        self._refresh_ui_scale_visual_state()
 
     def _snap_scale_label(self, value: float) -> None:
         percent = int(round(value / 5.0) * 5)

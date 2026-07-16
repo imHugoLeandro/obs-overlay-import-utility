@@ -129,7 +129,6 @@ def ui_scale_metrics(dimension_factor: float = 1.0) -> UiScaleMetrics:
 
 @dataclass(frozen=True)
 class UiScaleColors:
-    widget_background: str
     trough: str
     thumb: str
     thumb_active: str
@@ -139,7 +138,6 @@ class UiScaleColors:
 
 def ui_scale_colors(palette: Palette) -> UiScaleColors:
     return UiScaleColors(
-        widget_background=palette.surface,
         trough=palette.surface_alt,
         thumb=palette.accent_hover,
         thumb_active=palette.selection,
