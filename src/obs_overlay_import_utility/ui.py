@@ -295,10 +295,12 @@ class ImportUtilityApp:
         self._apply_ui_scale(self.settings.ui_scale)
         self._apply_theme()
         self._update_custom_path_states()
+        self._set_sidebar_collapsed(self.settings.sidebar_collapsed, persist=False)
         self._process_events_after_id: str | None = None
         self._dpi_watch_after_id: str | None = None
         self._process_events_after_id = self.root.after(100, self._process_events)
         self._dpi_watch_after_id = self.root.after(750, self._watch_window_dpi)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def shutdown(self) -> None:
         for attribute in ("_process_events_after_id", "_dpi_watch_after_id"):
@@ -310,6 +312,16 @@ class ImportUtilityApp:
             except tk.TclError:
                 pass
             setattr(self, attribute, None)
+
+    def close(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        self.shutdown()
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _set_initial_window_size(self) -> None:
         dpi_factor = max(1.0, self.current_dpi / 96.0)
@@ -1328,18 +1340,42 @@ class ImportUtilityApp:
         new_width = max(self._min_sidebar_width, min(new_width, self._max_sidebar_width))
         self.root.columnconfigure(0, weight=0, minsize=new_width)
 
-    def _stop_sidebar_drag(self, event: tk.Event | None = None) -> None:
+    def _stop_sidebar_drag(self, _event: tk.Event | None = None) -> None:
+        if not self._sidebar_dragging:
+            return
         self._sidebar_dragging = False
         if not self.sidebar_collapsed:
             self._last_expanded_sidebar_width = (
                 self.root.grid_bbox(0, 0)[2]
             )
 
-    def _toggle_sidebar(self) -> None:
-        if self.sidebar_collapsed:
-            self._expand_sidebar()
-        else:
+    def _set_sidebar_collapsed(
+        self, collapsed: bool, *, persist: bool
+    ) -> None:
+        if self.sidebar_collapsed == collapsed:
+            return
+        if collapsed:
             self._collapse_sidebar()
+        else:
+            self._expand_sidebar()
+        if persist:
+            self._persist_sidebar_state()
+
+    def _persist_sidebar_state(self) -> bool:
+        from dataclasses import replace
+        updated = replace(self.settings, sidebar_collapsed=self.sidebar_collapsed)
+        try:
+            self.settings_store.save(updated)
+        except OSError:
+            self.settings_status_var.set("Could not save sidebar state.")
+            return False
+        self.settings = updated
+        return True
+
+    def _toggle_sidebar(self) -> None:
+        self._set_sidebar_collapsed(
+            not self.sidebar_collapsed, persist=True
+        )
 
     def _apply_collapsed_layout(self, m: SidebarMetrics | None = None) -> None:
         if m is None:
@@ -1366,7 +1402,7 @@ class ImportUtilityApp:
                     anchor="center", padx=0, pady=8,
                 )
                 button._current_icon = icon
-            except Exception:
+            except (FileNotFoundError, tk.TclError, OSError):
                 button.configure(
                     text="?", font=self.fonts["body_bold"],
                     compound="center", anchor="center", padx=0, pady=8,
@@ -1455,7 +1491,7 @@ class ImportUtilityApp:
                         )
                         btn.configure(image=icon)
                         btn._current_icon = icon
-                    except Exception:
+                    except (FileNotFoundError, tk.TclError, OSError):
                         pass
 
     def _hover_nav(self, section: str, entering: bool) -> None:
@@ -2074,6 +2110,7 @@ class ImportUtilityApp:
         return AppSettings(
             theme=THEME_LABELS.get(self.theme_var.get(), "system"),
             ui_scale=int(round(self.ui_scale_var.get() / 5.0) * 5),
+            sidebar_collapsed=self.sidebar_collapsed,
             use_custom_python=self.use_custom_python_var.get(),
             python_path=self.python_path_var.get().strip(),
             use_custom_obs=self.use_custom_obs_var.get(),
@@ -2122,6 +2159,7 @@ class ImportUtilityApp:
         self._update_custom_path_states()
         self._apply_theme()
         self._set_scale(defaults.ui_scale)
+        self._set_sidebar_collapsed(False, persist=False)
         if self._save_settings():
             self.settings_status_var.set("Default settings restored.")
 

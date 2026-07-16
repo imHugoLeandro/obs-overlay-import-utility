@@ -598,5 +598,190 @@ class UiScaleStateTransitionTests(unittest.TestCase):
         self.assertEqual(bindings_before, bindings_after)
 
 
+class SidebarPersistenceTests(unittest.TestCase):
+    """Verify sidebar collapsed/expanded persistence and lifecycle."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import tempfile
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls._settings_dir = Path(cls._tmpdir.name)
+        from obs_overlay_import_utility.settings import SettingsStore
+        cls._store = SettingsStore(cls._settings_dir)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmpdir.cleanup()
+
+    def _make_app(
+        self, theme: str = "dark", sidebar_collapsed: bool = False
+    ) -> tuple[tk.Tk, "ImportUtilityApp"]:
+        from obs_overlay_import_utility.settings import AppSettings
+
+        settings_data = AppSettings(theme=theme, sidebar_collapsed=sidebar_collapsed)
+        self._settings_dir.mkdir(parents=True, exist_ok=True)
+        self._store.save(settings_data)
+
+        with mock.patch(
+            "obs_overlay_import_utility.settings.default_settings_directory",
+            return_value=self._settings_dir,
+        ):
+            from obs_overlay_import_utility.ui import ImportUtilityApp
+            root = tk.Tk()
+            root.withdraw()
+            app = ImportUtilityApp(root)
+        return root, app
+
+    def _cleanup(self, root: tk.Tk, app: "ImportUtilityApp") -> None:
+        try:
+            app.close()
+        except tk.TclError:
+            pass
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+
+    def test_saved_collapsed_starts_collapsed(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=True)
+        try:
+            self.assertTrue(app.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_saved_expanded_starts_expanded(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            self.assertFalse(app.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_collapsing_writes_true(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            self.assertFalse(app.sidebar_collapsed)
+            app._set_sidebar_collapsed(True, persist=True)
+            self.assertTrue(app.sidebar_collapsed)
+            loaded = self._store.load()
+            self.assertTrue(loaded.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_expanding_writes_false(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=True)
+        try:
+            self.assertTrue(app.sidebar_collapsed)
+            app._set_sidebar_collapsed(False, persist=True)
+            self.assertFalse(app.sidebar_collapsed)
+            loaded = self._store.load()
+            self.assertFalse(loaded.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_startup_restoration_does_not_save(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            original_mtime = self._store.path.stat().st_mtime
+            root.update_idletasks()
+            self.assertEqual(original_mtime, self._store.path.stat().st_mtime)
+        finally:
+            self._cleanup(root, app)
+
+    def test_noop_state_setter_does_nothing(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            app._set_sidebar_collapsed(False, persist=True)
+            self.assertFalse(app.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_one_toggle_one_save(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            mtime_before = self._store.path.stat().st_mtime
+            app._toggle_sidebar()
+            mtime_after = self._store.path.stat().st_mtime
+            self.assertGreater(mtime_after, mtime_before)
+        finally:
+            self._cleanup(root, app)
+
+    def test_save_failure_keeps_visual_state(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        try:
+            with mock.patch.object(app.settings_store, "save", side_effect=OSError("no space")):
+                app._set_sidebar_collapsed(True, persist=True)
+            self.assertTrue(app.sidebar_collapsed)
+            self.assertFalse(app.settings.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_unsaved_theme_not_persisted_by_sidebar_toggle(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False, theme="dark")
+        try:
+            self.assertEqual(app.settings.theme, "dark")
+            app.theme_var.set("White")
+            app._toggle_sidebar()
+            loaded = self._store.load()
+            self.assertEqual(loaded.theme, "dark", "unsaved theme change persisted")
+        finally:
+            self._cleanup(root, app)
+
+    def test_restore_defaults_expands_sidebar(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=True)
+        try:
+            self.assertTrue(app.sidebar_collapsed)
+            app._restore_defaults()
+            self.assertFalse(app.sidebar_collapsed)
+        finally:
+            self._cleanup(root, app)
+
+    def test_dpi_refresh_while_collapsed_does_not_save(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=True)
+        try:
+            mtime_before = self._store.path.stat().st_mtime
+            app._set_sidebar_collapsed(True, persist=True)
+            app._refresh_sidebar_layout()
+            self.assertEqual(mtime_before, self._store.path.stat().st_mtime)
+        finally:
+            self._cleanup(root, app)
+
+    def test_theme_refresh_while_collapsed_does_not_save(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=True)
+        try:
+            mtime_before = self._store.path.stat().st_mtime
+            app._apply_theme()
+            self.assertEqual(mtime_before, self._store.path.stat().st_mtime)
+        finally:
+            self._cleanup(root, app)
+
+    def test_shutdown_is_idempotent(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        app.close()
+        app.close()
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+
+    def test_no_recurring_callbacks_remain_after_shutdown(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        app.close()
+        self.assertIsNone(app._process_events_after_id)
+        self.assertIsNone(app._dpi_watch_after_id)
+
+    def test_close_guards_against_repeated_calls(self) -> None:
+        root, app = self._make_app(sidebar_collapsed=False)
+        app._closing = True
+        before_process = app._process_events_after_id
+        before_dpi = app._dpi_watch_after_id
+        app.close()
+        self.assertEqual(app._process_events_after_id, before_process)
+        self.assertEqual(app._dpi_watch_after_id, before_dpi)
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()

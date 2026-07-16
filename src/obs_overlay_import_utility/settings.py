@@ -15,13 +15,21 @@ SETTINGS_FILENAME = "settings.json"
 THEMES = frozenset({"system", "light", "dark"})
 MIN_UI_SCALE = 75
 MAX_UI_SCALE = 150
+CURRENT_SCHEMA_VERSION = 2
+
+
+def normalized_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
 
 
 @dataclass
 class AppSettings:
-    schema_version: int = 1
+    schema_version: int = CURRENT_SCHEMA_VERSION
     theme: str = "system"
     ui_scale: int = 100
+    sidebar_collapsed: bool = False
     use_custom_python: bool = False
     python_path: str = ""
     use_custom_obs: bool = False
@@ -38,6 +46,10 @@ class AppSettings:
             return cls()
         allowed = {field.name for field in fields(cls)}
         clean = {key: item for key, item in value.items() if key in allowed}
+
+        if "sidebar_collapsed" not in clean:
+            clean["sidebar_collapsed"] = False
+
         try:
             settings = cls(**clean)
         except TypeError:
@@ -53,6 +65,10 @@ class AppSettings:
         except (TypeError, ValueError):
             settings.ui_scale = 100
 
+        settings.sidebar_collapsed = normalized_bool(
+            settings.sidebar_collapsed, False
+        )
+
         for name in (
             "use_custom_python",
             "use_custom_obs",
@@ -61,11 +77,12 @@ class AppSettings:
             "strict_validation",
             "case_sensitive_matching",
         ):
-            setattr(settings, name, bool(getattr(settings, name)))
+            setattr(settings, name, normalized_bool(getattr(settings, name), False))
         for name in ("python_path", "obs_path", "last_overlay_folder"):
             value = getattr(settings, name)
             setattr(settings, name, value if isinstance(value, str) else "")
-        settings.schema_version = 1
+
+        settings.schema_version = CURRENT_SCHEMA_VERSION
         return settings
 
 
