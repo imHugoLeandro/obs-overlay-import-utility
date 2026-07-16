@@ -17,6 +17,8 @@ from obs_overlay_import_utility.dialogs import (  # noqa: E402
     compute_body_wraplength,
     palette_aware_warning_bg,
     palette_aware_warning_fg,
+    scrollbar_metrics,
+    DIALOG_STYLE_NAMES,
 )
 
 
@@ -104,6 +106,91 @@ class DialogMetricsTests(unittest.TestCase):
 
     def test_palette_warning_fg_dark(self) -> None:
         self.assertEqual(palette_aware_warning_fg(DARK_PALETTE), "#FFD970")
+
+
+class ScrollbarMetricsTests(unittest.TestCase):
+    def test_100pct_target_near_28px(self) -> None:
+        m = scrollbar_metrics(1.0)
+        self.assertGreaterEqual(m.vertical_thickness, 26)
+        self.assertLessEqual(m.vertical_thickness, 32)
+        self.assertEqual(m.vertical_thickness, 28)
+
+    def test_75pct_in_range_21_23(self) -> None:
+        m = scrollbar_metrics(0.75)
+        self.assertGreaterEqual(m.vertical_thickness, 21)
+        self.assertLessEqual(m.vertical_thickness, 23)
+        self.assertLess(m.vertical_thickness, scrollbar_metrics(1.0).vertical_thickness)
+
+    def test_125pct_in_range_34_36(self) -> None:
+        m = scrollbar_metrics(1.25)
+        self.assertGreaterEqual(m.vertical_thickness, 33)
+        self.assertLessEqual(m.vertical_thickness, 37)
+
+    def test_150pct_in_range_40_42(self) -> None:
+        m = scrollbar_metrics(1.5)
+        self.assertGreaterEqual(m.vertical_thickness, 40)
+        self.assertLessEqual(m.vertical_thickness, 42)
+
+    def test_grows_with_ui_zoom(self) -> None:
+        m75 = scrollbar_metrics(0.75)
+        m100 = scrollbar_metrics(1.0)
+        m125 = scrollbar_metrics(1.25)
+        m150 = scrollbar_metrics(1.5)
+        self.assertLess(m75.vertical_thickness, m100.vertical_thickness)
+        self.assertLess(m100.vertical_thickness, m125.vertical_thickness)
+        self.assertLess(m125.vertical_thickness, m150.vertical_thickness)
+
+    def test_minimum_thickness_is_usable(self) -> None:
+        m = scrollbar_metrics(0.75)
+        self.assertGreaterEqual(m.vertical_thickness, 20)
+
+    def test_all_values_are_positive_integers(self) -> None:
+        for zoom in (0.75, 1.0, 1.25, 1.5):
+            with self.subTest(zoom=zoom):
+                m = scrollbar_metrics(zoom)
+                self.assertIsInstance(m.vertical_thickness, int)
+                self.assertIsInstance(m.horizontal_thickness, int)
+                self.assertIsInstance(m.arrow_size, int)
+                self.assertGreater(m.vertical_thickness, 0)
+                self.assertGreater(m.horizontal_thickness, 0)
+                self.assertGreater(m.arrow_size, 0)
+
+    def test_vertical_roughly_twice_old_default(self) -> None:
+        m = scrollbar_metrics(1.0)
+        old = 14
+        self.assertGreaterEqual(m.vertical_thickness, old * 1.8)
+
+    def test_120dpi_100pct_scales_with_factor(self) -> None:
+        factor = 120.0 / 96.0
+        m = scrollbar_metrics(factor * 1.0)
+        self.assertGreater(m.vertical_thickness, 28)
+        self.assertLess(m.vertical_thickness, 38)
+
+    def test_144dpi_100pct_scales_with_factor(self) -> None:
+        factor = 144.0 / 96.0
+        m = scrollbar_metrics(factor * 1.0)
+        self.assertGreater(m.vertical_thickness, 40)
+        self.assertLess(m.vertical_thickness, 45)
+
+    def test_horizontal_thickness_is_smaller_than_vertical(self) -> None:
+        for zoom in (0.75, 1.0, 1.25, 1.5):
+            with self.subTest(zoom=zoom):
+                m = scrollbar_metrics(zoom)
+                self.assertLess(m.horizontal_thickness, m.vertical_thickness)
+
+    def test_scrollbar_frozen_dataclass(self) -> None:
+        import dataclasses
+        m = scrollbar_metrics(1.0)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            m.__setattr__("vertical_thickness", 99)
+
+    def test_compute_body_wraplength_uses_scrollbar_metric(self) -> None:
+        result = compute_body_wraplength(None, 0, 0, ui_zoom=1.0)
+        self.assertEqual(result, 800 - 28)
+
+    def test_dialog_style_names_include_scrollbars(self) -> None:
+        self.assertIn("Dialog.Vertical.TScrollbar", DIALOG_STYLE_NAMES)
+        self.assertIn("Dialog.Horizontal.TScrollbar", DIALOG_STYLE_NAMES)
 
 
 class DialogStringsTests(unittest.TestCase):

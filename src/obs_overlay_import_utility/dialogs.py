@@ -92,13 +92,31 @@ def dialog_metrics(
     )
 
 
+@dataclass(frozen=True)
+class ScrollbarMetrics:
+    vertical_thickness: int
+    horizontal_thickness: int
+    arrow_size: int
+
+
+def scrollbar_metrics(ui_zoom: float = 1.0) -> ScrollbarMetrics:
+    return ScrollbarMetrics(
+        vertical_thickness=max(20, round(28 * ui_zoom)),
+        horizontal_thickness=max(12, round(18 * ui_zoom)),
+        arrow_size=max(10, round(16 * ui_zoom)),
+    )
+
+
 def compute_body_wraplength(
     dialog: tk.Toplevel | None = None,
     left_padding: int = 0,
     right_padding: int = 0,
-    scrollbar_width: int = 20,
+    scrollbar_width: int | None = None,
     minimum_wrap: int = 200,
+    ui_zoom: float = 1.0,
 ) -> int:
+    if scrollbar_width is None:
+        scrollbar_width = scrollbar_metrics(ui_zoom).vertical_thickness
     try:
         dw = dialog.winfo_width() if dialog else 800
     except tk.TclError:
@@ -132,6 +150,8 @@ DIALOG_STYLE_NAMES = [
     "Dialog.Treeview.Heading",
     "Dialog.TNotebook",
     "Dialog.TNotebook.Tab",
+    "Dialog.Vertical.TScrollbar",
+    "Dialog.Horizontal.TScrollbar",
 ]
 
 
@@ -281,6 +301,25 @@ def configure_dialog_styles(style: ttk.Style, palette: Palette, ui_zoom: float) 
             ("selected", palette.background),
             ("active", palette.surface),
         ],
+    )
+    sb = scrollbar_metrics(ui_zoom)
+    style.configure(
+        "Dialog.Vertical.TScrollbar",
+        background=palette.surface_alt,
+        troughcolor=palette.surface,
+        arrowcolor=palette.muted,
+        bordercolor=palette.surface,
+        sliderthickness=sb.vertical_thickness,
+        arrowsize=sb.arrow_size,
+    )
+    style.configure(
+        "Dialog.Horizontal.TScrollbar",
+        background=palette.surface_alt,
+        troughcolor=palette.surface,
+        arrowcolor=palette.muted,
+        bordercolor=palette.surface,
+        sliderthickness=sb.horizontal_thickness,
+        arrowsize=sb.arrow_size,
     )
 
 

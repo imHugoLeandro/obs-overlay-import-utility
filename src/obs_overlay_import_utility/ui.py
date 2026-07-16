@@ -1700,12 +1700,24 @@ class ImportUtilityApp:
                 ("disabled", palette.disabled),
             ],
         )
+        sb_metrics = dlgs.scrollbar_metrics(self.ui_zoom)
         style.configure(
             "Vertical.TScrollbar",
             background=palette.surface_alt,
             troughcolor=palette.surface,
             arrowcolor=palette.muted,
             bordercolor=palette.surface,
+            sliderthickness=sb_metrics.vertical_thickness,
+            arrowsize=sb_metrics.arrow_size,
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background=palette.surface_alt,
+            troughcolor=palette.surface,
+            arrowcolor=palette.muted,
+            bordercolor=palette.surface,
+            sliderthickness=sb_metrics.horizontal_thickness,
+            arrowsize=sb_metrics.arrow_size,
         )
         style.configure(
             "Treeview",
@@ -1881,10 +1893,18 @@ class ImportUtilityApp:
             sliderlength=max(14, round(22 * dimension_factor)),
             sliderthickness=max(10, round(16 * dimension_factor)),
         )
+        sb = dlgs.scrollbar_metrics(dimension_factor)
         style.configure(
             "Vertical.TScrollbar",
-            sliderthickness=max(14, round(22 * dimension_factor)),
+            sliderthickness=sb.vertical_thickness,
+            arrowsize=sb.arrow_size,
         )
+        style.configure(
+            "Horizontal.TScrollbar",
+            sliderthickness=sb.horizontal_thickness,
+            arrowsize=sb.arrow_size,
+        )
+        dlgs.configure_dialog_styles(style, self.current_palette, self.ui_zoom)
         self._update_logo_scale(dimension_factor)
         self._refresh_sidebar_layout()
         self.root.update_idletasks()
@@ -2131,7 +2151,8 @@ class ImportUtilityApp:
         canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
                            background=palette.background)
         canvas.grid(row=0, column=0, sticky="nsew")
-        sb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        sb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview,
+                           style="Dialog.Vertical.TScrollbar")
         sb.grid(row=0, column=1, sticky="ns")
         canvas.configure(yscrollcommand=sb.set)
 
@@ -3096,9 +3117,11 @@ class ImportUtilityApp:
         tree.column("source_path", width=260, stretch=True)
         tree.column("package_path", width=260, stretch=True)
         tree.grid(row=0, column=0, sticky="nsew")
-        vs = ttk.Scrollbar(files_frame, orient="vertical", command=tree.yview)
+        vs = ttk.Scrollbar(files_frame, orient="vertical", command=tree.yview,
+                           style="Dialog.Vertical.TScrollbar")
         vs.grid(row=0, column=1, sticky="ns")
-        hs = ttk.Scrollbar(files_frame, orient="horizontal", command=tree.xview)
+        hs = ttk.Scrollbar(files_frame, orient="horizontal", command=tree.xview,
+                           style="Dialog.Horizontal.TScrollbar")
         hs.grid(row=1, column=0, sticky="ew")
         tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
 
@@ -3129,7 +3152,8 @@ class ImportUtilityApp:
         req_tree.column("type", width=180, stretch=False)
         req_tree.column("detail", width=500, stretch=True)
         req_tree.grid(row=0, column=0, sticky="nsew")
-        rvs = ttk.Scrollbar(req_frame, orient="vertical", command=req_tree.yview)
+        rvs = ttk.Scrollbar(req_frame, orient="vertical", command=req_tree.yview,
+                           style="Dialog.Vertical.TScrollbar")
         rvs.grid(row=0, column=1, sticky="ns")
         req_tree.configure(yscrollcommand=rvs.set)
 
@@ -3174,7 +3198,8 @@ class ImportUtilityApp:
         miss_tree.column("filename", width=200, stretch=True)
         miss_tree.column("reason", width=200, stretch=True)
         miss_tree.grid(row=0, column=0, sticky="nsew")
-        mvs = ttk.Scrollbar(miss_frame, orient="vertical", command=miss_tree.yview)
+        mvs = ttk.Scrollbar(miss_frame, orient="vertical", command=miss_tree.yview,
+                           style="Dialog.Vertical.TScrollbar")
         mvs.grid(row=0, column=1, sticky="ns")
         miss_tree.configure(yscrollcommand=mvs.set)
 

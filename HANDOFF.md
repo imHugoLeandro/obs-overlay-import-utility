@@ -1,6 +1,6 @@
 # Project Handoff
 
-Last updated: 2026-07-14
+Last updated: 2026-07-16
 
 ## Project
 
@@ -11,8 +11,8 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ## Current state
 
 - Branch: `main`
-- Latest pushed commit before these working changes: `391c148` — `feat: Enhance overlay import utility with export inventory feature`
-- Working tree was clean before this handoff file was added.
+- Latest pushed commit before these working changes: `333e1ea` — `fix: adjust indicator margins and sizes for better UI consistency`
+- Working tree has uncommitted vertical-scrollbar thickness enhancement.
 - Latest GitHub Actions test run passed: <https://github.com/imHugoLeandro/obs-overlay-import-utility/actions/runs/29268864090>
 - Local portable executable: `dist/OBS Overlay Import Utility.exe`
 - Current executable SHA-256: `F4C5310B92CB5AF18B7182F4021631F9C24D7A337D0491353159293583CCA5E0`
@@ -171,6 +171,16 @@ For UI work, preserve the dependency-free Tk/ttk runtime and one-file build unle
 - Do not silently delete backups. Only remove the backup after a successful explicit Undo restore.
 - Source scope must identify scene items by `source_uuid`, and the UI must show `Source Name (UUID)`; display names alone are not unique.
 - Respect `bounds_type`: scale active bounds instead of also scaling source scale, and scale source scale only when bounds are inactive.
+## Scrollbar thickness rules for future AI work
+
+- Use the centralized ``ScrollbarMetrics`` frozen dataclass and ``scrollbar_metrics(ui_zoom)`` helper in ``dialogs.py`` as the single source of truth for scrollbar sizing.
+- Base target at 96 DPI / 100% zoom: **28 px** vertical, 18 px horizontal, 16 px arrow size. Scaled linearly with ``ui_zoom`` (and combined DPI factor in ``_apply_ui_scale``).
+- Minimum vertical thickness: 20 px.
+- Dedicated styles: ``Vertical.TScrollbar`` / ``Horizontal.TScrollbar`` for main pages, ``Dialog.Vertical.TScrollbar`` / ``Dialog.Horizontal.TScrollbar`` for dialogs.
+- Every scrollbar in the application must use one of these styles. New dialogs must use ``Dialog.Vertical.TScrollbar`` / ``Dialog.Horizontal.TScrollbar`` explicitly.
+- ``_apply_ui_scale`` must re-call ``configure_dialog_styles`` so open dialogs receive updated scrollbar dimensions on zoom/dpi change.
+- ``compute_body_wraplength`` defaults to ``scrollbar_metrics(ui_zoom).vertical_thickness``.
+- The ``clam`` ttk theme controls scrollbar cross-axis width via ``sliderthickness`` and arrow-button size via ``arrowsize``; always set both.
 ## Safe continuation checklist
 
 ```powershell

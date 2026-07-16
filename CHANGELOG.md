@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Enlarged vertical scrollbars to approximately 28 px at 100% zoom (ranging 21-42 px from 75-150% zoom) with DPI-aware scaling, and introduced a centralized ``ScrollbarMetrics`` helper shared by main pages and dialogs.
 - Added dependency-free obs-websocket 5.x live control for OBS 28+, with session-only password authentication.
 - Streamlabs and Automatic imports now finish device setup and activate the new collection in an open OBS session without a restart.
 - Auto Resizer now changes and undoes active collection transforms directly through OBS; it refuses unsafe active-JSON fallback writes when live control is unavailable.
