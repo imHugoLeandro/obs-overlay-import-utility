@@ -107,6 +107,26 @@ def scrollbar_metrics(ui_zoom: float = 1.0) -> ScrollbarMetrics:
     )
 
 
+@dataclass(frozen=True)
+class UiScaleMetrics:
+    widget_height: int
+    trough_width: int
+    slider_length: int
+    highlight_thickness: int
+
+
+def ui_scale_metrics(dimension_factor: float = 1.0) -> UiScaleMetrics:
+    h = max(1, round(1 * dimension_factor))
+    target = max(24, round(32 * dimension_factor))
+    width = target - 2 * h
+    return UiScaleMetrics(
+        widget_height=target,
+        trough_width=max(22, width),
+        slider_length=max(24, round(30 * dimension_factor)),
+        highlight_thickness=h,
+    )
+
+
 def compute_body_wraplength(
     dialog: tk.Toplevel | None = None,
     left_padding: int = 0,

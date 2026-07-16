@@ -18,6 +18,7 @@ from obs_overlay_import_utility.dialogs import (  # noqa: E402
     palette_aware_warning_bg,
     palette_aware_warning_fg,
     scrollbar_metrics,
+    ui_scale_metrics,
     DIALOG_STYLE_NAMES,
 )
 
@@ -191,6 +192,81 @@ class ScrollbarMetricsTests(unittest.TestCase):
     def test_dialog_style_names_include_scrollbars(self) -> None:
         self.assertIn("Dialog.Vertical.TScrollbar", DIALOG_STYLE_NAMES)
         self.assertIn("Dialog.Horizontal.TScrollbar", DIALOG_STYLE_NAMES)
+
+
+class UiScaleMetricsTests(unittest.TestCase):
+    def test_100pct_target_near_32px(self) -> None:
+        m = ui_scale_metrics(1.0)
+        self.assertGreaterEqual(m.widget_height, 30)
+        self.assertLessEqual(m.widget_height, 34)
+        self.assertEqual(m.widget_height, 32)
+
+    def test_75pct_height_around_24px(self) -> None:
+        m = ui_scale_metrics(0.75)
+        self.assertGreaterEqual(m.widget_height, 22)
+        self.assertLessEqual(m.widget_height, 26)
+
+    def test_125pct_height_around_40px(self) -> None:
+        m = ui_scale_metrics(1.25)
+        self.assertGreaterEqual(m.widget_height, 38)
+        self.assertLessEqual(m.widget_height, 42)
+
+    def test_150pct_height_around_48px(self) -> None:
+        m = ui_scale_metrics(1.5)
+        self.assertGreaterEqual(m.widget_height, 46)
+        self.assertLessEqual(m.widget_height, 50)
+
+    def test_120dpi_100pct_scales(self) -> None:
+        factor = 120.0 / 96.0
+        m = ui_scale_metrics(factor)
+        self.assertGreater(m.widget_height, 32)
+        self.assertLess(m.widget_height, 42)
+
+    def test_144dpi_100pct_scales(self) -> None:
+        factor = 144.0 / 96.0
+        m = ui_scale_metrics(factor)
+        self.assertGreaterEqual(m.widget_height, 46)
+        self.assertLessEqual(m.widget_height, 52)
+
+    def test_grows_monotonically_with_zoom(self) -> None:
+        m75 = ui_scale_metrics(0.75)
+        m100 = ui_scale_metrics(1.0)
+        m125 = ui_scale_metrics(1.25)
+        m150 = ui_scale_metrics(1.5)
+        self.assertLess(m75.widget_height, m100.widget_height)
+        self.assertLess(m100.widget_height, m125.widget_height)
+        self.assertLess(m125.widget_height, m150.widget_height)
+
+    def test_minimum_height_is_usable(self) -> None:
+        m = ui_scale_metrics(0.75)
+        self.assertGreaterEqual(m.widget_height, 22)
+
+    def test_all_values_are_positive_integers(self) -> None:
+        for zoom in (0.75, 1.0, 1.25, 1.5):
+            with self.subTest(zoom=zoom):
+                m = ui_scale_metrics(zoom)
+                self.assertIsInstance(m.widget_height, int)
+                self.assertIsInstance(m.trough_width, int)
+                self.assertIsInstance(m.slider_length, int)
+                self.assertIsInstance(m.highlight_thickness, int)
+                self.assertGreater(m.widget_height, 0)
+                self.assertGreater(m.trough_width, 0)
+                self.assertGreater(m.slider_length, 0)
+
+    def test_trough_width_plus_border_equals_height(self) -> None:
+        m = ui_scale_metrics(1.0)
+        self.assertEqual(m.trough_width + 2 * m.highlight_thickness, m.widget_height)
+
+    def test_slider_range_and_snapping_unchanged(self) -> None:
+        from obs_overlay_import_utility.ui import MIN_UI_SCALE, MAX_UI_SCALE
+        self.assertEqual(MIN_UI_SCALE, 75)
+        self.assertEqual(MAX_UI_SCALE, 150)
+
+    def test_frozen_dataclass(self) -> None:
+        import dataclasses
+        m = ui_scale_metrics(1.0)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            m.__setattr__("widget_height", 99)
 
 
 class DialogStringsTests(unittest.TestCase):

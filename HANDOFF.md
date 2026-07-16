@@ -181,6 +181,16 @@ For UI work, preserve the dependency-free Tk/ttk runtime and one-file build unle
 - ``_apply_ui_scale`` must re-call ``configure_dialog_styles`` so open dialogs receive updated scrollbar dimensions on zoom/dpi change.
 - ``compute_body_wraplength`` defaults to ``scrollbar_metrics(ui_zoom).vertical_thickness``.
 - The ``clam`` ttk theme controls scrollbar cross-axis width via ``sliderthickness`` and arrow-button size via ``arrowsize``; always set both.
+## UI-size slider rules for future AI work
+
+- The Settings UI-size control is now a classic ``tk.Scale``, not a ``ttk.Scale``. The ``clam`` ttk theme's ``Horizontal.Scale.slider`` and ``Horizontal.Scale.trough`` elements do not support ``sliderthickness``, so changing that value had no effect on the rendered widget height.
+- Size is controlled via the centralized ``UiScaleMetrics`` frozen dataclass and ``ui_scale_metrics(dimension_factor)`` helper in ``dialogs.py``. This accepts the combined ``dimension_factor`` (UI zoom * DPI ratio).
+- Base target at 96 DPI / 100% zoom: **32 px** widget height (``trough_width=30``, ``highlightthickness=1`` → ``height = 30 + 2 = 32``).
+- ``slider_length=30`` controls the thumb length; ``trough_width`` controls the cross-axis height.
+- Theming is handled by ``_apply_ui_scale_widget_theme()``, called during init, ``_apply_theme()``, ``_apply_ui_scale()``, and DPI refresh. It configures ``bg``, ``troughcolor``, ``activebackground``, ``highlightbackground``, ``highlightcolor``, ``width``, ``sliderlength``, and ``highlightthickness`` from the shared palette.
+- The widget is safe-guarded with ``hasattr(self, "ui_scale")`` to avoid errors during early init before the Settings page is built.
+- Checkbox ``indicatorsize`` was reduced from base 12 px to 10 px (~20%): ``max(8, round(10 * dimension_factor))``. Radio ``indicatordiameter`` from 11 to 9 px. ``indicatormargin`` top reduced from 4 to 3.
+- Do not revert ``self.ui_scale`` to a ``ttk.Scale`` without first proving that the active ttk theme supports cross-axis thickness.
 ## Safe continuation checklist
 
 ```powershell

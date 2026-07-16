@@ -1147,12 +1147,29 @@ class ImportUtilityApp:
         scale_row = ttk.Frame(appearance)
         scale_row.grid(row=1, column=1, sticky="ew", pady=(12, 0))
         scale_row.columnconfigure(0, weight=1)
-        self.ui_scale = ttk.Scale(
+        sm = dlgs.ui_scale_metrics(self.ui_zoom * max(1.0, self.current_dpi / 96.0))
+        self.ui_scale = tk.Scale(
             scale_row,
             from_=MIN_UI_SCALE,
             to=MAX_UI_SCALE,
+            orient="horizontal",
             variable=self.ui_scale_var,
             command=self._on_scale_drag,
+            showvalue=False,
+            resolution=1,
+            takefocus=True,
+            borderwidth=0,
+            highlightthickness=sm.highlight_thickness,
+            relief="flat",
+            sliderrelief="flat",
+            troughcolor=self.current_palette.surface_alt,
+            background=self.current_palette.surface,
+            foreground=self.current_palette.foreground,
+            activebackground=self.current_palette.accent_hover,
+            highlightbackground=self.current_palette.border,
+            highlightcolor=self.current_palette.accent,
+            width=sm.trough_width,
+            sliderlength=sm.slider_length,
         )
         self.ui_scale.grid(row=0, column=0, sticky="ew")
         self.ui_scale.bind("<ButtonRelease-1>", self._on_scale_released)
@@ -1614,7 +1631,7 @@ class ImportUtilityApp:
             background=palette.surface,
             foreground=palette.foreground,
             indicatorcolor=palette.field,
-            indicatormargin=(2, 2, 4, 1),
+            indicatormargin=(2, 2, 3, 1),
             bordercolor=palette.border,
             focuscolor=palette.accent,
         )
@@ -1633,7 +1650,7 @@ class ImportUtilityApp:
             background=palette.surface,
             foreground=palette.foreground,
             indicatorcolor=palette.border,
-            indicatormargin=(2, 2, 4, 1),
+            indicatormargin=(2, 2, 3, 1),
             bordercolor=palette.border,
             focuscolor=palette.accent,
         )
@@ -1787,6 +1804,7 @@ class ImportUtilityApp:
 
         dlgs.configure_dialog_styles(style, palette, self.ui_zoom)
         dlgs.refresh_all_open_dialogs(palette, self.ui_zoom)
+        self._apply_ui_scale_widget_theme()
 
     def _capture_scalable_ui(self) -> None:
         def descendants(widget: tk.Misc) -> list[tk.Misc]:
@@ -1815,6 +1833,26 @@ class ImportUtilityApp:
     def _set_scale(self, value: int) -> None:
         self.ui_scale_var.set(value)
         self._apply_ui_scale(value)
+
+    def _apply_ui_scale_widget_theme(self) -> None:
+        if not hasattr(self, "ui_scale"):
+            return
+        sm = dlgs.ui_scale_metrics(self.ui_zoom * max(1.0, self.current_dpi / 96.0))
+        p = self.current_palette
+        try:
+            self.ui_scale.configure(
+                troughcolor=p.surface_alt,
+                background=p.surface,
+                foreground=p.foreground,
+                activebackground=p.accent_hover,
+                highlightbackground=p.border,
+                highlightcolor=p.accent,
+                width=sm.trough_width,
+                sliderlength=sm.slider_length,
+                highlightthickness=sm.highlight_thickness,
+            )
+        except tk.TclError:
+            pass
 
     def _snap_scale_label(self, value: float) -> None:
         percent = int(round(value / 5.0) * 5)
@@ -1881,11 +1919,11 @@ class ImportUtilityApp:
         )
         style.configure(
             "TCheckbutton",
-            indicatorsize=max(9, round(12 * dimension_factor)),
+            indicatorsize=max(8, round(10 * dimension_factor)),
         )
         style.configure(
             "TRadiobutton",
-            indicatordiameter=max(8, round(11 * dimension_factor)),
+            indicatordiameter=max(7, round(9 * dimension_factor)),
         )
         style.configure("Treeview", rowheight=max(24, round(30 * dimension_factor)))
         style.configure(
@@ -1909,6 +1947,7 @@ class ImportUtilityApp:
         self._refresh_sidebar_layout()
         self.root.update_idletasks()
         dlgs.refresh_all_open_dialogs(self.current_palette, self.ui_zoom)
+        self._apply_ui_scale_widget_theme()
 
     def _update_logo_scale(self, factor: float) -> None:
         if not self.logo_source or not self.logo_label:
