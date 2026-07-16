@@ -191,6 +191,14 @@ For UI work, preserve the dependency-free Tk/ttk runtime and one-file build unle
 - The widget is safe-guarded with ``hasattr(self, "ui_scale")`` to avoid errors during early init before the Settings page is built.
 - Checkbox ``indicatorsize`` was reduced from base 12 px to 10 px (~20%): ``max(8, round(10 * dimension_factor))``. Radio ``indicatordiameter`` from 11 to 9 px. ``indicatormargin`` top reduced from 4 to 3.
 - Do not revert ``self.ui_scale`` to a ``ttk.Scale`` without first proving that the active ttk theme supports cross-axis thickness.
+- The slider thumb color is controlled by ``tk.Scale``'s ``background`` option. Use ``UiScaleColors`` via ``ui_scale_colors(palette)`` for all theme colors.
+- Dark normal thumb: ``#D9363E`` (``accent_hover``), dark active: ``#F0444C`` (``selection``). Light: ``#C91E27`` / ``#E1262F``.
+- Hover, focus, press, drag, and release states are handled via ``<Enter>``, ``<Leave>``, ``<FocusIn>``, ``<FocusOut>``, ``<ButtonPress-1>``, and ``<ButtonRelease-1>`` bindings in ``_apply_ui_scale_widget_theme()``.
+- A ``_scale_pressed`` flag prevents ``<Leave>`` from restoring normal color during a drag.
+- ``_on_release`` checks pointer position to restore the correct color after release.
+- All bindings are unbound and rebound on each call to avoid stale closure references.
+- Widget construction only sets geometry (``width``, ``sliderlength``, etc.); all colors come from ``_apply_ui_scale_widget_theme()`` called immediately after construction.
+- Duplicate color configuration (widget creation vs. theme refresh) has been removed.
 ## Safe continuation checklist
 
 ```powershell

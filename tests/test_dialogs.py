@@ -19,6 +19,7 @@ from obs_overlay_import_utility.dialogs import (  # noqa: E402
     palette_aware_warning_fg,
     scrollbar_metrics,
     ui_scale_metrics,
+    ui_scale_colors,
     DIALOG_STYLE_NAMES,
 )
 
@@ -287,6 +288,115 @@ class DialogStringsTests(unittest.TestCase):
         )
         self.assertIn("not be included", msg)
         self.assertNotIn("remain unchanged", msg)
+
+
+class UiScaleColorsTests(unittest.TestCase):
+    def test_dark_thumb_is_accent_hover(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.thumb, "#D9363E")
+
+    def test_dark_thumb_active_is_selection(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.thumb_active, "#F0444C")
+
+    def test_dark_trough_is_surface_alt(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.trough, "#222730")
+
+    def test_dark_widget_background_is_surface(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.widget_background, "#191D23")
+
+    def test_dark_focus_border_is_selection(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.focus_border, "#F0444C")
+
+    def test_dark_border_is_palette_border(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertEqual(colors.border, "#303640")
+
+    def test_light_thumb_uses_brand_red(self) -> None:
+        colors = ui_scale_colors(LIGHT_PALETTE)
+        self.assertEqual(colors.thumb, "#C91E27")
+
+    def test_light_thumb_active_is_brighter(self) -> None:
+        colors = ui_scale_colors(LIGHT_PALETTE)
+        self.assertEqual(colors.thumb_active, "#E1262F")
+
+    def test_light_uses_correct_trough(self) -> None:
+        colors = ui_scale_colors(LIGHT_PALETTE)
+        self.assertEqual(colors.trough, "#E9EDF1")
+
+    def test_thumb_active_is_lighter_than_thumb_in_both_themes(self) -> None:
+        for palette in (LIGHT_PALETTE, DARK_PALETTE):
+            with self.subTest(mode=palette.mode):
+                colors = ui_scale_colors(palette)
+                self.assertNotEqual(colors.thumb, colors.thumb_active)
+
+    def test_frozen_dataclass(self) -> None:
+        import dataclasses
+        colors = ui_scale_colors(DARK_PALETTE)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            colors.__setattr__("thumb", "#000000")
+
+
+class ScaleWidgetTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        import tkinter as tk
+        cls._root = tk.Tk()
+        cls._root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._root.destroy()
+
+    def test_scale_height_at_100pct_96dpi(self) -> None:
+        import tkinter as tk
+        sm = ui_scale_metrics(1.0)
+        s = tk.Scale(
+            self._root, from_=75, to=150, orient="horizontal",
+            width=sm.trough_width, highlightthickness=sm.highlight_thickness,
+            borderwidth=0, showvalue=False,
+        )
+        s.pack()
+        self._root.update_idletasks()
+        h = s.winfo_reqheight()
+        self.assertGreaterEqual(h, 30)
+        self.assertLessEqual(h, 34)
+        s.destroy()
+
+    def test_scale_colors_applied_after_construction(self) -> None:
+        import tkinter as tk
+        from obs_overlay_import_utility.ui import MIN_UI_SCALE, MAX_UI_SCALE
+        colors = ui_scale_colors(DARK_PALETTE)
+        sm = ui_scale_metrics(1.0)
+        s = tk.Scale(
+            self._root, from_=MIN_UI_SCALE, to=MAX_UI_SCALE,
+            orient="horizontal", showvalue=False,
+            width=sm.trough_width, sliderlength=sm.slider_length,
+            highlightthickness=sm.highlight_thickness, borderwidth=0,
+            relief="flat", sliderrelief="flat",
+        )
+        s.configure(
+            background=colors.thumb,
+            activebackground=colors.thumb_active,
+            troughcolor=colors.trough,
+            highlightbackground=colors.border,
+            highlightcolor=colors.focus_border,
+        )
+        self._root.update_idletasks()
+        self.assertEqual(s.cget("background"), colors.thumb)
+        self.assertEqual(s.cget("activebackground"), colors.thumb_active)
+        self.assertEqual(s.cget("troughcolor"), colors.trough)
+        self.assertEqual(s.cget("highlightbackground"), colors.border)
+        self.assertEqual(s.cget("highlightcolor"), colors.focus_border)
+        s.destroy()
+
+    def test_scale_background_is_thumb_color_not_surface(self) -> None:
+        colors = ui_scale_colors(DARK_PALETTE)
+        self.assertNotEqual(colors.thumb, DARK_PALETTE.surface)
+        self.assertEqual(colors.thumb, DARK_PALETTE.accent_hover)
 
 
 if __name__ == "__main__":
