@@ -295,8 +295,21 @@ class ImportUtilityApp:
         self._apply_ui_scale(self.settings.ui_scale)
         self._apply_theme()
         self._update_custom_path_states()
-        self.root.after(100, self._process_events)
-        self.root.after(750, self._watch_window_dpi)
+        self._process_events_after_id: str | None = None
+        self._dpi_watch_after_id: str | None = None
+        self._process_events_after_id = self.root.after(100, self._process_events)
+        self._dpi_watch_after_id = self.root.after(750, self._watch_window_dpi)
+
+    def shutdown(self) -> None:
+        for attribute in ("_process_events_after_id", "_dpi_watch_after_id"):
+            callback_id = getattr(self, attribute, None)
+            if callback_id is None:
+                continue
+            try:
+                self.root.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+            setattr(self, attribute, None)
 
     def _set_initial_window_size(self) -> None:
         dpi_factor = max(1.0, self.current_dpi / 96.0)
@@ -377,7 +390,7 @@ class ImportUtilityApp:
                 self._apply_ui_scale(self.ui_scale_var.get())
         except tk.TclError:
             return
-        self.root.after(750, self._watch_window_dpi)
+        self._dpi_watch_after_id = self.root.after(750, self._watch_window_dpi)
 
     def _compute_sidebar_metrics(self) -> SidebarMetrics:
         return compute_sidebar_metrics(
@@ -2894,7 +2907,7 @@ class ImportUtilityApp:
                     messagebox.showerror(APP_TITLE, str(payload))
         except queue.Empty:
             pass
-        self.root.after(100, self._process_events)
+        self._process_events_after_id = self.root.after(100, self._process_events)
 
     def _finish_scan(self, paths: list[Path]) -> None:
         self.collections.clear()

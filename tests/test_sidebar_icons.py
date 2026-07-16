@@ -3,16 +3,33 @@
 from __future__ import annotations
 
 import sys
-import tomllib
 import unittest
 from pathlib import Path
-
-import numpy as np
-from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
+
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None  # type: ignore[assignment]
+
+
+def _load_toml(path: Path) -> dict:
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            raise unittest.SkipTest("tomllib/tomli not available on this Python")
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 class SidebarIconAssetTests(unittest.TestCase):
@@ -49,9 +66,7 @@ class SidebarRuntimeTests(unittest.TestCase):
     """Tests that verify zero runtime dependencies and clean imports."""
 
     def test_zero_runtime_deps(self) -> None:
-        project = tomllib.loads(
-            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        project = _load_toml(ROOT / "pyproject.toml")
         deps = project["project"]["dependencies"]
         self.assertEqual(deps, [], f"should be zero runtime deps, got: {deps}")
 
@@ -204,6 +219,7 @@ class SidebarMetricsTests(unittest.TestCase):
         self.assertLessEqual(self.SIDEBAR_HORIZONTAL_PADDING, 22)
 
 
+@unittest.skipIf(np is None or Image is None, "numpy/PIL not available (design-time deps)")
 class GeneratedPngQualityTests(unittest.TestCase):
     """Verify generated PNG visual correctness without Tk."""
 

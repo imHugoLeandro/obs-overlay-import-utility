@@ -28,10 +28,29 @@ jobs:
           sudo apt-get install -y -qq xvfb python3-tk
       - name: Run tests (Linux, under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set -o pipefail
+          export PYTHONFAULTHANDLER=1
+          xvfb-run -a python -m unittest discover -s tests -v 2>&1 \
+            | tee test-results.txt
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: python -m unittest discover -s tests -v
+        shell: pwsh
+        run: |
+          $env:PYTHONFAULTHANDLER = "1"
+          python -m unittest discover -s tests -v 2>&1 |
+            Tee-Object -FilePath test-results.txt
+          $testExitCode = $LASTEXITCODE
+          exit $testExitCode
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: test-results.txt
+          if-no-files-found: warn
+          retention-days: 14
       - run: python -m compileall -q src tests
       - run: python -m ruff check .
         if: matrix.os == 'ubuntu-latest'

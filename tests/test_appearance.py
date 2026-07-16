@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tomllib
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -76,6 +75,13 @@ class AppearanceTests(unittest.TestCase):
         )
 
     def test_ui_keeps_a_dependency_free_portable_runtime(self) -> None:
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore[no-redef]
+            except ImportError:
+                self.skipTest("tomllib/tomli not available on this Python")
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         deps = project["project"]["dependencies"]
         self.assertEqual(deps, [], f"unexpected runtime dependencies: {deps}")

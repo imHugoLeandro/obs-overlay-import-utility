@@ -1,12 +1,16 @@
-"""Tests for the shared ``dialogs`` module."""
-
 from __future__ import annotations
 
 import sys
 import tkinter as tk
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
+
+if TYPE_CHECKING:
+    from obs_overlay_import_utility.ui import ImportUtilityApp
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -30,7 +34,8 @@ from obs_overlay_import_utility import dialogs as dlgs  # noqa: E402
 from obs_overlay_import_utility.settings import AppSettings  # noqa: E402
 
 
-def _build_deterministic_app(theme: str) -> tk.Tk:
+@contextmanager
+def deterministic_app(theme: str) -> Iterator[tuple[tk.Tk, "ImportUtilityApp"]]:
     root = tk.Tk()
     root.withdraw()
     settings = AppSettings(theme=theme)
@@ -40,7 +45,21 @@ def _build_deterministic_app(theme: str) -> tk.Tk:
     ):
         from obs_overlay_import_utility.ui import ImportUtilityApp
         app = ImportUtilityApp(root)
-    return root, app
+    try:
+        root.update_idletasks()
+        yield root, app
+    finally:
+        shutdown = getattr(app, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        try:
+            root.update_idletasks()
+        except tk.TclError:
+            pass
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
 
 
 class DialogMetricsTests(unittest.TestCase):
@@ -411,8 +430,7 @@ class ScaleGeometryTests(unittest.TestCase):
 class ScaleAppWidgetTests(unittest.TestCase):
     """Deterministic widget colour tests -- no user settings file read."""
 
-    def _assert_dark_slider(self, palette: object) -> None:
-        app = self._app
+    def _assert_dark_slider(self, app: "ImportUtilityApp", palette: object) -> None:
         colors = dlgs.ui_scale_colors(palette)
         self.assertEqual(app.current_palette.mode, "dark")
         self.assertEqual(app.ui_scale.cget("troughcolor"), colors.trough)
@@ -423,8 +441,7 @@ class ScaleAppWidgetTests(unittest.TestCase):
         self.assertEqual(app.ui_scale.cget("activebackground"), "#F0444C")
         self.assertEqual(app.ui_scale.cget("highlightbackground"), "#303640")
 
-    def _assert_light_slider(self, palette: object) -> None:
-        app = self._app
+    def _assert_light_slider(self, app: "ImportUtilityApp", palette: object) -> None:
         colors = dlgs.ui_scale_colors(palette)
         self.assertEqual(app.current_palette.mode, "light")
         self.assertEqual(app.ui_scale.cget("troughcolor"), colors.trough)
@@ -432,36 +449,24 @@ class ScaleAppWidgetTests(unittest.TestCase):
         self.assertEqual(app.ui_scale.cget("highlightbackground"), colors.border)
 
     def test_dark_theme_slider_colors(self) -> None:
-        self._root, self._app = _build_deterministic_app("dark")
-        try:
-            self._assert_dark_slider(DARK_PALETTE)
-        finally:
-            self._root.destroy()
+        with deterministic_app("dark") as (_root, app):
+            self._assert_dark_slider(app, DARK_PALETTE)
 
     def test_light_theme_slider_colors(self) -> None:
-        self._root, self._app = _build_deterministic_app("light")
-        try:
-            self._assert_light_slider(LIGHT_PALETTE)
-        finally:
-            self._root.destroy()
+        with deterministic_app("light") as (_root, app):
+            self._assert_light_slider(app, LIGHT_PALETTE)
 
     def test_dark_state_variables_initialized_to_false(self) -> None:
-        self._root, self._app = _build_deterministic_app("dark")
-        try:
-            self.assertFalse(self._app._ui_scale_hovered)
-            self.assertFalse(self._app._ui_scale_focused)
-            self.assertFalse(self._app._ui_scale_pressed)
-        finally:
-            self._root.destroy()
+        with deterministic_app("dark") as (_root, app):
+            self.assertFalse(app._ui_scale_hovered)
+            self.assertFalse(app._ui_scale_focused)
+            self.assertFalse(app._ui_scale_pressed)
 
     def test_dark_thumb_contrasts_against_surface(self) -> None:
-        self._root, self._app = _build_deterministic_app("dark")
-        try:
-            colors = dlgs.ui_scale_colors(self._app.current_palette)
+        with deterministic_app("dark") as (_root, app):
+            colors = dlgs.ui_scale_colors(app.current_palette)
             self.assertEqual(colors.thumb, "#D9363E")
             self.assertNotEqual(colors.thumb, DARK_PALETTE.surface)
-        finally:
-            self._root.destroy()
 
 
 class UiScaleStateTransitionTests(unittest.TestCase):
@@ -469,11 +474,12 @@ class UiScaleStateTransitionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls._root, cls._app = _build_deterministic_app("dark")
+        cls._context = deterministic_app("dark")
+        cls._root, cls._app = cls._context.__enter__()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._root.destroy()
+        cls._context.__exit__(None, None, None)
 
     def setUp(self) -> None:
         self._saved_palette = self._app.current_palette
