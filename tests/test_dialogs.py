@@ -6,6 +6,7 @@ import sys
 import tkinter as tk
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -25,6 +26,21 @@ from obs_overlay_import_utility.dialogs import (  # noqa: E402
 )
 
 from obs_overlay_import_utility import dialogs as dlgs  # noqa: E402
+
+from obs_overlay_import_utility.settings import AppSettings  # noqa: E402
+
+
+def _build_deterministic_app(theme: str) -> tk.Tk:
+    root = tk.Tk()
+    root.withdraw()
+    settings = AppSettings(theme=theme)
+    with mock.patch(
+        "obs_overlay_import_utility.settings.SettingsStore.load",
+        return_value=settings,
+    ):
+        from obs_overlay_import_utility.ui import ImportUtilityApp
+        app = ImportUtilityApp(root)
+    return root, app
 
 
 class DialogMetricsTests(unittest.TestCase):
@@ -393,34 +409,59 @@ class ScaleGeometryTests(unittest.TestCase):
 
 
 class ScaleAppWidgetTests(unittest.TestCase):
-    """Tests for the application's ui_scale widget color configuration."""
+    """Deterministic widget colour tests -- no user settings file read."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._root = tk.Tk()
-        cls._root.withdraw()
-        from obs_overlay_import_utility.ui import ImportUtilityApp
-        cls.app = ImportUtilityApp(cls._root)
+    def _assert_dark_slider(self, palette: object) -> None:
+        app = self._app
+        colors = dlgs.ui_scale_colors(palette)
+        self.assertEqual(app.current_palette.mode, "dark")
+        self.assertEqual(app.ui_scale.cget("troughcolor"), colors.trough)
+        self.assertEqual(app.ui_scale.cget("activebackground"), colors.thumb_active)
+        self.assertEqual(app.ui_scale.cget("highlightbackground"), colors.border)
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._root.destroy()
+        self.assertEqual(app.ui_scale.cget("troughcolor"), "#222730")
+        self.assertEqual(app.ui_scale.cget("activebackground"), "#F0444C")
+        self.assertEqual(app.ui_scale.cget("highlightbackground"), "#303640")
 
-    def test_scale_colors_configured_on_app_slider(self) -> None:
-        colors = dlgs.ui_scale_colors(DARK_PALETTE)
-        self.assertEqual(self.app.ui_scale.cget("troughcolor"), colors.trough)
-        self.assertEqual(self.app.ui_scale.cget("activebackground"), colors.thumb_active)
-        self.assertEqual(self.app.ui_scale.cget("highlightbackground"), colors.border)
+    def _assert_light_slider(self, palette: object) -> None:
+        app = self._app
+        colors = dlgs.ui_scale_colors(palette)
+        self.assertEqual(app.current_palette.mode, "light")
+        self.assertEqual(app.ui_scale.cget("troughcolor"), colors.trough)
+        self.assertEqual(app.ui_scale.cget("activebackground"), colors.thumb_active)
+        self.assertEqual(app.ui_scale.cget("highlightbackground"), colors.border)
 
-    def test_state_variables_initialized_to_false(self) -> None:
-        self.assertFalse(self.app._ui_scale_hovered)
-        self.assertFalse(self.app._ui_scale_focused)
-        self.assertFalse(self.app._ui_scale_pressed)
+    def test_dark_theme_slider_colors(self) -> None:
+        self._root, self._app = _build_deterministic_app("dark")
+        try:
+            self._assert_dark_slider(DARK_PALETTE)
+        finally:
+            self._root.destroy()
 
-    def test_thumb_contrasts_against_dark_surface(self) -> None:
-        colors = dlgs.ui_scale_colors(DARK_PALETTE)
-        self.assertEqual(colors.thumb, DARK_PALETTE.accent_hover)
-        self.assertNotEqual(colors.thumb, DARK_PALETTE.surface)
+    def test_light_theme_slider_colors(self) -> None:
+        self._root, self._app = _build_deterministic_app("light")
+        try:
+            self._assert_light_slider(LIGHT_PALETTE)
+        finally:
+            self._root.destroy()
+
+    def test_dark_state_variables_initialized_to_false(self) -> None:
+        self._root, self._app = _build_deterministic_app("dark")
+        try:
+            self.assertFalse(self._app._ui_scale_hovered)
+            self.assertFalse(self._app._ui_scale_focused)
+            self.assertFalse(self._app._ui_scale_pressed)
+        finally:
+            self._root.destroy()
+
+    def test_dark_thumb_contrasts_against_surface(self) -> None:
+        self._root, self._app = _build_deterministic_app("dark")
+        try:
+            colors = dlgs.ui_scale_colors(self._app.current_palette)
+            self.assertEqual(colors.thumb, "#D9363E")
+            self.assertNotEqual(colors.thumb, DARK_PALETTE.surface)
+        finally:
+            self._root.destroy()
 
 
 class UiScaleStateTransitionTests(unittest.TestCase):
@@ -428,102 +469,126 @@ class UiScaleStateTransitionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls._root = tk.Tk()
-        cls._root.withdraw()
-        from obs_overlay_import_utility.ui import ImportUtilityApp
-        cls.app = ImportUtilityApp(cls._root)
+        cls._root, cls._app = _build_deterministic_app("dark")
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls._root.destroy()
 
+    def setUp(self) -> None:
+        self._saved_palette = self._app.current_palette
+        self._saved_hovered = self._app._ui_scale_hovered
+        self._saved_focused = self._app._ui_scale_focused
+        self._saved_pressed = self._app._ui_scale_pressed
+
+    def tearDown(self) -> None:
+        self._app.current_palette = self._saved_palette
+        self._app._ui_scale_hovered = self._saved_hovered
+        self._app._ui_scale_focused = self._saved_focused
+        self._app._ui_scale_pressed = self._saved_pressed
+        self._app._refresh_ui_scale_visual_state()
+
     def _thumb_color(self) -> str:
-        return str(self.app.ui_scale.cget("background"))
+        return str(self._app.ui_scale.cget("background"))
 
     def _focus_border(self) -> str:
-        return str(self.app.ui_scale.cget("highlightcolor"))
+        return str(self._app.ui_scale.cget("highlightcolor"))
 
     def _configure_states(self, hovered: bool, focused: bool, pressed: bool) -> None:
-        self.app._ui_scale_hovered = hovered
-        self.app._ui_scale_focused = focused
-        self.app._ui_scale_pressed = pressed
-        self.app._refresh_ui_scale_visual_state()
+        self._app._ui_scale_hovered = hovered
+        self._app._ui_scale_focused = focused
+        self._app._ui_scale_pressed = pressed
+        self._app._refresh_ui_scale_visual_state()
 
     def test_idle_shows_thumb_color(self) -> None:
         self._configure_states(False, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb)
 
     def test_hovered_shows_thumb_active(self) -> None:
         self._configure_states(True, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_focused_shows_thumb_active_and_focus_border(self) -> None:
         self._configure_states(False, True, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
         self.assertEqual(self._focus_border(), colors.focus_border)
 
     def test_pressed_shows_thumb_active(self) -> None:
         self._configure_states(False, False, True)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_leave_while_focused_keeps_thumb_active(self) -> None:
         self._configure_states(False, True, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_leave_while_unfocused_shows_thumb(self) -> None:
         self._configure_states(False, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb)
 
     def test_focus_lost_while_still_hovered_keeps_thumb_active(self) -> None:
         self._configure_states(True, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_pressed_overrides_focus_and_hover(self) -> None:
         self._configure_states(True, True, True)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_release_without_hover_shows_thumb(self) -> None:
         self._configure_states(False, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb)
 
     def test_release_while_still_hovered_shows_thumb_active(self) -> None:
         self._configure_states(True, False, False)
-        colors = dlgs.ui_scale_colors(self.app.current_palette)
+        colors = dlgs.ui_scale_colors(self._app.current_palette)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
 
     def test_theme_change_while_focused_uses_new_palette(self) -> None:
-        self.app.current_palette = LIGHT_PALETTE
+        self._app.current_palette = LIGHT_PALETTE
         self._configure_states(False, True, False)
         colors = dlgs.ui_scale_colors(LIGHT_PALETTE)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
         self.assertEqual(self._focus_border(), colors.focus_border)
-        self.app.current_palette = DARK_PALETTE
 
     def test_theme_change_while_hovered_uses_new_palette(self) -> None:
-        self.app.current_palette = LIGHT_PALETTE
+        self._app.current_palette = LIGHT_PALETTE
         self._configure_states(True, False, False)
         colors = dlgs.ui_scale_colors(LIGHT_PALETTE)
         self.assertEqual(self._thumb_color(), colors.thumb_active)
-        self.app.current_palette = DARK_PALETTE
 
-    def test_release_callback_runs_once_per_release(self) -> None:
-        self.app._on_ui_scale_press(tk.Event())
-        self.app._on_ui_scale_release(tk.Event())
-        self.app._on_ui_scale_release(tk.Event())
+    def test_release_callback_runs_exactly_once(self) -> None:
+        with mock.patch.object(
+            self._app, "_on_scale_released"
+        ) as mock_released:
+            self._app._on_ui_scale_press(tk.Event())
+            self._app._on_ui_scale_release(tk.Event())
+            mock_released.assert_called_once()
+
+    def test_release_callback_not_duplicated_by_theme_refresh(self) -> None:
+        with mock.patch.object(
+            self._app, "_on_scale_released"
+        ) as mock_released:
+            self._app._on_ui_scale_press(tk.Event())
+            self._app._apply_ui_scale_widget_theme()
+            self._app._on_ui_scale_release(tk.Event())
+            mock_released.assert_called_once()
+
+    def test_buttonrelease_binding_is_present(self) -> None:
+        bindings = self._app.ui_scale.bind()
+        self.assertIn("<ButtonRelease-1>", bindings)
 
     def test_theme_refresh_does_not_duplicate_bindings(self) -> None:
-        bindings_before = repr(self.app.ui_scale.bind())
-        self.app._apply_ui_scale_widget_theme()
-        bindings_after = repr(self.app.ui_scale.bind())
+        bindings_before = repr(self._app.ui_scale.bind())
+        self._app._apply_ui_scale_widget_theme()
+        bindings_after = repr(self._app.ui_scale.bind())
         self.assertEqual(bindings_before, bindings_after)
 
 
