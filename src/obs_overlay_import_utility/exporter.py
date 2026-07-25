@@ -1540,6 +1540,7 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
         return PackageVerification(ok=False, errors=[str(exc)])
 
     errors = []
+    resolved_root = package_root.resolve()
     for f in manifest.get("files", []):
         entry_path = f.get("path")
         if not isinstance(entry_path, str):
@@ -1547,22 +1548,32 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
             continue
         fp = package_root / entry_path
         try:
-            if not fp.is_file():
-                errors.append(f"Manifest file missing: {entry_path}")
+            # Resolve the candidate (following links) and require every path
+            # component from the package root down to the file to be a real
+            # directory/file inside the resolved package root. A malicious
+            # package may replace an intermediate directory (e.g. ``assets``)
+            # with a symlink/reparse point pointing outside the package; we
+            # must reject that before statting or hashing anything.
+            resolved_fp = fp.resolve()
+            try:
+                resolved_fp.relative_to(resolved_root)
+            except ValueError:
+                errors.append(f"Manifest file escapes package root: {entry_path}")
                 continue
-            # Reject symlinks / reparse points: a manifest must never resolve
-            # through a link to a file outside the package root.
-            if _is_link_or_reparse_point(fp):
+            if _is_link_or_reparse_point(resolved_fp):
                 errors.append(f"Manifest file is a link or reparse point: {entry_path}")
                 continue
-            actual_size = fp.stat().st_size
+            if not resolved_fp.is_file():
+                errors.append(f"Manifest file missing: {entry_path}")
+                continue
+            actual_size = resolved_fp.stat().st_size
             if actual_size != f.get("size"):
                 errors.append(f"Size mismatch: {entry_path} (expected {f.get('size')}, got {actual_size})")
             expected_digest = f.get("sha256")
             if not isinstance(expected_digest, str) or len(expected_digest) != 64:
                 errors.append(f"Manifest file {entry_path} has no valid sha256 digest")
                 continue
-            actual_sha = _sha256_chunked(fp)
+            actual_sha = _sha256_chunked(resolved_fp)
             if actual_sha != expected_digest:
                 errors.append(f"SHA-256 mismatch: {entry_path}")
         except OSError as exc:

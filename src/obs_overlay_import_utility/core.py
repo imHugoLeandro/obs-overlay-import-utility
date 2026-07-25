@@ -191,9 +191,41 @@ def _portable_collection_name(value: str) -> str:
     return cleaned or "Imported Scene Collection"
 
 
+# Windows reserved device basenames that are invalid as file (base)names even
+# with an extension, e.g. CON, CON.txt, LPT1, com9. See:
+# https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
+
+
+def _sanitise_windows_reserved_name(name: str) -> str:
+    """Prefix Windows reserved device basenames so they become valid filenames.
+
+    ``CON`` -> ``_CON``, ``CON.txt`` -> ``_CON.txt``, ``lpt1`` -> ``_LPT1``,
+    ``NormalName`` is unchanged. Comparison is case-insensitive and ignores the
+    extension so ``CON.txt`` is still treated as reserved.
+    """
+    stem = Path(name).stem
+    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+        return f"_{name}"
+    return name
+
+
 def next_obs_collection_path(directory: Path, base_name: str) -> tuple[str, Path]:
-    """Choose a new OBS collection filename without replacing an existing collection."""
+    """Choose a new OBS collection filename without replacing an existing collection.
+
+    The name is sanitized for portable use (invalid characters stripped) and
+    Windows reserved device basenames (CON, PRN, LPT1, COM1, ...) are prefixed
+    with ``_`` so the resulting filename is valid on Windows even with an
+    extension. Collision suffixes are appended only when a file already exists.
+    """
     name = _portable_collection_name(base_name)
+    name = _sanitise_windows_reserved_name(name)
     candidate = directory / f"{name}.json"
     number = 1
     while candidate.exists():

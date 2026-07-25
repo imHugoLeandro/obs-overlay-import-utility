@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from obs_overlay_import_utility import exporter  # noqa: E402
 from obs_overlay_import_utility.core import atomic_write_json  # noqa: E402
+from obs_overlay_import_utility.models import UtilityError  # noqa: E402
 from obs_overlay_import_utility.exporter import (  # noqa: E402
     active_obs_scene_collection,
     build_export_inventory,
@@ -28,6 +29,34 @@ from obs_overlay_import_utility.exporter import (  # noqa: E402
     _count_scenes_and_sources,
     _unique_asset_filename,
 )
+
+
+def _is_contained(child: Path, parent: Path) -> bool:
+    """Return True when *child* resolves to a path inside *parent*.
+
+    Uses resolved paths so Windows 8.3 short-name forms (e.g. ``RUNNER~1`` vs
+    ``runneradmin``) do not cause false containment failures.
+    """
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _can_create_symlinks() -> bool:
+    """Best-effort check for symlink creation support in this environment."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temp:
+        base = Path(temp) / "target"
+        base.write_text("x", encoding="utf-8")
+        link = Path(temp) / "link"
+        try:
+            link.symlink_to(base)
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return link.is_symlink()
 
 
 def collection(image: Path, plugin_file: Path, filter_file: Path) -> dict:
@@ -1090,10 +1119,13 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
             ocd.mkdir()
             out = materialize_portable_collection(pkg / "manifest.json", ocd)
             self.assertTrue(out.is_file())
-            try:
-                out.relative_to(ocd)
-            except ValueError:
-                self.fail("collection written outside target directory")
+            # The output must resolve into the OBS scenes directory. Resolved
+            # paths are used so 8.3 short-name forms (e.g. RUNNER~1) on Windows
+            # do not break the containment check.
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
             self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
 
     def test_portable_import_rejects_unc_collection_name(self) -> None:
@@ -1107,10 +1139,10 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
             ocd.mkdir()
             out = materialize_portable_collection(pkg / "manifest.json", ocd)
             self.assertTrue(out.is_file())
-            try:
-                out.relative_to(ocd)
-            except ValueError:
-                self.fail("collection written outside target directory")
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
             self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
 
     def test_portable_import_rejects_reserved_windows_collection_name(self) -> None:
@@ -1126,10 +1158,10 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
             # must remain inside the OBS scenes directory.
             out = materialize_portable_collection(pkg / "manifest.json", ocd)
             self.assertTrue(out.is_file())
-            try:
-                out.relative_to(ocd)
-            except ValueError:
-                self.fail("collection written outside target directory")
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
             self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
 
     def test_portable_import_duplicate_normal_name_gets_unique_suffix(self) -> None:
@@ -1233,6 +1265,108 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
             self.assertEqual(len(refs), 2)
             self.assertIn("../browser/overlay/index.html", refs)
             self.assertIn("../browser/overlay 2/index.html", refs)
+
+    # --- Fix 2: Windows-safe imported collection names ---
+
+    def test_reserved_collection_names_are_sanitized(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        cases = ["CON", "con", "CON.txt", "LPT1", "lpt9", "PRN"]
+        for name in cases:
+            stem, path = next_obs_collection_path(Path("/tmp/never-created"), name)
+            # The stem must never equal the bare reserved name, with or
+            # without an extension.
+            self.assertNotEqual(stem, name)
+            self.assertFalse(stem.upper().startswith(name.split(".")[0].upper()))
+            self.assertTrue(stem.startswith("_"))
+            self.assertTrue(path.name.endswith(".json"))
+            # A normal reserved-like substring must not be touched accidentally.
+        # Sanity: a genuinely normal name is unchanged.
+        stem, _ = next_obs_collection_path(Path("/tmp/never-created"), "My Pack")
+        self.assertEqual(stem, "My Pack")
+
+    def test_reserved_name_collision_suffix_behavior(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Seed the sanitized form so the helper must apply a numeric suffix.
+            (root / "_CON.json").write_text("{}", encoding="utf-8")
+            stem, path = next_obs_collection_path(root, "CON")
+            self.assertEqual(stem, "_CON 1")
+            self.assertTrue(path.name.endswith(".json"))
+
+    def test_normal_collision_behavior_unchanged(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Normal.json").write_text("{}", encoding="utf-8")
+            stem, _ = next_obs_collection_path(root, "Normal")
+            self.assertEqual(stem, "Normal 1")
+
+    # --- Fix 1: symlinked intermediate directory must not be traversed ---
+
+    def test_verify_rejects_symlinked_intermediate_directory(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root / "outside"
+            outside.mkdir()
+            secret = outside / "secret.bin"
+            secret.write_bytes(b"top-secret")
+
+            # Build a package whose assets/ directory is a symlink to /outside.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            assets_link = pkg / "assets"
+            assets_link.symlink_to(outside, target_is_directory=True)
+            # Declare the secret as an in-package asset.
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/secret.bin",
+                        "size": secret.stat().st_size,
+                        "sha256": _sha256_of(secret),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("escapes package root" in e or "link or reparse point" in e for e in verify.errors),
+                f"expected traversal/reparse rejection, got: {verify.errors}",
+            )
+
+            # No collection may be materialized from a package that fails verify.
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            with self.assertRaises(UtilityError):
+                materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertEqual([c.name for c in ocd.iterdir()], [])
+
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 if __name__ == "__main__":
