@@ -27,9 +27,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
-
 from .constants import __version__
-from .core import atomic_write_json, is_obs_scene_collection_data, load_json
+from .core import (
+    atomic_write_json,
+    is_obs_scene_collection_data,
+    load_json,
+    next_obs_collection_path,
+)
 from .models import PathReference, UtilityError
 from .paths import looks_absolute_local_path, normalized_output_path
 
@@ -105,6 +109,7 @@ class PlannedFile:
     category: str
     size: int
     source_names: tuple[str, ...]
+    digest: str = ""
 
 
 @dataclass
@@ -326,6 +331,76 @@ def is_safe_portable_path(path: str) -> bool:
     if depth < 0:
         return False
     return True
+
+
+def _sha256_chunked(path: Path, *, chunk_size: int = 1 << 20) -> str:
+    """Hash a file in fixed-size chunks so large media never loads fully into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _sha256_chunked_zip(zf: zipfile.ZipFile, name: str, *, chunk_size: int = 1 << 20) -> str:
+    """Hash a ZIP member in chunks without reading the whole entry into memory."""
+    digest = hashlib.sha256()
+    with zf.open(name) as handle:
+        for block in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _manifest_file_path_is_safe(raw_path: Any) -> bool:
+    """True only for a relative, contained package path (no traversal/UNC/drive)."""
+    if not isinstance(raw_path, str) or not raw_path:
+        return False
+    normalized = raw_path.replace("\\", "/")
+    if normalized.startswith("/"):
+        return False
+    if len(normalized) >= 2 and normalized[1] == ":":
+        return False
+    if normalized.startswith("//"):
+        return False
+    if normalized.startswith("\\\\"):
+        return False
+    depth = 0
+    for part in normalized.split("/"):
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif part and part != ".":
+            depth += 1
+    return depth >= 0
+
+
+def _allocate_browser_project_dir(folder_name: str, used: set[str]) -> str:
+    """Allocate a deterministic, unique browser project directory name.
+
+    Distinct source roots that share a folder name receive ``overlay`` then
+    ``overlay 2`` and so on, so their packaged content never collides.
+    """
+    base = _sanitise_name(folder_name) or "browser overlay"
+    candidate = base
+    number = 2
+    while candidate.casefold() in {entry.casefold() for entry in used}:
+        candidate = f"{base} {number}"
+        number += 1
+    used.add(candidate)
+    return candidate
+
+
+def _reject_duplicate_package_paths(planned: list[PlannedFile]) -> None:
+    """Defensively reject two planned files that normalize to the same package path."""
+    seen: set[str] = set()
+    for pf in planned:
+        normalized = pf.package_path.casefold()
+        if normalized in seen:
+            raise UtilityError(
+                f"Two source files would write to the same package path: {pf.package_path}"
+            )
+        seen.add(normalized)
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +716,7 @@ def build_export_plan(
     used_asset_names: dict[str, set[str]] = {}
     browser_roots_scanned: set[Path] = set()
     browser_project_dirs: list[str] = []
+    browser_project_dirs_used: set[str] = set()
 
     for reference in _iter_local_path_references(portable):
         source = Path(normalized_output_path(reference.value)).resolve()
@@ -658,7 +734,7 @@ def build_export_plan(
             source_root = source.parent.resolve()
             if source_root not in browser_roots_scanned:
                 browser_roots_scanned.add(source_root)
-                project_dir = _sanitise_name(source_root.name)
+                project_dir = _allocate_browser_project_dir(source_root.name, browser_project_dirs_used)
                 for browser_file in _browser_inventory(source_root, destination):
                     resolved = browser_file.resolve()
                     rel = str(browser_file.relative_to(source_root)).replace("\\", "/")
@@ -671,6 +747,7 @@ def build_export_plan(
                             category="browser",
                             size=browser_file.stat().st_size,
                             source_names=(reference.source_name,),
+                            digest=_sha256_chunked(resolved),
                         ))
                     else:
                         seen_sources[resolved].add(reference.source_name)
@@ -690,9 +767,13 @@ def build_export_plan(
                 category=cat,
                 size=source.stat().st_size,
                 source_names=(reference.source_name,),
+                digest=_sha256_chunked(source),
             ))
         else:
             seen_sources[source].add(reference.source_name)
+
+    # Reject two planned files that would resolve to the same package path.
+    _reject_duplicate_package_paths(planned)
 
     planned = [
         replace(pf, source_names=tuple(sorted(seen_sources.get(pf.source_path, {pf.source_names[0]}))))
@@ -791,12 +872,11 @@ def _sanitise_missing_reference(original_path: str) -> str:
 def _build_manifest(plan: ExportPlan, package_root_name: str) -> dict[str, Any]:
     files = []
     for pf in plan.files:
-        sha = hashlib.sha256(pf.source_path.read_bytes()).hexdigest()
         files.append({
             "path": pf.package_path.replace("../", ""),
             "category": pf.category,
             "size": pf.size,
-            "sha256": sha,
+            "sha256": pf.digest,
             "used_by": sorted(pf.source_names),
         })
 
@@ -922,7 +1002,7 @@ def _verify_folder_package(package_path: Path, plan: ExportPlan, package_root_na
                 actual_size = fp.stat().st_size
                 if actual_size != f["size"]:
                     errors.append(f"Size mismatch: {f['path']} (expected {f['size']}, got {actual_size})")
-                actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
+                actual_sha = _sha256_chunked(fp)
                 if actual_sha != f["sha256"]:
                     errors.append(f"SHA-256 mismatch: {f['path']}")
         missing_declared = {m.get("basename", "") for m in manifest.get("missing_resources", [])}
@@ -1023,7 +1103,11 @@ def _verify_zip_package(zip_path: Path, plan: ExportPlan, package_root_name: str
                             info = zf.getinfo(zip_fp)
                             if info.file_size != f["size"]:
                                 errors.append(f"ZIP size mismatch: {f['path']} (expected {f['size']}, got {info.file_size})")
-                            actual_sha = hashlib.sha256(zf.read(zip_fp)).hexdigest()
+                            try:
+                                actual_sha = _sha256_chunked_zip(zf, zip_fp)
+                            except (OSError, zipfile.BadZipFile) as exc:
+                                errors.append(f"Could not hash ZIP member {f['path']}: {exc}")
+                                continue
                             if actual_sha != f["sha256"]:
                                 errors.append(f"ZIP SHA-256 mismatch: {f['path']}")
 
@@ -1073,6 +1157,11 @@ def _revalidate_plan(plan: ExportPlan) -> None:
             raise UtilityError(f"Source file size changed: {pf.source_path}")
         if _is_link_or_reparse_point(pf.source_path):
             raise UtilityError(f"Source file is a link or reparse point: {pf.source_path}")
+        # Recompute the digest immediately before publishing. A same-size
+        # content mutation (e.g. AAAA -> BBBB) changes the digest and fails here.
+        current_digest = _sha256_chunked(pf.source_path)
+        if current_digest != pf.digest:
+            raise UtilityError(f"Source file changed since the inventory was built: {pf.source_path}")
 
     if plan.output_path.exists():
         raise UtilityError("Output path already exists. Run the inventory again.")
@@ -1299,12 +1388,21 @@ def detect_portable_package(root: Path) -> Path | None:
     if not manifest.is_file():
         return None
     try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except Exception as exc:
+        raw = manifest.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
         raise UtilityError(
             "This folder contains a manifest.json that could not be read. "
             "The package may be corrupted."
         ) from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise UtilityError(
+            "This folder contains a manifest.json that is not valid JSON. "
+            "The package may be corrupted."
+        ) from exc
+    if not isinstance(data, dict):
+        raise UtilityError("This package's manifest.json is not a JSON object.")
     if data.get("schema") != MANIFEST_SCHEMA:
         raise UtilityError(
             "The manifest.json in this folder is not a recognized OBS overlay portable package."
@@ -1319,15 +1417,61 @@ def detect_portable_package(root: Path) -> Path | None:
 
 
 def validate_portable_manifest(manifest_path: Path) -> dict[str, Any]:
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        raw = manifest_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise UtilityError(f"Could not read the package manifest: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise UtilityError("The package manifest is not valid JSON.") from exc
+
+    if not isinstance(data, dict):
+        raise UtilityError("The package manifest is not a JSON object.")
+
     if data.get("schema") != MANIFEST_SCHEMA:
         raise UtilityError("Not a recognized OBS overlay portable package manifest.")
     version = data.get("schema_version")
     if not isinstance(version, int) or version != MANIFEST_VERSION:
-        raise UtilityError(f"This package requires manifest version {version}. Update OBS Overlay Import Utility.")
+        raise UtilityError(
+            f"This package requires manifest version {version}. Update OBS Overlay Import Utility."
+        )
+
+    # Validate the collection descriptor before it is ever used.
     coll_info = data.get("collection", {})
     if not isinstance(coll_info, dict):
         raise UtilityError("Manifest is missing collection information.")
+    coll_path = coll_info.get("path")
+    if not isinstance(coll_path, str) or not coll_path:
+        raise UtilityError("Manifest collection path is missing or invalid.")
+    if not _manifest_file_path_is_safe(coll_path):
+        raise UtilityError(f"Manifest collection path is unsafe: {coll_path}")
+
+    # Validate every declared file: required fields, types, and contained paths.
+    files = data.get("files", [])
+    if not isinstance(files, list):
+        raise UtilityError("Manifest files list is malformed.")
+    seen_paths: set[str] = set()
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            raise UtilityError(f"Manifest file entry {index + 1} is not an object.")
+        entry_path = entry.get("path")
+        if not isinstance(entry_path, str) or not entry_path:
+            raise UtilityError(f"Manifest file entry {index + 1} has a missing or invalid path.")
+        if not _manifest_file_path_is_safe(entry_path):
+            raise UtilityError(f"Manifest file path is unsafe: {entry_path}")
+        if entry_path.casefold() in seen_paths:
+            raise UtilityError(f"Duplicate manifest file path: {entry_path}")
+        seen_paths.add(entry_path.casefold())
+        if not isinstance(entry.get("size"), int) or isinstance(entry.get("size"), bool):
+            raise UtilityError(f"Manifest file {entry_path} has a missing or invalid size.")
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise UtilityError(f"Manifest file {entry_path} has a missing or invalid sha256 digest.")
+        category = entry.get("category")
+        if not isinstance(category, str):
+            raise UtilityError(f"Manifest file {entry_path} has a missing or invalid category.")
+
     return data
 
 
@@ -1339,8 +1483,9 @@ def materialize_portable_collection(manifest_path: Path, target_collections_dir:
     target_collections_dir = target_collections_dir.expanduser().resolve()
     target_collections_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest_data = validate_portable_manifest(manifest_path)
     package_root = manifest_path.parent.resolve()
+    manifest_data = validate_portable_manifest(manifest_path)
+
     coll_rel = manifest_data["collection"]["path"]
     coll_src = (package_root / coll_rel).resolve()
     if not coll_src.is_file():
@@ -1371,12 +1516,16 @@ def materialize_portable_collection(manifest_path: Path, target_collections_dir:
 
     _rewrite(data)
 
-    name = data.get("name") if isinstance(data.get("name"), str) else coll_src.stem
-    out = target_collections_dir / f"{name}.json"
-    number = 1
-    while out.exists():
-        out = target_collections_dir / f"{name} {number}.json"
-        number += 1
+    # Never build the output name from untrusted collection JSON. Use the
+    # project's safe unique OBS collection-name helper, then verify the final
+    # resolved path stays inside the selected OBS scenes directory.
+    proposed_name = data.get("name") if isinstance(data.get("name"), str) else coll_src.stem
+    _collection_name, out = next_obs_collection_path(target_collections_dir, proposed_name)
+    out = out.resolve()
+    try:
+        out.relative_to(target_collections_dir)
+    except ValueError:
+        raise UtilityError("The imported collection would be written outside the selected OBS scenes directory.")
     atomic_write_json(out, data)
     return out
 
@@ -1392,16 +1541,32 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
 
     errors = []
     for f in manifest.get("files", []):
-        fp = package_root / f["path"]
-        if not fp.is_file():
-            errors.append(f"Manifest file missing: {f['path']}")
-        else:
+        entry_path = f.get("path")
+        if not isinstance(entry_path, str):
+            errors.append("Manifest contains a file entry without a valid path")
+            continue
+        fp = package_root / entry_path
+        try:
+            if not fp.is_file():
+                errors.append(f"Manifest file missing: {entry_path}")
+                continue
+            # Reject symlinks / reparse points: a manifest must never resolve
+            # through a link to a file outside the package root.
+            if _is_link_or_reparse_point(fp):
+                errors.append(f"Manifest file is a link or reparse point: {entry_path}")
+                continue
             actual_size = fp.stat().st_size
-            if actual_size != f["size"]:
-                errors.append(f"Size mismatch: {f['path']} (expected {f['size']}, got {actual_size})")
-            actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
-            if actual_sha != f["sha256"]:
-                errors.append(f"SHA-256 mismatch: {f['path']}")
+            if actual_size != f.get("size"):
+                errors.append(f"Size mismatch: {entry_path} (expected {f.get('size')}, got {actual_size})")
+            expected_digest = f.get("sha256")
+            if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+                errors.append(f"Manifest file {entry_path} has no valid sha256 digest")
+                continue
+            actual_sha = _sha256_chunked(fp)
+            if actual_sha != expected_digest:
+                errors.append(f"SHA-256 mismatch: {entry_path}")
+        except OSError as exc:
+            errors.append(f"Could not read manifest file {entry_path}: {exc}")
 
     missing = manifest.get("missing_resources", [])
     for m in missing:
