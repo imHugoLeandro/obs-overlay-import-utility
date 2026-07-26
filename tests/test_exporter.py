@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from obs_overlay_import_utility import exporter  # noqa: E402
+from obs_overlay_import_utility.core import atomic_write_json  # noqa: E402
+from obs_overlay_import_utility.models import UtilityError  # noqa: E402
 from obs_overlay_import_utility.exporter import (  # noqa: E402
     active_obs_scene_collection,
     build_export_inventory,
@@ -27,6 +29,34 @@ from obs_overlay_import_utility.exporter import (  # noqa: E402
     _count_scenes_and_sources,
     _unique_asset_filename,
 )
+
+
+def _is_contained(child: Path, parent: Path) -> bool:
+    """Return True when *child* resolves to a path inside *parent*.
+
+    Uses resolved paths so Windows 8.3 short-name forms (e.g. ``RUNNER~1`` vs
+    ``runneradmin``) do not cause false containment failures.
+    """
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _can_create_symlinks() -> bool:
+    """Best-effort check for symlink creation support in this environment."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temp:
+        base = Path(temp) / "target"
+        base.write_text("x", encoding="utf-8")
+        link = Path(temp) / "link"
+        try:
+            link.symlink_to(base)
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return link.is_symlink()
 
 
 def collection(image: Path, plugin_file: Path, filter_file: Path) -> dict:
@@ -322,7 +352,13 @@ class ExporterTests(unittest.TestCase):
             self.assertEqual(inventory.browser_files, 2)
             self.assertEqual(inventory.total_bytes, html.stat().st_size + css.stat().st_size + image.stat().st_size)
             self.assertEqual(len(inventory.missing_references), 1)
-            self.assertEqual(inventory.package_path, destination / _pkg_name("Inventory"))
+            # Use resolved-path equality so Windows 8.3 short-name forms
+            # (RUNNER~1 vs runneradmin) do not cause false mismatches.
+            self.assertIsNotNone(inventory.package_path)
+            self.assertEqual(
+                inventory.package_path.resolve(),
+                (destination / _pkg_name("Inventory")).resolve(),
+            )
 
     def test_atomic_collection_write_failure_leaves_no_partial_package(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -437,8 +473,13 @@ class ExporterTests(unittest.TestCase):
             self.assertTrue(materialized.is_file())
             imported = json.loads(materialized.read_text(encoding="utf-8"))
             img_src = next(s for s in imported["sources"] if s["name"] == "Img")
-            self.assertIn(str(moved), img_src["settings"]["file"],
-                          "imported collection must contain absolute path to moved package")
+            # Use resolved-path containment so Windows 8.3 short-name forms
+            # (RUNNER~1 vs runneradmin) do not cause false mismatches.
+            imported_file = Path(img_src["settings"]["file"])
+            self.assertTrue(
+                _is_contained(imported_file, moved.resolve()),
+                "imported collection must contain absolute path to moved package",
+            )
 
     def test_manifest_exists_in_package(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -523,6 +564,58 @@ class ExporterTests(unittest.TestCase):
             pkg_folder = r.archive_path.with_suffix("")
             self.assertFalse(pkg_folder.is_dir(),
                              "ZIP mode must not leave a normal folder")
+
+    def test_zip_mode_missing_file_uses_missing_placeholder(self) -> None:
+        """ZIP publication must replace missing-file absolute paths with
+        ../missing/... placeholders, using resolved-path comparison to avoid
+        Windows 8.3 short-name mismatches (RUNNER~1 vs runneradmin)."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            present = root / "present.png"
+            present.write_bytes(b"img")
+            missing = root / "gone.png"
+            data = {
+                "name": "ZipMissing",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "OK", "id": "image_source", "settings": {"file": str(present)}},
+                    {"name": "Gone", "id": "image_source", "settings": {"file": str(missing)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "ZipMissing.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=True)
+            r = export_scene_collection(cp, dest, compressed=True, plan=plan)
+            self.assertTrue(r.success, r.error)
+            self.assertTrue(r.compressed)
+            self.assertIsNotNone(r.archive_path)
+            archive_path = r.archive_path
+            assert archive_path is not None  # for type checker
+            self.assertTrue(archive_path.is_file())
+
+            # Read the collection JSON from the ZIP archive.
+            import zipfile as _zf
+            with _zf.ZipFile(archive_path, "r") as zf:
+                coll_name = archive_path.name.replace(".zip", "")
+                coll_zip_path = f"{coll_name}/collection/{cp.stem}.json"
+                coll_data = json.loads(zf.read(coll_zip_path))
+
+            gone = next(s for s in coll_data["sources"] if s["name"] == "Gone")
+            gone_path = gone["settings"]["file"]
+            # The missing file must use the ../missing/ placeholder, not an
+            # absolute path.
+            self.assertTrue(
+                gone_path.startswith("../missing/"),
+                f"missing path should use ../missing/ placeholder, got: {gone_path}",
+            )
+            self.assertFalse(
+                str(root) in gone_path or str(missing) in gone_path,
+                "seller's absolute path must not appear in exported ZIP package",
+            )
 
     def test_frozen_plan_revalidation_catches_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -908,6 +1001,778 @@ class ExporterTests(unittest.TestCase):
             inv = export_inventory_from_plan(plan)
             self.assertTrue(inv.package_path is not None)
             self.assertFalse(str(inv.package_path).endswith(".zip"))
+
+
+class PortableIntegrityHardeningTests(unittest.TestCase):
+    # --- Fix 1: untrusted manifest validation ---
+
+    def test_validate_manifest_rejects_absolute_collection_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "/etc/passwd"},
+            "files": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_traversal_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/Test.json"},
+            "files": [
+                {"path": "../secrets/keys.json", "size": 1, "sha256": "a" * 64, "category": "other"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_unc_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/Test.json"},
+            "files": [
+                {"path": "//server/share/file.png", "size": 1, "sha256": "a" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_drive_qualified_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/Test.json"},
+            "files": [
+                {"path": "C:/Windows/system32/file.dll", "size": 1, "sha256": "a" * 64, "category": "other"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_duplicate_file_paths(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/Test.json"},
+            "files": [
+                {"path": "assets/images/bg.png", "size": 1, "sha256": "a" * 64, "category": "images"},
+                {"path": "assets/images/bg.png", "size": 1, "sha256": "b" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_missing_or_wrong_type_fields(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        cases = [
+            # missing path key entirely
+            {"size": 3, "sha256": "a" * 64, "category": "images"},
+            # size not an int
+            {"path": "assets/images/bg.png", "size": "small", "sha256": "a" * 64, "category": "images"},
+            # digest wrong length
+            {"path": "assets/images/bg.png", "size": 3, "sha256": "deadbeef", "category": "images"},
+            # category missing
+            {"path": "assets/images/bg.png", "size": 3, "sha256": "a" * 64},
+        ]
+        for bad_entry in cases:
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [bad_entry],
+            }
+            with tempfile.TemporaryDirectory() as temp:
+                mp = Path(temp) / "manifest.json"
+                mp.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(UtilityError):
+                    validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_non_object(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text("[1, 2, 3]", encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    # --- Fix 2: portable import cannot write outside the OBS scenes directory ---
+
+    def _exported_package(self, root: Path) -> Path:
+        img = root / "bg.png"
+        img.write_bytes(b"img")
+        data = {
+            "name": "Imported",
+            "current_scene": "Main",
+            "scene_order": [{"name": "Main"}],
+            "sources": [
+                {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                {"name": "Main", "id": "scene", "settings": {"items": []}},
+            ],
+        }
+        cp = root / "Imported.json"
+        cp.write_text(json.dumps(data), encoding="utf-8")
+        dest = root / "exports"
+        dest.mkdir()
+        r = export_scene_collection(cp, dest)
+        self.assertTrue(r.success, r.error)
+        return r.package_path
+
+    def test_portable_import_uses_safe_unique_collection_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            # Pre-seed a name that collides with the proposed collection name.
+            (ocd / "Imported.json").write_text("{}", encoding="utf-8")
+            out = materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertTrue(out.is_file())
+            # The helper must have chosen a unique name, not overwritten ours.
+            self.assertTrue((ocd / "Imported.json").is_file())
+            self.assertNotEqual(out.name, "Imported.json")
+            self.assertTrue(out.name.startswith("Imported"))
+
+    def test_portable_import_rejects_traversal_collection_name(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            # Tamper the collection JSON name with a traversal payload.
+            coll = json.loads((pkg / "collection" / "Imported.json").read_text(encoding="utf-8"))
+            coll["name"] = "../../escape"
+            atomic_write_json(pkg / "collection" / "Imported.json", coll)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            # A traversal name must never be honored; import is refused.
+            with self.assertRaises(UtilityError):
+                materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertEqual([c.name for c in ocd.iterdir()], [])
+
+    def test_portable_import_rejects_drive_qualified_collection_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            coll = json.loads((pkg / "collection" / "Imported.json").read_text(encoding="utf-8"))
+            coll["name"] = "C:/Windows/System32/evil"
+            atomic_write_json(pkg / "collection" / "Imported.json", coll)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            out = materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertTrue(out.is_file())
+            # The output must resolve into the OBS scenes directory. Resolved
+            # paths are used so 8.3 short-name forms (e.g. RUNNER~1) on Windows
+            # do not break the containment check.
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
+            self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
+
+    def test_portable_import_rejects_unc_collection_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            coll = json.loads((pkg / "collection" / "Imported.json").read_text(encoding="utf-8"))
+            coll["name"] = "//server/share/evil"
+            atomic_write_json(pkg / "collection" / "Imported.json", coll)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            out = materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertTrue(out.is_file())
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
+            self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
+
+    def test_portable_import_rejects_reserved_windows_collection_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            coll = json.loads((pkg / "collection" / "Imported.json").read_text(encoding="utf-8"))
+            coll["name"] = "CON"
+            atomic_write_json(pkg / "collection" / "Imported.json", coll)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            # A reserved Windows name is sanitized to a safe unique filename and
+            # must remain inside the OBS scenes directory.
+            out = materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertTrue(out.is_file())
+            self.assertTrue(
+                _is_contained(out, ocd),
+                "collection written outside target directory",
+            )
+            self.assertEqual([c.name for c in ocd.iterdir()], [out.name])
+
+    def test_portable_import_duplicate_normal_name_gets_unique_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._exported_package(root)
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            first = materialize_portable_collection(pkg / "manifest.json", ocd)
+            second = materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertNotEqual(first.name, second.name)
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+
+    # --- Fix 3: same-size mutation fails export (digest revalidation) ---
+
+    def test_same_size_mutation_fails_export_digest_revalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            img = root / "bg.png"
+            img.write_bytes(b"AAAA")  # 4 bytes
+            data = {
+                "name": "DigestFrozen",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(img)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "DigestFrozen.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=False)
+            # AAAA -> BBBB keeps the same size (4 bytes) but changes the digest.
+            img.write_bytes(b"BBBB")
+            r = export_scene_collection(cp, dest, compressed=False, plan=plan)
+            self.assertFalse(r.success)
+            self.assertIn("changed", r.error)
+
+    # --- Fix 4: distinct browser roots with the same folder name survive ---
+
+    def test_distinct_browser_roots_same_name_get_unique_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Two independent browser source roots both named "overlay".
+            browser_a = root / "projects" / "overlay"
+            browser_b = root / "other" / "overlay"
+            for br in (browser_a, browser_b):
+                br.mkdir(parents=True)
+                (br / "index.html").write_text(
+                    f'<h1>{br.parts[-2]}</h1>', encoding="utf-8"
+                )
+            collection_path = root / "Browser.json"
+            data = {
+                "name": "DoubleBrowser",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {
+                        "name": "A",
+                        "id": "browser_source",
+                        "settings": {"local_file": str(browser_a / "index.html")},
+                    },
+                    {
+                        "name": "B",
+                        "id": "browser_source",
+                        "settings": {"local_file": str(browser_b / "index.html")},
+                    },
+                ],
+            }
+            collection_path.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            r = export_scene_collection(collection_path, dest)
+            self.assertTrue(r.success, r.error)
+
+            manifest = json.loads((r.package_path / "manifest.json").read_text(encoding="utf-8"))
+            # The two same-named browser roots must get distinct package dirs.
+            self.assertEqual(set(manifest["browser_projects"]), {"overlay", "overlay 2"})
+
+            dir_a = r.package_path / "browser" / "overlay"
+            dir_b = r.package_path / "browser" / "overlay 2"
+            self.assertTrue(dir_a.is_dir())
+            self.assertTrue(dir_b.is_dir())
+            # Content must be preserved and distinct.
+            self.assertEqual(
+                (dir_a / "index.html").read_text(encoding="utf-8"), "<h1>projects</h1>"
+            )
+            self.assertEqual(
+                (dir_b / "index.html").read_text(encoding="utf-8"), "<h1>other</h1>"
+            )
+            # The rewritten collection must reference both dirs.
+            exported = json.loads(r.collection_path.read_text(encoding="utf-8"))
+            refs = [
+                s["settings"]["local_file"]
+                for s in exported["sources"]
+                if s["id"] == "browser_source"
+            ]
+            self.assertEqual(len(refs), 2)
+            self.assertIn("../browser/overlay/index.html", refs)
+            self.assertIn("../browser/overlay 2/index.html", refs)
+
+    # --- Fix 2: Windows-safe imported collection names ---
+
+    def test_reserved_collection_names_are_sanitized(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        # (input name, expected sanitized stem)
+        cases = [
+            ("CON", "_CON"),
+            ("con", "_con"),
+            ("CON.txt", "_CON.txt"),
+            ("CON.backup.txt", "_CON.backup.txt"),
+            ("LPT1", "_LPT1"),
+            ("LPT1.extra.json", "_LPT1.extra.json"),
+            ("COM9.anything", "_COM9.anything"),
+            ("lpt9", "_lpt9"),
+            ("PRN", "_PRN"),
+        ]
+        for name, expected in cases:
+            stem, path = next_obs_collection_path(Path("/tmp/never-created"), name)
+            self.assertEqual(stem, expected, f"name={name!r}")
+            self.assertTrue(stem.startswith("_"))
+            self.assertTrue(path.name.endswith(".json"))
+        # Sanity: genuinely normal names are unchanged (incl. dotted names).
+        for name in ("My Pack", "My.Collection", "report.final.json", "comic"):
+            stem, _ = next_obs_collection_path(Path("/tmp/never-created"), name)
+            self.assertEqual(stem, name, f"normal name={name!r} should be unchanged")
+
+    def test_reserved_name_collision_suffix_behavior(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Seed the sanitized form so the helper must apply a numeric suffix.
+            (root / "_CON.json").write_text("{}", encoding="utf-8")
+            stem, path = next_obs_collection_path(root, "CON")
+            self.assertEqual(stem, "_CON 1")
+            self.assertTrue(path.name.endswith(".json"))
+
+    def test_normal_collision_behavior_unchanged(self) -> None:
+        from obs_overlay_import_utility.core import next_obs_collection_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Normal.json").write_text("{}", encoding="utf-8")
+            stem, _ = next_obs_collection_path(root, "Normal")
+            self.assertEqual(stem, "Normal 1")
+
+    # --- Fix 1: symlinked intermediate directory must not be traversed ---
+
+    def test_verify_rejects_symlinked_intermediate_directory(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root / "outside"
+            outside.mkdir()
+            secret = outside / "secret.bin"
+            secret.write_bytes(b"top-secret")
+
+            # Build a package whose assets/ directory is a symlink to /outside.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            assets_link = pkg / "assets"
+            assets_link.symlink_to(outside, target_is_directory=True)
+            # Declare the secret as an in-package asset.
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/secret.bin",
+                        "size": secret.stat().st_size,
+                        "sha256": _sha256_of(secret),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("escapes package root" in e or "link or reparse point" in e for e in verify.errors),
+                f"expected traversal/reparse rejection, got: {verify.errors}",
+            )
+
+            # No collection may be materialized from a package that fails verify.
+            ocd = root / "obs_collections"
+            ocd.mkdir()
+            with self.assertRaises(UtilityError):
+                materialize_portable_collection(pkg / "manifest.json", ocd)
+            self.assertEqual([c.name for c in ocd.iterdir()], [])
+
+    def test_verify_rejects_final_file_symlink(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A real file inside the package, plus a manifest entry that points
+            # to a *symlink* of that file. The link resolves back inside the
+            # package, so a final-file-only check would accept it; we must not.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            real = pkg / "assets"
+            real.mkdir()
+            real_file = real / "image.png"
+            real_file.write_bytes(b"real-content")
+            link_file = pkg / "assets" / "image_link.png"
+            link_file.symlink_to(real_file)
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/image_link.png",
+                        "size": real_file.stat().st_size,
+                        "sha256": _sha256_of(real_file),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e for e in verify.errors),
+                f"expected final-file link rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_intermediate_dir_symlink_inside_package(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Intermediate directory symlink that resolves to *another* real
+            # directory inside the package (not outside). The resolved target is
+            # still in-package, so containment alone would pass; the link must
+            # still be rejected.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            real_dir = pkg / "real_assets"
+            real_dir.mkdir()
+            secret = real_dir / "secret.bin"
+            secret.write_bytes(b"inside-secret")
+            link_dir = pkg / "assets"
+            link_dir.symlink_to(real_dir, target_is_directory=True)
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/secret.bin",
+                        "size": secret.stat().st_size,
+                        "sha256": _sha256_of(secret),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e for e in verify.errors),
+                f"expected intermediate-dir link rejection, got: {verify.errors}",
+            )
+
+    # --- Fix 2: verify_portable_package validates collection manifest JSON ---
+
+    def _make_minimal_package(self, root: Path) -> Path:
+        """Create a minimal valid package with one asset and return its root."""
+        pkg = root / "Pkg-Portable"
+        pkg.mkdir()
+        (pkg / "collection").mkdir()
+        (pkg / "assets").mkdir()
+        img = pkg / "assets" / "image.png"
+        img.write_bytes(b"img")
+        digest = _sha256_of(img)
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/Test.json"},
+            "files": [
+                {
+                    "path": "assets/image.png",
+                    "size": img.stat().st_size,
+                    "sha256": digest,
+                    "category": "images",
+                }
+            ],
+        }
+        (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (pkg / "collection" / "Test.json").write_text(
+            json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+            encoding="utf-8",
+        )
+        return pkg
+
+    def test_verify_rejects_missing_collection_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Remove the collection file.
+            (pkg / "collection" / "Test.json").unlink()
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("Collection JSON missing" in e for e in verify.errors),
+                f"expected missing collection rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_invalid_collection_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Overwrite the collection with invalid JSON.
+            (pkg / "collection" / "Test.json").write_text(
+                "{not valid json", encoding="utf-8"
+            )
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("Collection JSON could not be read" in e for e in verify.errors),
+                f"expected invalid collection JSON rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_collection_not_obs_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Overwrite the collection with valid JSON but not OBS data.
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"not": "an obs collection"}), encoding="utf-8"
+            )
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("not a valid OBS scene collection" in e for e in verify.errors),
+                f"expected non-OBS collection rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_collection_symlink_inside_package(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Replace the real collection file with a symlink to another
+            # in-package file. The symlink resolves inside the package, so
+            # containment alone would pass; the link must still be rejected.
+            target = pkg / "assets" / "image.png"
+            coll = pkg / "collection" / "Test.json"
+            coll.unlink()
+            coll.symlink_to(target)
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e for e in verify.errors),
+                f"expected collection symlink rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_collection_symlink_escaping_package(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Create a file outside the package and symlink the collection
+            # to it.
+            outside = root / "outside.json"
+            outside.write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+            coll = pkg / "collection" / "Test.json"
+            coll.unlink()
+            coll.symlink_to(outside)
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e or "escapes package root" in e
+                    for e in verify.errors),
+                f"expected collection symlink escape rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_collection_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Tamper the manifest to point the collection path outside the package.
+            manifest = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+            manifest["collection"]["path"] = "../../etc/passwd"
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("unsafe" in e or "escapes" in e for e in verify.errors),
+                f"expected collection traversal rejection, got: {verify.errors}",
+            )
+
+    # --- Fix 3: manifest paths are canonical (no .. or . segments) ---
+
+    def test_validate_manifest_rejects_dotdot_in_collection_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "assets/../collection/C.json"},
+            "files": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_dot_in_collection_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/./C.json"},
+            "files": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_dotdot_in_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "assets/../collection/C.json", "size": 1,
+                 "sha256": "a" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_dot_in_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "assets/./images/bg.png", "size": 1,
+                 "sha256": "a" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_duplicate_normalized_paths(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        # Two paths that differ only in separator style normalize to the same
+        # path and must not both pass validation.
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "assets/images/bg.png", "size": 1,
+                 "sha256": "a" * 64, "category": "images"},
+                {"path": "assets\\images\\bg.png", "size": 1,
+                 "sha256": "b" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_alias_collision_after_normalization(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        # ``assets/../collection/C.json`` and ``collection/C.json`` normalize to
+        # the same path. Both must be rejected because dot-segments are not
+        # allowed, and even without the dot-segment the duplicate would be caught.
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "collection/C.json", "size": 1,
+                 "sha256": "a" * 64, "category": "other"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            # This should pass because collection/C.json is a valid path and
+            # there's only one file entry. But if we add the alias form it
+            # must be rejected.
+            manifest["files"].append({
+                "path": "assets/../collection/C.json", "size": 1,
+                "sha256": "b" * 64, "category": "other",
+            })
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 if __name__ == "__main__":
