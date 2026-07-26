@@ -31,14 +31,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          export PYTHONFAULTHANDLER=1
+          export PYTHONFAULTHANDER=1
           xvfb-run -a python -m unittest discover -s tests -v 2>&1 \
             | tee test-results.txt
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:PYTHONFAULTHANDLER = "1"
+          $env:PYTHONFAULTHANDER = "1"
           python -m unittest discover -s tests -v 2>&1 |
             Tee-Object -FilePath test-results.txt
           $testExitCode = $LASTEXITCODE
@@ -57,3 +57,49 @@ jobs:
       - name: AST/import check
         run: |
           python -c "import ast; from pathlib import Path; paths = list(Path('src').rglob('*.py')); paths += list(Path('tests').rglob('*.py')); [ast.parse(p.read_text(encoding='utf-8')) for p in paths]; print(f'AST OK: {len(paths)} files')"
+
+  electron:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Python package
+        run: |
+          python -m pip install -e .
+      - name: Install Electron dependencies
+        run: |
+          cd desktop
+          npm ci
+      - name: TypeScript type checking
+        run: |
+          cd desktop
+          npm run typecheck
+      - name: Run Electron tests
+        run: |
+          cd desktop
+          npm test
+      - name: Run ESLint
+        run: |
+          cd desktop
+          npm run lint
+      - name: Build Electron artifacts
+        run: |
+          cd desktop
+          npm run build
+      - name: Verify compiled output
+        run: |
+          cd desktop
+          test -f dist-electron/main/index.js
+          test -f dist-electron/preload/index.js
+          test -f dist/index.html
+      - name: Verify no process.execPath as Python
+        run: |
+          cd desktop
+          ! grep -q 'process\.execPath' dist-electron/main/index.js

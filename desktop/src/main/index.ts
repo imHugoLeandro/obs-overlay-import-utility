@@ -16,6 +16,7 @@
  * - webSecurity: true
  * - webviewTag: false
  * - Unexpected navigation and new windows are blocked.
+ * - All permission requests are denied.
  * - Production CSP restricts content to the packaged app.
  * - Every IPC sender, channel, and payload is validated.
  */
@@ -43,8 +44,8 @@ function isAllowedCommand(command: string): boolean {
 const HEALTH_CHANNEL = "desktop:health";
 const APP_INFO_CHANNEL = "desktop:app-info";
 
-/** Expected Vite dev server URL. */
-const DEV_URL = "http://localhost:5173";
+/** Expected Vite dev server origin (exact match, no startsWith). */
+const DEV_ORIGIN = "http://localhost:5173";
 
 /**
  * Resolve the Python executable for development.
@@ -71,6 +72,31 @@ function isValidExecutable(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolve the repository root directory.
+ *
+ * In development, the compiled main process is at:
+ *   desktop/dist-electron/main/index.js
+ *
+ * We need to resolve to the repository root (parent of desktop/),
+ * so Python receives PYTHONPATH=<repo>/src.
+ *
+ * Strategy:
+ * - In development: use app.getAppPath() which returns the desktop/ dir,
+ *   then resolve its parent.
+ * - Fallback: use __dirname and navigate up from dist-electron/main/.
+ */
+function resolveRepoRoot(): string {
+  if (!app.isPackaged) {
+    // app.getAppPath() returns the directory containing package.json,
+    // which is desktop/ in development.
+    const appPath = app.getAppPath();
+    return path.resolve(appPath, "..");
+  }
+  // Packaged mode should fail closed — this path should never be reached.
+  return path.resolve(__dirname, "..", "..", "..");
 }
 
 // ---------------------------------------------------------------------------
@@ -121,14 +147,14 @@ class BackendTransport {
       throw error;
     }
 
-    // Determine the project root (parent of desktop/).
-    const projectRoot = path.resolve(__dirname, "..", "..");
+    // Resolve the repository root so PYTHONPATH points to <repo>/src.
+    const repoRoot = resolveRepoRoot();
 
     this.pyProcess = child_process.spawn(pythonExec, ["-u", "-m", "obs_overlay_import_utility.desktop_backend"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        PYTHONPATH: path.join(projectRoot, "src"),
+        PYTHONPATH: path.join(repoRoot, "src"),
       },
     });
 
@@ -215,7 +241,7 @@ class BackendTransport {
   /**
    * Handle incoming stdout data by buffering and parsing complete JSON lines.
    */
-  private handleStdout(data: Buffer): void {
+  handleStdout(data: Buffer): void {
     this.stdoutBuffer += data.toString();
 
     let newlineIndex: number;
@@ -244,7 +270,7 @@ class BackendTransport {
   }
 
   /** Reject all pending requests with the given error. */
-  private rejectAllPending(error: Error): void {
+  rejectAllPending(error: Error): void {
     for (const [requestId, pending] of this.pending) {
       clearTimeout(pending.timer);
       this.pending.delete(requestId);
@@ -254,6 +280,48 @@ class BackendTransport {
 }
 
 const backend = new BackendTransport();
+
+// ---------------------------------------------------------------------------
+// URL validation — exact origin matching, no startsWith
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that the sender's URL is an expected origin.
+ * - Development: exact http://localhost:5173 origin.
+ * - Packaged mode: fails closed (Stage 3 packaging deferred).
+ */
+function isValidOrigin(sender: Electron.WebContents): boolean {
+  const senderUrl = sender.getURL();
+  if (!app.isPackaged) {
+    // Development: allow only the exact Vite dev server origin.
+    try {
+      const parsed = new URL(senderUrl);
+      return parsed.origin === DEV_ORIGIN;
+    } catch {
+      return false;
+    }
+  }
+  // Packaged mode: fail closed. Stage 3 packaging is deferred.
+  return false;
+}
+
+/**
+ * Validate that a navigation URL is allowed.
+ * - Development: exact http://localhost:5173 origin.
+ * - Packaged mode: fails closed.
+ */
+function isAllowedNavigation(targetUrl: string): boolean {
+  if (!app.isPackaged) {
+    try {
+      const parsed = new URL(targetUrl);
+      return parsed.origin === DEV_ORIGIN;
+    } catch {
+      return false;
+    }
+  }
+  // Packaged mode: fail closed.
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // IPC handlers — fixed channels via ipcMain.handle
@@ -271,23 +339,8 @@ function isValidSender(sender: Electron.WebContents): boolean {
 }
 
 /**
- * Validate that the sender's URL is an expected origin.
- * - Development: the configured Vite localhost URL.
- * - Packaged: only the packaged local file/app URL.
- */
-function isValidOrigin(sender: Electron.WebContents): boolean {
-  const url = sender.getURL();
-  if (!app.isPackaged) {
-    // Development: allow the Vite dev server.
-    return url.startsWith(DEV_URL);
-  }
-  // Packaged: only allow the local app file URL.
-  return url.startsWith("file://");
-}
-
-/**
  * IPC handler for the health command.
- * Validates sender, origin, and payload before forwarding to the backend.
+ * Validates sender, origin, and command before forwarding to the backend.
  */
 ipcMain.handle(HEALTH_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
@@ -310,7 +363,7 @@ ipcMain.handle(HEALTH_CHANNEL, async (event) => {
 
 /**
  * IPC handler for the app_info command.
- * Validates sender, origin, and payload before forwarding to the backend.
+ * Validates sender, origin, and command before forwarding to the backend.
  */
 ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
@@ -337,7 +390,43 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * Show a Stage-3-not-implemented error and quit safely.
+ */
+function showPackagedNotImplemented(): void {
+  const errorWindow = new BrowserWindow({
+    width: 600,
+    height: 300,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webviewTag: false,
+      webSecurity: true,
+    },
+  });
+  errorWindow.loadURL(
+    "data:text/html," +
+      encodeURIComponent(
+        "<!DOCTYPE html><html><head><title>Error</title></head><body>" +
+          "<h1>Portable Electron Packaging Not Implemented</h1>" +
+          "<p>Stage 3 (portable Electron + bundled Python) is deferred. " +
+          "This application must be run in development mode.</p>" +
+          "</body></html>"
+      )
+  );
+  errorWindow.on("closed", () => {
+    app.quit();
+  });
+}
+
 function createWindow(): void {
+  // Packaged mode: fail closed. Stage 3 packaging is deferred.
+  if (app.isPackaged) {
+    showPackagedNotImplemented();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 720,
@@ -355,33 +444,21 @@ function createWindow(): void {
       // Security: explicitly enable web security.
       webSecurity: true,
       // Preload runs in an isolated context.
-      preload: path.join(__dirname, "preload", "index.js"),
+      // Compiled preload is at dist-electron/preload/index.js (sibling of main/).
+      preload: path.join(__dirname, "..", "preload", "index.js"),
     },
   });
 
-  // Load the renderer.
-  if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
-  } else {
-    mainWindow.loadURL(DEV_URL);
-    // Open DevTools in development.
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-  }
+  // Load the renderer from the Vite dev server.
+  mainWindow.loadURL(DEV_ORIGIN);
+  // Open DevTools in development.
+  mainWindow.webContents.openDevTools({ mode: "detach" });
 
   // Security: block unexpected navigation.
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!app.isPackaged) {
-      // Development: only allow the Vite dev server.
-      if (url.startsWith(DEV_URL)) {
-        return;
-      }
-    } else {
-      // Packaged: only allow local file URLs.
-      if (url.startsWith("file://")) {
-        return;
-      }
+  mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
+    if (!isAllowedNavigation(targetUrl)) {
+      event.preventDefault();
     }
-    event.preventDefault();
   });
 
   // Security: block new windows.
@@ -389,10 +466,13 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  // Security: deny permission requests.
-  mainWindow.webContents.session.on("will-download", () => {
-    // Downloads are not needed in the foundation stage.
+  // Security: deny all permission requests.
+  mainWindow.webContents.session.on("will-download", (event) => {
+    event.preventDefault();
   });
+
+  // Security: deny all permission requests via session handler.
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -405,7 +485,6 @@ function createWindow(): void {
 
 /**
  * Configure Content-Security-Policy for the renderer.
- * In production, restricts content to the packaged app.
  * In development, allows localhost for the Vite dev server including
  * WebSocket connections for HMR.
  */

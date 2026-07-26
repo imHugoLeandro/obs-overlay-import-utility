@@ -25,6 +25,7 @@ from obs_overlay_import_utility.desktop_backend import (  # noqa: E402
     Backend,
     Request,
     _parse_request,
+    run,
 )
 from obs_overlay_import_utility.constants import APP_TITLE, __version__  # noqa: E402
 
@@ -179,27 +180,53 @@ class ResponseSerializationTests(unittest.TestCase):
 class BackendInternalErrorTests(unittest.TestCase):
     """Verify that internal errors return a generic safe message."""
 
-    def setUp(self) -> None:
-        self.backend = Backend()
-
     def test_internal_error_uses_generic_message(self) -> None:
-        """The run() loop must not leak exception details to the client."""
-        # Simulate an internal error by making handle() raise.
+        """The run() loop must not leak exception details to the client.
+
+        Uses io.StringIO with patched sys.stdin/sys.stdout to drive the
+        real run() loop.  Backend.handle() is patched to raise, and we
+        verify the emitted JSON response uses a generic message.
+        """
+        import io
         import unittest.mock as mock
 
-        with mock.patch.object(Backend, "handle", side_effect=RuntimeError("secret stack trace")):
-            # We can't easily test run() directly, but we can verify the
-            # error response structure by calling handle and checking that
-            # the Backend class itself doesn't expose internal details.
-            pass
+        # Create a request that will trigger the internal error.
+        request_line = json.dumps({"request_id": "ie1", "command": "health"}) + "\n"
 
-        # Verify that the error code for unknown commands doesn't leak internals
-        req_bad = Request(request_id="ie2", command="nonexistent")
-        resp = self.backend.handle(req_bad)
+        # Patch stdin to feed our request, then close.
+        fake_stdin = io.StringIO(request_line)
+        fake_stdout = io.StringIO()
+
+        # Patch Backend.handle to raise a RuntimeError with sensitive info.
+        with mock.patch.object(Backend, "handle", side_effect=RuntimeError("secret stack trace")):
+            with mock.patch("sys.stdin", fake_stdin):
+                with mock.patch("sys.stdout", fake_stdout):
+                    run()
+
+        # Parse the output.
+        output = fake_stdout.getvalue().strip()
+        self.assertTrue(output, "Expected at least one response line")
+        response = json.loads(output)
+
+        # Verify the error structure.
+        self.assertEqual(response["request_id"], "ie1")
+        self.assertEqual(response["type"], "error")
+        self.assertEqual(response["error"]["code"], "internal_error")
+
+        # The message must be the generic safe message, NOT the exception.
+        self.assertEqual(response["error"]["message"], "Internal backend error")
+
+        # The secret stack trace must NOT appear in the response.
+        self.assertNotIn("secret stack trace", response["error"]["message"])
+        self.assertNotIn("secret stack trace", output)
+
+    def test_unknown_command_does_not_leak_internals(self) -> None:
+        """Unknown commands should return a safe error, not crash."""
+        backend = Backend()
+        req = Request(request_id="ie2", command="nonexistent")
+        resp = backend.handle(req)
         self.assertEqual(resp.type, "error")
         self.assertEqual(resp.error["code"], "unknown_command")
-        # The message should not contain the raw command in a way that
-        # could be exploited — it should be a safe, generic message.
         self.assertIn("nonexistent", resp.error["message"])
 
 
