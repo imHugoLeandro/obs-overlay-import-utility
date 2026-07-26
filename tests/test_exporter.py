@@ -655,6 +655,12 @@ class ExporterTests(unittest.TestCase):
         self.assertFalse(is_safe_portable_path("assets/images//bg.png"))
         # Leading slash is rejected.
         self.assertFalse(is_safe_portable_path("/assets/images/bg.png"))
+        # Non-leading ".." segments are rejected (canonical rule).
+        self.assertFalse(is_safe_portable_path("assets/../../outside"))
+        self.assertFalse(is_safe_portable_path("../assets/../../outside"))
+        self.assertFalse(is_safe_portable_path("../../assets/bg.png"))
+        # "." segments are rejected.
+        self.assertFalse(is_safe_portable_path("assets/./images/bg.png"))
 
     def test_manifest_contains_file_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1655,6 +1661,25 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
                 any("unsafe" in e or "escapes" in e for e in verify.errors),
                 f"expected collection traversal rejection, got: {verify.errors}",
             )
+
+    def test_materialize_portable_collection_without_name_sets_name(self) -> None:
+        """Importing a valid OBS collection without a "name" field must still
+        set the installed JSON's "name" to the output filename stem."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pkg = self._make_minimal_package(root)
+            # Remove the "name" field from the collection JSON.
+            coll = pkg / "collection" / "Test.json"
+            data = json.loads(coll.read_text(encoding="utf-8"))
+            data.pop("name", None)
+            coll.write_text(json.dumps(data), encoding="utf-8")
+
+            scenes_dir = root / "obs-scenes"
+            scenes_dir.mkdir()
+            out = materialize_portable_collection(pkg / "manifest.json", scenes_dir)
+            self.assertTrue(out.is_file())
+            installed = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(installed["name"], out.stem)
 
     # --- Fix 3: manifest paths are canonical (no .. or . segments) ---
 

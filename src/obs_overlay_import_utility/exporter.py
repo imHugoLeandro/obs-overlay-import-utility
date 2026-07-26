@@ -314,9 +314,13 @@ def portable_browser_path(project_dir_name: str, relative: str) -> str:
 def is_safe_portable_path(path: str) -> bool:
     """True for a relative portable package path that does not escape root.
 
-    Accepts paths like ``../assets/images/bg.png`` (valid portable reference)
-    but rejects ``assets//images/bg.png`` (empty segment), ``assets/../../outside``
-    (escapes root), absolute paths, UNC paths, and drive-qualified paths.
+    Uses a simple canonical rule: permit at most one leading ``..`` segment;
+    reject every later ``..`` segment.  Also rejects empty segments, ``.``
+    segments, absolute paths, UNC paths, and drive-qualified paths.
+
+    Accepts: ``../assets/images/bg.png``, ``assets/images/bg.png``
+    Rejects: ``assets/../../outside``, ``../assets/../../outside``,
+             ``../../assets/bg.png``, ``assets//images/bg.png``
     """
     if not path or path.startswith("\\\\"):
         return False
@@ -325,15 +329,16 @@ def is_safe_portable_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     if normalized.startswith("/"):
         return False
-    depth = 0
-    for part in normalized.split("/"):
-        if not part:
+    parts = normalized.split("/")
+    seen_dotdot = False
+    for part in parts:
+        if not part or part == ".":
             return False
         if part == "..":
-            depth -= 1
-        elif part != ".":
-            depth += 1
-    return depth >= 0
+            if seen_dotdot:
+                return False
+            seen_dotdot = True
+    return True
 
 
 def _sha256_chunked(path: Path, *, chunk_size: int = 1 << 20) -> str:
@@ -1542,12 +1547,12 @@ def materialize_portable_collection(manifest_path: Path, target_collections_dir:
         out.relative_to(target_collections_dir)
     except ValueError:
         raise UtilityError("The imported collection would be written outside the selected OBS scenes directory.")
-    # Set the collection JSON "name" field to the chosen unique collection name
-    # so the imported collection's name matches its filename stem. This prevents
-    # collisions where two imports of the same package would have identical
-    # "name" fields but different filenames.
-    if isinstance(data.get("name"), str):
-        data["name"] = _collection_name
+    # Always set the collection JSON "name" field to the chosen unique
+    # collection name so the imported collection's name matches its filename
+    # stem. This prevents collisions where two imports of the same package
+    # would have identical "name" fields but different filenames, and ensures
+    # collections without a "name" field still get one.
+    data["name"] = _collection_name
     atomic_write_json(out, data)
     return out
 
