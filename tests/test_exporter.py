@@ -565,6 +565,58 @@ class ExporterTests(unittest.TestCase):
             self.assertFalse(pkg_folder.is_dir(),
                              "ZIP mode must not leave a normal folder")
 
+    def test_zip_mode_missing_file_uses_missing_placeholder(self) -> None:
+        """ZIP publication must replace missing-file absolute paths with
+        ../missing/... placeholders, using resolved-path comparison to avoid
+        Windows 8.3 short-name mismatches (RUNNER~1 vs runneradmin)."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            present = root / "present.png"
+            present.write_bytes(b"img")
+            missing = root / "gone.png"
+            data = {
+                "name": "ZipMissing",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "OK", "id": "image_source", "settings": {"file": str(present)}},
+                    {"name": "Gone", "id": "image_source", "settings": {"file": str(missing)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "ZipMissing.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=True)
+            r = export_scene_collection(cp, dest, compressed=True, plan=plan)
+            self.assertTrue(r.success, r.error)
+            self.assertTrue(r.compressed)
+            self.assertIsNotNone(r.archive_path)
+            archive_path = r.archive_path
+            assert archive_path is not None  # for type checker
+            self.assertTrue(archive_path.is_file())
+
+            # Read the collection JSON from the ZIP archive.
+            import zipfile as _zf
+            with _zf.ZipFile(archive_path, "r") as zf:
+                coll_name = archive_path.name.replace(".zip", "")
+                coll_zip_path = f"{coll_name}/collection/{cp.stem}.json"
+                coll_data = json.loads(zf.read(coll_zip_path))
+
+            gone = next(s for s in coll_data["sources"] if s["name"] == "Gone")
+            gone_path = gone["settings"]["file"]
+            # The missing file must use the ../missing/ placeholder, not an
+            # absolute path.
+            self.assertTrue(
+                gone_path.startswith("../missing/"),
+                f"missing path should use ../missing/ placeholder, got: {gone_path}",
+            )
+            self.assertFalse(
+                str(root) in gone_path or str(missing) in gone_path,
+                "seller's absolute path must not appear in exported ZIP package",
+            )
+
     def test_frozen_plan_revalidation_catches_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

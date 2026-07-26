@@ -1285,7 +1285,9 @@ def _publish_zip(plan: ExportPlan, package_root_name: str) -> tuple[Path, int]:
                     ref.parent[ref.key] = copied_sources[source]
                 elif not source.is_file():
                     for mr in plan.missing_references:
-                        if mr["path"] == ref.value:
+                        # Compare resolved paths so Windows 8.3 short-name forms
+                        # (RUNNER~1 vs runneradmin) do not cause mismatches.
+                        if mr["path"] == str(source):
                             ref.parent[ref.key] = _sanitise_missing_reference(ref.value)
                             break
 
