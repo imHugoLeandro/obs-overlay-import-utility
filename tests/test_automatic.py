@@ -92,6 +92,74 @@ class AutomaticImportTests(unittest.TestCase):
             installed = json.loads(result.collection_path.read_text(encoding="utf-8"))
             self.assertEqual(installed["resolution"], {"x": 1920, "y": 1080})
 
+    def test_portable_import_collision_sets_name_and_collection_name(self) -> None:
+        """Importing the same portable package twice must:
+        - name the second file with a collision suffix;
+        - set the second JSON's "name" to match its filename stem;
+        - set AutomaticImportResult.collection_name to the second installed name."""
+        from obs_overlay_import_utility.exporter import (
+            build_export_plan,
+            export_scene_collection,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            asset = root / "bg.png"
+            asset.write_bytes(b"image")
+            data = {
+                "name": "CollidingPack",
+                "current_scene": "Main",
+                "scene_order": [{"name": "Main"}],
+                "sources": [
+                    {"name": "Img", "id": "image_source", "settings": {"file": str(asset)}},
+                    {"name": "Main", "id": "scene", "settings": {"items": []}},
+                ],
+            }
+            cp = root / "CollidingPack.json"
+            cp.write_text(json.dumps(data), encoding="utf-8")
+            dest = root / "exports"
+            dest.mkdir()
+            plan = build_export_plan(cp, dest, compressed=False)
+            r = export_scene_collection(cp, dest, compressed=False, plan=plan)
+            self.assertTrue(r.success, r.error)
+            self.assertIsNotNone(r.package_path)
+            package_path = r.package_path
+            assert package_path is not None  # for type checker
+
+            scenes_dir = root / "obs-scenes"
+            scenes_dir.mkdir()
+
+            # First import
+            first = automatically_import_overlay(package_path, scenes_dir)
+            self.assertTrue(first.success, first.error)
+            self.assertEqual(first.kind, "portable")
+            self.assertEqual(first.collection_name, "CollidingPack")
+            self.assertTrue(first.collection_path.is_file())
+
+            # Second import — must collide
+            second = automatically_import_overlay(package_path, scenes_dir)
+            self.assertTrue(second.success, second.error)
+            self.assertEqual(second.kind, "portable")
+
+            # Second file must have a collision suffix in its filename
+            self.assertNotEqual(first.collection_path, second.collection_path)
+            self.assertTrue(
+                second.collection_path.stem.startswith("CollidingPack"),
+                f"second collection stem should start with CollidingPack, got: {second.collection_path.stem}",
+            )
+            self.assertNotEqual(
+                second.collection_path.stem, "CollidingPack",
+                "second collection should have a collision suffix",
+            )
+
+            # Second JSON's "name" must match its filename stem
+            second_data = json.loads(second.collection_path.read_text(encoding="utf-8"))
+            self.assertEqual(second_data["name"], second.collection_path.stem)
+
+            # AutomaticImportResult.collection_name must match the second installed name
+            self.assertEqual(second.collection_name, second.collection_path.stem)
+            self.assertNotEqual(second.collection_name, "CollidingPack")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -648,8 +648,13 @@ class ExporterTests(unittest.TestCase):
         self.assertTrue(is_safe_portable_path("collection/Test.json"))
         self.assertFalse(is_safe_portable_path("../assets/../../../etc/passwd"))
         self.assertFalse(is_safe_portable_path("/etc/passwd"))
-        self.assertFalse(is_safe_portable_path("C:\\Windows"))
+        self.assertFalse(is_safe_portable_path("C:\\\\Windows"))
         self.assertFalse(is_safe_portable_path(""))
+        # Empty segments (repeated slashes) are rejected.
+        self.assertFalse(is_safe_portable_path("assets//images/bg.png"))
+        self.assertFalse(is_safe_portable_path("assets/images//bg.png"))
+        # Leading slash is rejected.
+        self.assertFalse(is_safe_portable_path("/assets/images/bg.png"))
 
     def test_manifest_contains_file_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1760,6 +1765,56 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
                 "path": "assets/../collection/C.json", "size": 1,
                 "sha256": "b" * 64, "category": "other",
             })
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    # --- Fix 2 (cont): manifest path canonicalization (empty segments) ---
+
+    def test_validate_manifest_rejects_empty_segments_in_collection_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "assets//images/bg.png"},
+            "files": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_empty_segments_in_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "assets/images//bg.png", "size": 1,
+                 "sha256": "a" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
+            mp.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(UtilityError):
+                validate_portable_manifest(mp)
+
+    def test_validate_manifest_rejects_leading_slash_in_file_path(self) -> None:
+        from obs_overlay_import_utility.models import UtilityError
+        manifest = {
+            "schema": "obs-overlay-portable-package",
+            "schema_version": 1,
+            "collection": {"path": "collection/C.json"},
+            "files": [
+                {"path": "/assets/images/bg.png", "size": 1,
+                 "sha256": "a" * 64, "category": "images"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            mp = Path(temp) / "manifest.json"
             mp.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaises(UtilityError):
                 validate_portable_manifest(mp)
