@@ -352,7 +352,13 @@ def _sha256_chunked_zip(zf: zipfile.ZipFile, name: str, *, chunk_size: int = 1 <
 
 
 def _manifest_file_path_is_safe(raw_path: Any) -> bool:
-    """True only for a relative, contained package path (no traversal/UNC/drive)."""
+    """True only for a relative, contained package path with no traversal or
+    dot-segments.
+
+    Every ``..`` and ``.`` segment is rejected so that aliases such as
+    ``assets/../collection/C.json`` and ``collection/C.json`` cannot both
+    pass validation and collide after normalization.
+    """
     if not isinstance(raw_path, str) or not raw_path:
         return False
     normalized = raw_path.replace("\\", "/")
@@ -366,11 +372,9 @@ def _manifest_file_path_is_safe(raw_path: Any) -> bool:
         return False
     depth = 0
     for part in normalized.split("/"):
-        if part == "..":
-            depth -= 1
-            if depth < 0:
-                return False
-        elif part and part != ".":
+        if part == ".." or part == ".":
+            return False
+        if part:
             depth += 1
     return depth >= 0
 
@@ -1216,7 +1220,9 @@ def _publish_folder(plan: ExportPlan, staging_path: Path, package_root_name: str
         source = Path(normalized_output_path(ref.value)).resolve()
         if not source.is_file():
             for mr in plan.missing_references:
-                if mr["path"] == ref.value:
+                # Compare resolved paths so Windows 8.3 short-name forms
+                # (RUNNER~1 vs runneradmin) do not cause mismatches.
+                if mr["path"] == str(source):
                     ref.parent[ref.key] = _sanitise_missing_reference(ref.value)
                     break
             continue
@@ -1460,9 +1466,13 @@ def validate_portable_manifest(manifest_path: Path) -> dict[str, Any]:
             raise UtilityError(f"Manifest file entry {index + 1} has a missing or invalid path.")
         if not _manifest_file_path_is_safe(entry_path):
             raise UtilityError(f"Manifest file path is unsafe: {entry_path}")
-        if entry_path.casefold() in seen_paths:
+        # Normalize separators before duplicate detection so that
+        # ``assets/images/bg.png`` and ``assets\images\bg.png`` cannot both
+        # pass validation.
+        normalized_key = entry_path.replace("\\", "/").casefold()
+        if normalized_key in seen_paths:
             raise UtilityError(f"Duplicate manifest file path: {entry_path}")
-        seen_paths.add(entry_path.casefold())
+        seen_paths.add(normalized_key)
         if not isinstance(entry.get("size"), int) or isinstance(entry.get("size"), bool):
             raise UtilityError(f"Manifest file {entry_path} has a missing or invalid size.")
         digest = entry.get("sha256")
@@ -1530,6 +1540,26 @@ def materialize_portable_collection(manifest_path: Path, target_collections_dir:
     return out
 
 
+def _walk_manifest_path(resolved_root: Path, entry_path: str) -> tuple[Path | None, str | None]:
+    """Walk every path component from the resolved package root down to a
+    manifest-declared file or collection.
+
+    Returns ``(resolved_path, error)``.  When *error* is not ``None`` the path
+    is unsafe (contains a link/reparse point or escapes the package root) and
+    *resolved_path* is ``None``.
+    """
+    current = resolved_root
+    for part in Path(entry_path).parts:
+        current = current / part
+        if _is_link_or_reparse_point(current):
+            return None, f"Manifest path contains a link or reparse point: {entry_path}"
+        try:
+            current.relative_to(resolved_root)
+        except ValueError:
+            return None, f"Manifest path escapes package root: {entry_path}"
+    return current, None
+
+
 def verify_portable_package(package_root: Path) -> PackageVerification:
     manifest_path = package_root / "manifest.json"
     if not manifest_path.is_file():
@@ -1541,6 +1571,30 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
 
     errors = []
     resolved_root = package_root.resolve()
+
+    # --- Validate the collection descriptor path ---
+    coll_info = manifest.get("collection", {})
+    coll_rel = coll_info.get("path") if isinstance(coll_info, dict) else None
+    if not isinstance(coll_rel, str) or not coll_rel:
+        errors.append("Manifest collection path is missing or invalid")
+    elif not _manifest_file_path_is_safe(coll_rel):
+        errors.append(f"Manifest collection path is unsafe: {coll_rel}")
+    else:
+        coll_fp, coll_err = _walk_manifest_path(resolved_root, coll_rel)
+        if coll_err:
+            errors.append(coll_err)
+        elif coll_fp is None:
+            errors.append(f"Could not resolve collection path: {coll_rel}")
+        elif not coll_fp.is_file():
+            errors.append(f"Collection JSON missing: {coll_rel}")
+        else:
+            try:
+                coll_data = load_json(coll_fp)
+                if not is_obs_scene_collection_data(coll_data):
+                    errors.append("Collection JSON is not a valid OBS scene collection")
+            except UtilityError as exc:
+                errors.append(f"Collection JSON could not be read: {exc}")
+
     for f in manifest.get("files", []):
         entry_path = f.get("path")
         if not isinstance(entry_path, str):
@@ -1552,25 +1606,12 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
         # resolves back inside the package). We must reject a link/reparse
         # point at *any* position along the path before statting or hashing,
         # and the resolved target must stay inside the package root.
-        current = resolved_root
-        resolved_fp = current
-        link_or_reparse = False
-        escaped = False
-        for part in Path(entry_path).parts:
-            resolved_fp = resolved_fp / part
-            if _is_link_or_reparse_point(resolved_fp):
-                link_or_reparse = True
-                break
-            try:
-                resolved_fp.relative_to(resolved_root)
-            except ValueError:
-                escaped = True
-                break
-        if link_or_reparse:
-            errors.append(f"Manifest file path contains a link or reparse point: {entry_path}")
+        resolved_fp, walk_err = _walk_manifest_path(resolved_root, entry_path)
+        if walk_err:
+            errors.append(walk_err)
             continue
-        if escaped:
-            errors.append(f"Manifest file escapes package root: {entry_path}")
+        if resolved_fp is None:
+            errors.append(f"Could not resolve manifest file path: {entry_path}")
             continue
         try:
             if not resolved_fp.is_file():
