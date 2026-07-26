@@ -10,10 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from obs_overlay_import_utility import exporter  # noqa: E402
-from obs_overlay_import_utility.core import atomic_write_json  # noqa: E402
-from obs_overlay_import_utility.models import UtilityError  # noqa: E402
-from obs_overlay_import_utility.exporter import (  # noqa: E402
+from obs_overlay_import_utility import exporter
+from obs_overlay_import_utility.core import atomic_write_json
+from obs_overlay_import_utility.models import UtilityError
+from obs_overlay_import_utility.exporter import (
     active_obs_scene_collection,
     build_export_inventory,
     build_export_plan,
@@ -1271,19 +1271,27 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
     def test_reserved_collection_names_are_sanitized(self) -> None:
         from obs_overlay_import_utility.core import next_obs_collection_path
 
-        cases = ["CON", "con", "CON.txt", "LPT1", "lpt9", "PRN"]
-        for name in cases:
+        # (input name, expected sanitized stem)
+        cases = [
+            ("CON", "_CON"),
+            ("con", "_con"),
+            ("CON.txt", "_CON.txt"),
+            ("CON.backup.txt", "_CON.backup.txt"),
+            ("LPT1", "_LPT1"),
+            ("LPT1.extra.json", "_LPT1.extra.json"),
+            ("COM9.anything", "_COM9.anything"),
+            ("lpt9", "_lpt9"),
+            ("PRN", "_PRN"),
+        ]
+        for name, expected in cases:
             stem, path = next_obs_collection_path(Path("/tmp/never-created"), name)
-            # The stem must never equal the bare reserved name, with or
-            # without an extension.
-            self.assertNotEqual(stem, name)
-            self.assertFalse(stem.upper().startswith(name.split(".")[0].upper()))
+            self.assertEqual(stem, expected, f"name={name!r}")
             self.assertTrue(stem.startswith("_"))
             self.assertTrue(path.name.endswith(".json"))
-            # A normal reserved-like substring must not be touched accidentally.
-        # Sanity: a genuinely normal name is unchanged.
-        stem, _ = next_obs_collection_path(Path("/tmp/never-created"), "My Pack")
-        self.assertEqual(stem, "My Pack")
+        # Sanity: genuinely normal names are unchanged (incl. dotted names).
+        for name in ("My Pack", "My.Collection", "report.final.json", "comic"):
+            stem, _ = next_obs_collection_path(Path("/tmp/never-created"), name)
+            self.assertEqual(stem, name, f"normal name={name!r} should be unchanged")
 
     def test_reserved_name_collision_suffix_behavior(self) -> None:
         from obs_overlay_import_utility.core import next_obs_collection_path
@@ -1357,6 +1365,95 @@ class PortableIntegrityHardeningTests(unittest.TestCase):
             with self.assertRaises(UtilityError):
                 materialize_portable_collection(pkg / "manifest.json", ocd)
             self.assertEqual([c.name for c in ocd.iterdir()], [])
+
+    def test_verify_rejects_final_file_symlink(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A real file inside the package, plus a manifest entry that points
+            # to a *symlink* of that file. The link resolves back inside the
+            # package, so a final-file-only check would accept it; we must not.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            real = pkg / "assets"
+            real.mkdir()
+            real_file = real / "image.png"
+            real_file.write_bytes(b"real-content")
+            link_file = pkg / "assets" / "image_link.png"
+            link_file.symlink_to(real_file)
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/image_link.png",
+                        "size": real_file.stat().st_size,
+                        "sha256": _sha256_of(real_file),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e for e in verify.errors),
+                f"expected final-file link rejection, got: {verify.errors}",
+            )
+
+    def test_verify_rejects_intermediate_dir_symlink_inside_package(self) -> None:
+        if not _can_create_symlinks():
+            self.skipTest("this environment cannot create symlinks")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Intermediate directory symlink that resolves to *another* real
+            # directory inside the package (not outside). The resolved target is
+            # still in-package, so containment alone would pass; the link must
+            # still be rejected.
+            pkg = root / "Pkg-Portable"
+            pkg.mkdir()
+            (pkg / "collection").mkdir()
+            real_dir = pkg / "real_assets"
+            real_dir.mkdir()
+            secret = real_dir / "secret.bin"
+            secret.write_bytes(b"inside-secret")
+            link_dir = pkg / "assets"
+            link_dir.symlink_to(real_dir, target_is_directory=True)
+            manifest = {
+                "schema": "obs-overlay-portable-package",
+                "schema_version": 1,
+                "collection": {"path": "collection/Test.json"},
+                "files": [
+                    {
+                        "path": "assets/secret.bin",
+                        "size": secret.stat().st_size,
+                        "sha256": _sha256_of(secret),
+                        "category": "other",
+                    }
+                ],
+            }
+            (pkg / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pkg / "collection" / "Test.json").write_text(
+                json.dumps({"name": "Test", "current_scene": "M", "scene_order": [], "sources": []}),
+                encoding="utf-8",
+            )
+
+            verify = verify_portable_package(pkg)
+            self.assertFalse(verify.ok)
+            self.assertTrue(
+                any("link or reparse point" in e for e in verify.errors),
+                f"expected intermediate-dir link rejection, got: {verify.errors}",
+            )
 
 
 def _sha256_of(path: Path) -> str:

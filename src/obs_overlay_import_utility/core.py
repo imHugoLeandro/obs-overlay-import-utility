@@ -206,12 +206,14 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 def _sanitise_windows_reserved_name(name: str) -> str:
     """Prefix Windows reserved device basenames so they become valid filenames.
 
-    ``CON`` -> ``_CON``, ``CON.txt`` -> ``_CON.txt``, ``lpt1`` -> ``_LPT1``,
-    ``NormalName`` is unchanged. Comparison is case-insensitive and ignores the
-    extension so ``CON.txt`` is still treated as reserved.
+    The reservedness is decided by the part before the FIRST ``.`` so that
+    ``CON``, ``CON.txt``, ``CON.backup.txt``, ``LPT1.extra.json`` and
+    ``COM9.anything`` are all treated as reserved (case-insensitive). The whole
+    name is prefixed with ``_`` so ``CON`` -> ``_CON``, ``CON.txt`` ->
+    ``_CON.txt``. ``NormalName`` (and ``Normal.Name``) is unchanged.
     """
-    stem = Path(name).stem
-    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+    first = name.split(".", 1)[0]
+    if first.upper() in _WINDOWS_RESERVED_NAMES:
         return f"_{name}"
     return name
 

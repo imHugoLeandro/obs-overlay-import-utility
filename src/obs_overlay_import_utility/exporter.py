@@ -1546,23 +1546,33 @@ def verify_portable_package(package_root: Path) -> PackageVerification:
         if not isinstance(entry_path, str):
             errors.append("Manifest contains a file entry without a valid path")
             continue
-        fp = package_root / entry_path
-        try:
-            # Resolve the candidate (following links) and require every path
-            # component from the package root down to the file to be a real
-            # directory/file inside the resolved package root. A malicious
-            # package may replace an intermediate directory (e.g. ``assets``)
-            # with a symlink/reparse point pointing outside the package; we
-            # must reject that before statting or hashing anything.
-            resolved_fp = fp.resolve()
+        # Walk every path component from the resolved package root down to the
+        # manifest file. A malicious package may place a symlink/reparse point
+        # on the final file OR on an intermediate directory (even one that
+        # resolves back inside the package). We must reject a link/reparse
+        # point at *any* position along the path before statting or hashing,
+        # and the resolved target must stay inside the package root.
+        current = resolved_root
+        resolved_fp = current
+        link_or_reparse = False
+        escaped = False
+        for part in Path(entry_path).parts:
+            resolved_fp = resolved_fp / part
+            if _is_link_or_reparse_point(resolved_fp):
+                link_or_reparse = True
+                break
             try:
                 resolved_fp.relative_to(resolved_root)
             except ValueError:
-                errors.append(f"Manifest file escapes package root: {entry_path}")
-                continue
-            if _is_link_or_reparse_point(resolved_fp):
-                errors.append(f"Manifest file is a link or reparse point: {entry_path}")
-                continue
+                escaped = True
+                break
+        if link_or_reparse:
+            errors.append(f"Manifest file path contains a link or reparse point: {entry_path}")
+            continue
+        if escaped:
+            errors.append(f"Manifest file escapes package root: {entry_path}")
+            continue
+        try:
             if not resolved_fp.is_file():
                 errors.append(f"Manifest file missing: {entry_path}")
                 continue
