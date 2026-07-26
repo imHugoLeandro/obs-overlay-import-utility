@@ -6,34 +6,6 @@
  * typed API exposed via `contextBridge`).
  */
 
-/** A successful response payload. */
-export interface ResultData {
-  [key: string]: unknown;
-}
-
-/** A structured error payload. */
-export interface ErrorData {
-  code: string;
-  message: string;
-}
-
-/** A result response from the backend. */
-export interface ResultResponse {
-  request_id: string;
-  type: "result";
-  data: ResultData;
-}
-
-/** An error response from the backend. */
-export interface ErrorResponse {
-  request_id: string;
-  type: "error";
-  error: ErrorData;
-}
-
-/** Union of all possible backend responses. */
-export type BackendResponse = ResultResponse | ErrorResponse;
-
 /** The health payload returned by the `health` command. */
 export interface HealthData {
   status: "ok";
@@ -51,7 +23,7 @@ export interface AppInfoData {
 /**
  * Typed API surface exposed to the renderer via `contextBridge`.
  *
- * Only `health` and `app_info` are exposed.  There is no shell, file-read,
+ * Only `health` and `appInfo` are exposed.  There is no shell, file-read,
  * or generic function-call endpoint.
  */
 export interface ElectronAPI {
@@ -61,7 +33,6 @@ export interface ElectronAPI {
 
 /** Augment the global `Window` type so the renderer can use `window.electronAPI`. */
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-types
   interface Window {
     electronAPI: ElectronAPI;
   }

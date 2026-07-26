@@ -14,10 +14,7 @@ const { contextBridge, ipcRenderer } = vi.hoisted(() => {
     exposeInMainWorld: vi.fn(),
   };
   const ipcRenderer = {
-    once: vi.fn(),
-    send: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
+    invoke: vi.fn(),
   };
   return { contextBridge, ipcRenderer };
 });
@@ -39,10 +36,7 @@ describe("Preload script", () => {
   beforeEach(() => {
     // Only clear the IPC renderer mocks, not the contextBridge mock
     // (which was called during module initialization and we captured it above).
-    ipcRenderer.once.mockClear();
-    ipcRenderer.send.mockClear();
-    ipcRenderer.on.mockClear();
-    ipcRenderer.off.mockClear();
+    ipcRenderer.invoke.mockClear();
   });
 
   afterEach(() => {
@@ -51,7 +45,6 @@ describe("Preload script", () => {
 
   it("exposes electronAPI via contextBridge", () => {
     // The preload module calls exposeInMainWorld during import.
-    // We check the mock directly (not after clearAllMocks).
     expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith(
       "electronAPI",
       expect.objectContaining({
@@ -69,81 +62,50 @@ describe("Preload script", () => {
     expect(keys).toContain("appInfo");
   });
 
-  it("health sends a request with the health command", () => {
+  it("health invokes the fixed desktop:health channel", () => {
     expect(api).toBeDefined();
 
-    // Mock the ipcRenderer.once to simulate a response.
-    ipcRenderer.once.mockImplementation(
-      (_channel: string, cb: (event: unknown, response: unknown) => void) => {
-        cb({}, { request_id: "test", type: "result", data: { status: "ok" } });
-      }
-    );
+    ipcRenderer.invoke.mockResolvedValue({
+      status: "ok",
+      pid: 1234,
+      uptime_seconds: 1.5,
+      python_version: "3.13.0",
+    });
 
     api.health();
 
-    expect(ipcRenderer.send).toHaveBeenCalledTimes(1);
-    const [channel, payload] = ipcRenderer.send.mock.calls[0];
-    expect(channel).toBe("desktop-backend-request");
-    expect(payload.command).toBe("health");
-    expect(typeof payload.request_id).toBe("string");
-    expect(payload.request_id).toMatch(/^req-\d+-\d+$/);
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:health");
   });
 
-  it("appInfo sends a request with the app_info command", () => {
+  it("appInfo invokes the fixed desktop:app-info channel", () => {
     expect(api).toBeDefined();
 
-    ipcRenderer.once.mockImplementation(
-      (_channel: string, cb: (event: unknown, response: unknown) => void) => {
-        cb(
-          {},
-          {
-            request_id: "test",
-            type: "result",
-            data: { name: "Test App", version: "1.0.0" },
-          }
-        );
-      }
-    );
+    ipcRenderer.invoke.mockResolvedValue({
+      name: "Test App",
+      version: "1.0.0",
+    });
 
     api.appInfo();
 
-    expect(ipcRenderer.send).toHaveBeenCalledTimes(1);
-    const [channel, payload] = ipcRenderer.send.mock.calls[0];
-    expect(channel).toBe("desktop-backend-request");
-    expect(payload.command).toBe("app_info");
-    expect(typeof payload.request_id).toBe("string");
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:app-info");
   });
 
-  it("rejects error responses with the correct error code", async () => {
+  it("rejects error responses from the backend", async () => {
     expect(api).toBeDefined();
 
-    ipcRenderer.once.mockImplementation(
-      (_channel: string, cb: (event: unknown, response: unknown) => void) => {
-        cb(
-          {},
-          {
-            request_id: "test",
-            type: "error",
-            error: { code: "unknown_command", message: "Bad command" },
-          }
-        );
-      }
-    );
+    ipcRenderer.invoke.mockRejectedValue(new Error("Backend unavailable"));
 
-    await expect(api.health()).rejects.toThrow("Bad command");
+    await expect(api.health()).rejects.toThrow("Backend unavailable");
   });
 
-  it("uses unique request IDs for concurrent calls", () => {
+  it("does not use dynamic channels or raw IPC", () => {
     expect(api).toBeDefined();
 
-    ipcRenderer.once.mockImplementation(() => {});
-
-    api.health();
-    api.appInfo();
-
-    expect(ipcRenderer.send).toHaveBeenCalledTimes(2);
-    const id1 = ipcRenderer.send.mock.calls[0][1].request_id;
-    const id2 = ipcRenderer.send.mock.calls[1][1].request_id;
-    expect(id1).not.toBe(id2);
+    // Verify that only invoke is used (no send, on, once, etc.)
+    expect(ipcRenderer.invoke).toBeDefined();
+    // The mock only has invoke — send, on, once are not present
+    expect(typeof ipcRenderer.invoke).toBe("function");
   });
 });

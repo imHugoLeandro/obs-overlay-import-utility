@@ -18,6 +18,7 @@ desktop/node_modules/
 desktop/.vite/
 desktop/release/
 desktop/dist/
+desktop/dist-electron/
 desktop/*.exe
 desktop/*.dll
 desktop/.env*

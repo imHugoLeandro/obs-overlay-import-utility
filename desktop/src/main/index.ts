@@ -4,8 +4,8 @@
  * Architecture:
  * - The main process spawns and manages a Python stdio backend.
  * - The Python backend exposes only `health` and `app_info` commands.
- * - IPC requests from the renderer are validated (channel, sender, payload)
- *   before being forwarded to the Python backend.
+ * - IPC requests from the renderer use fixed channels (desktop:health,
+ *   desktop:app-info) via ipcMain.handle / ipcRenderer.invoke.
  * - The renderer never imports Electron, Node, filesystem, child_process,
  *   or IPC primitives directly.
  *
@@ -14,9 +14,10 @@
  * - contextIsolation: true
  * - sandbox: true
  * - webSecurity: true
- * - webview disabled
+ * - webviewTag: false
  * - Unexpected navigation and new windows are blocked.
  * - Production CSP restricts content to the packaged app.
+ * - Every IPC sender, channel, and payload is validated.
  */
 
 import { app, BrowserWindow, ipcMain, session } from "electron";
@@ -27,246 +28,306 @@ import * as child_process from "child_process";
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Allowed IPC channels — anything else is rejected. */
-const ALLOWED_REQUEST_CHANNEL = "desktop-backend-request";
-
 /** Allowed commands that can be sent to the Python backend. */
 const ALLOWED_COMMANDS = new Set(["health", "app_info"]);
 
 /**
- * Path to the Python backend entry point.
- * In development, this resolves to the source file.
- * In production (packaged), the backend is bundled alongside the app.
+ * Validate that a command is in the allowed set.
+ * This provides defense-in-depth alongside the fixed IPC channels.
  */
-function getBackendPath(): string {
-  if (app.isPackaged) {
-    // In production, the Python backend is packaged inside the Electron
-    // resources directory.  We use the bundled Python interpreter if
-    // available, otherwise fall back to the system python3.
-    const resourcesPath = path.join(process.resourcesPath, "backend");
-    return path.join(resourcesPath, "desktop_backend.py");
-  }
-  // Development: resolve from the project root.
-  return path.join(__dirname, "..", "..", "..", "src", "obs_overlay_import_utility", "desktop_backend.py");
+function isAllowedCommand(command: string): boolean {
+  return ALLOWED_COMMANDS.has(command);
 }
 
-/**
- * Python executable to use for the backend.
- * In development, we use the current Python.  In production, we look for
- * a bundled interpreter.
- */
-function getPythonExecutable(): string {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "python", "python3");
-    return bundled;
-  }
-  return process.execPath; // In dev, use the same Python that runs the project
-}
+/** Fixed IPC channels — no dynamic channel construction. */
+const HEALTH_CHANNEL = "desktop:health";
+const APP_INFO_CHANNEL = "desktop:app-info";
 
-// ---------------------------------------------------------------------------
-// Python backend lifecycle
-// ---------------------------------------------------------------------------
-
-let pyProcess: child_process.ChildProcess | null = null;
-let pyStdin: child_process.ChildProcess["stdin"] | null = null;
-let pyStdout: child_process.ChildProcess["stdout"] | null = null;
+/** Expected Vite dev server URL. */
+const DEV_URL = "http://localhost:5173";
 
 /**
- * Start the Python backend as a stdio subprocess.
- * Called only in development (production uses a packaged backend).
- */
-function startBackend(): void {
-  if (pyProcess) {
-    return;
-  }
-
-  const backendPath = getBackendPath();
-  const pythonExec = getPythonExecutable();
-
-  pyProcess = child_process.spawn(pythonExec, ["-u", backendPath], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      PYTHONPATH: path.join(__dirname, "..", "..", "..", "src"),
-    },
-  });
-
-  pyStdin = pyProcess.stdin;
-  pyStdout = pyProcess.stdout;
-
-  if (pyProcess.stderr) {
-    pyProcess.stderr.on("data", (data: Buffer) => {
-      console.error("[backend]", data.toString().trim());
-    });
-  }
-
-  pyProcess.on("exit", (code, signal) => {
-    console.log(`[backend] exited with code=${code}, signal=${signal}`);
-    pyProcess = null;
-    pyStdin = null;
-    pyStdout = null;
-  });
-
-  pyProcess.on("error", (err) => {
-    console.error("[backend] spawn error:", err);
-    pyProcess = null;
-    pyStdin = null;
-    pyStdout = null;
-  });
-}
-
-/**
- * Stop the Python backend gracefully.
- */
-function stopBackend(): void {
-  if (pyProcess) {
-    pyProcess.kill("SIGTERM");
-    pyProcess = null;
-    pyStdin = null;
-    pyStdout = null;
-  }
-}
-
-/**
- * Send a request to the Python backend and await the response.
+ * Resolve the Python executable for development.
  *
- * Uses a line-delimited JSON protocol over stdin/stdout.
+ * Uses the `OBS_OVERLAY_PYTHON` environment variable.  If it is not set
+ * or does not point to a valid Python executable, the backend will not
+ * start and a clear error is shown.
  */
-function sendToBackend(requestId: string, command: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    if (!pyStdin || !pyStdout) {
-      reject(new Error("Backend not running"));
+function resolveDevPython(): string | null {
+  const envPath = process.env.OBS_OVERLAY_PYTHON;
+  if (!envPath) {
+    return null;
+  }
+  return envPath;
+}
+
+/**
+ * Validate that a path is an executable file.
+ */
+function isValidExecutable(filePath: string): boolean {
+  try {
+    const fs = require("fs");
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Backend transport — robust stdout buffering and pending-request map
+// ---------------------------------------------------------------------------
+
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  timer: NodeJS.Timeout;
+}
+
+/**
+ * Manages the Python backend subprocess and JSON-lines protocol.
+ *
+ * - Buffers stdout across chunks and parses complete newline-delimited JSON.
+ * - Supports concurrent requests via a pending-request map keyed by request ID.
+ * - Rejects all pending requests if the backend exits, errors, or stdin fails.
+ * - Clears request timeouts after success/failure.
+ */
+class BackendTransport {
+  private pyProcess: child_process.ChildProcess | null = null;
+  private pyStdin: child_process.ChildProcess["stdin"] | null = null;
+  private pyStdout: child_process.ChildProcess["stdout"] | null = null;
+  private pending = new Map<string, PendingRequest>();
+  private stdoutBuffer = "";
+  private requestIdCounter = 0;
+
+  /** Generate a unique request ID for the backend protocol. */
+  generateRequestId(): string {
+    this.requestIdCounter = (this.requestIdCounter + 1) % 1_000_000;
+    return `req-${Date.now()}-${this.requestIdCounter}`;
+  }
+
+  /** Start the Python backend as a stdio subprocess. */
+  start(): void {
+    if (this.pyProcess) {
       return;
     }
 
-    const requestLine = JSON.stringify({ request_id: requestId, command }) + "\n";
+    const pythonExec = resolveDevPython();
+    if (!pythonExec || !isValidExecutable(pythonExec)) {
+      const error = new Error(
+        "OBS_OVERLAY_PYTHON is not set or does not point to a valid Python executable. " +
+          "Set OBS_OVERLAY_PYTHON to your Python 3 interpreter path."
+      );
+      console.error("[backend]", error.message);
+      throw error;
+    }
 
-    // Set up a one-time listener for the response line.
-    const onData = (data: Buffer) => {
-      const lines = data.toString().split("\n").filter((l) => l.trim());
-      for (const line of lines) {
-        try {
-          const response = JSON.parse(line);
-          if (response.request_id === requestId) {
-            pyStdout?.off("data", onData);
-            resolve(response);
-            return;
-          }
-        } catch {
-          // Ignore non-JSON lines.
-        }
-      }
-    };
+    // Determine the project root (parent of desktop/).
+    const projectRoot = path.resolve(__dirname, "..", "..");
 
-    pyStdout.on("data", onData);
-
-    // Write the request.
-    pyStdin.write(requestLine, (err) => {
-      if (err) {
-        pyStdout?.off("data", onData);
-        reject(err);
-      }
+    this.pyProcess = child_process.spawn(pythonExec, ["-u", "-m", "obs_overlay_import_utility.desktop_backend"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PYTHONPATH: path.join(projectRoot, "src"),
+      },
     });
 
-    // Timeout after 10 seconds.
-    setTimeout(() => {
-      pyStdout?.off("data", onData);
-      reject(new Error(`Backend request timed out: ${command}`));
-    }, 10000);
-  });
+    this.pyStdin = this.pyProcess.stdin;
+    this.pyStdout = this.pyProcess.stdout;
+
+    if (this.pyProcess.stderr) {
+      this.pyProcess.stderr.on("data", (data: Buffer) => {
+        // Log technical diagnostics to stderr — never to the renderer.
+        console.error("[backend]", data.toString().trim());
+      });
+    }
+
+    if (this.pyStdout) {
+      this.pyStdout.on("data", (data: Buffer) => {
+        this.handleStdout(data);
+      });
+    }
+
+    this.pyProcess.on("exit", (_code, _signal) => {
+      console.log("[backend] process exited");
+      this.rejectAllPending(new Error("Backend process exited"));
+      this.pyProcess = null;
+      this.pyStdin = null;
+      this.pyStdout = null;
+      this.stdoutBuffer = "";
+    });
+
+    this.pyProcess.on("error", (err) => {
+      console.error("[backend] spawn error:", err);
+      this.rejectAllPending(new Error("Backend process error"));
+      this.pyProcess = null;
+      this.pyStdin = null;
+      this.pyStdout = null;
+      this.stdoutBuffer = "";
+    });
+  }
+
+  /** Stop the Python backend gracefully. */
+  stop(): void {
+    if (this.pyProcess) {
+      this.pyProcess.kill("SIGTERM");
+      this.pyProcess = null;
+      this.pyStdin = null;
+      this.pyStdout = null;
+      this.stdoutBuffer = "";
+    }
+  }
+
+  /**
+   * Send a request to the Python backend and await the response.
+   *
+   * Uses a line-delimited JSON protocol over stdin/stdout.
+   * Supports concurrent requests via the pending-request map.
+   */
+  sendRequest(command: string): Promise<unknown> {
+    if (!this.pyStdin) {
+      return Promise.reject(new Error("Backend not running"));
+    }
+
+    const requestId = this.generateRequestId();
+    const requestLine = JSON.stringify({ request_id: requestId, command }) + "\n";
+
+    return new Promise<unknown>((resolve, reject) => {
+      // Register the pending request.
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        reject(new Error(`Backend request timed out: ${command}`));
+      }, 10000);
+
+      this.pending.set(requestId, { resolve, reject, timer });
+
+      // Write the request.
+      this.pyStdin!.write(requestLine, (err) => {
+        if (err) {
+          clearTimeout(timer);
+          this.pending.delete(requestId);
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
+   * Handle incoming stdout data by buffering and parsing complete JSON lines.
+   */
+  private handleStdout(data: Buffer): void {
+    this.stdoutBuffer += data.toString();
+
+    let newlineIndex: number;
+    while ((newlineIndex = this.stdoutBuffer.indexOf("\n")) !== -1) {
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+
+      if (!line) {
+        continue;
+      }
+
+      try {
+        const response = JSON.parse(line);
+        const requestId = response.request_id;
+        const pending = this.pending.get(requestId);
+
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pending.delete(requestId);
+          pending.resolve(response);
+        }
+      } catch {
+        // Ignore non-JSON lines (e.g., Python startup output).
+      }
+    }
+  }
+
+  /** Reject all pending requests with the given error. */
+  private rejectAllPending(error: Error): void {
+    for (const [requestId, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      this.pending.delete(requestId);
+      pending.reject(error);
+    }
+  }
 }
+
+const backend = new BackendTransport();
 
 // ---------------------------------------------------------------------------
-// IPC handlers
+// IPC handlers — fixed channels via ipcMain.handle
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that the IPC sender is a valid webContents.
- * Returns true if the sender is safe to process.
+ * Validate that the IPC sender is exactly the main window's webContents.
+ * Rejects any other sender (e.g., from a different origin or preload).
  */
-function isValidSender(event: Electron.IpcMainEvent): boolean {
-  // Only accept events from the main window's webContents.
-  // This prevents malicious preload scripts from other origins.
-  return event.sender !== null && !event.sender.isDestroyed();
+function isValidSender(sender: Electron.WebContents): boolean {
+  if (!mainWindow || sender.isDestroyed()) {
+    return false;
+  }
+  return sender === mainWindow.webContents;
 }
 
 /**
- * Validate the IPC payload structure.
- * Returns the parsed command or throws.
+ * Validate that the sender's URL is an expected origin.
+ * - Development: the configured Vite localhost URL.
+ * - Packaged: only the packaged local file/app URL.
  */
-function validatePayload(payload: unknown): string {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("Invalid payload: expected an object");
+function isValidOrigin(sender: Electron.WebContents): boolean {
+  const url = sender.getURL();
+  if (!app.isPackaged) {
+    // Development: allow the Vite dev server.
+    return url.startsWith(DEV_URL);
   }
-  const obj = payload as Record<string, unknown>;
-  const command = obj.command;
-  if (typeof command !== "string") {
-    throw new Error("Invalid payload: command must be a string");
-  }
-  if (!ALLOWED_COMMANDS.has(command)) {
-    throw new Error(`Invalid payload: command '${command}' is not allowed`);
-  }
-  return command;
+  // Packaged: only allow the local app file URL.
+  return url.startsWith("file://");
 }
 
 /**
- * IPC handler for desktop-backend requests.
- *
- * Validates:
- * 1. The channel name matches the allowed request channel.
- * 2. The sender is a valid webContents.
- * 3. The payload has a valid request_id and command.
- * 4. The command is in the allowed set.
- *
- * Then forwards the request to the Python backend and returns the response
- * on a per-request response channel.
+ * IPC handler for the health command.
+ * Validates sender, origin, and payload before forwarding to the backend.
  */
-ipcMain.on(ALLOWED_REQUEST_CHANNEL, async (event, payload) => {
-  // Validate sender.
-  if (!isValidSender(event)) {
-    return;
+ipcMain.handle(HEALTH_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
+    throw new Error("Unauthorized sender");
   }
-
-  // Validate payload.
-  let requestId: string;
-  let command: string;
-  try {
-    if (!payload || typeof payload !== "object") {
-      throw new Error("Invalid payload");
-    }
-    const obj = payload as Record<string, unknown>;
-    requestId = obj.request_id as string;
-    if (typeof requestId !== "string" || !requestId) {
-      throw new Error("Invalid request_id");
-    }
-    command = validatePayload(payload);
-  } catch (err) {
-    const errorResponse = {
-      request_id: "__invalid__",
-      type: "error",
-      error: {
-        code: "invalid_payload",
-        message: err instanceof Error ? err.message : "Unknown error",
-      },
-    };
-    event.reply(`desktop-backend-response-__invalid__`, errorResponse);
-    return;
+  if (!isAllowedCommand("health")) {
+    throw new Error("Command not allowed");
   }
-
-  // Forward to the Python backend.
   try {
-    const response = await sendToBackend(requestId, command);
-    event.reply(`desktop-backend-response-${requestId}`, response);
-  } catch (err) {
-    const errorResponse = {
-      request_id: requestId,
-      type: "error",
-      error: {
-        code: "backend_error",
-        message: err instanceof Error ? err.message : "Unknown error",
-      },
-    };
-    event.reply(`desktop-backend-response-${requestId}`, errorResponse);
+    const response = await backend.sendRequest("health");
+    const resp = response as { type: string; data?: unknown; error?: { message: string } };
+    if (resp.type === "result") {
+      return resp.data;
+    }
+    throw new Error(resp.error?.message ?? "Backend error");
+  } catch {
+    throw new Error("Backend communication failed");
+  }
+});
+
+/**
+ * IPC handler for the app_info command.
+ * Validates sender, origin, and payload before forwarding to the backend.
+ */
+ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
+    throw new Error("Unauthorized sender");
+  }
+  if (!isAllowedCommand("app_info")) {
+    throw new Error("Command not allowed");
+  }
+  try {
+    const response = await backend.sendRequest("app_info");
+    const resp = response as { type: string; data?: unknown; error?: { message: string } };
+    if (resp.type === "result") {
+      return resp.data;
+    }
+    throw new Error(resp.error?.message ?? "Backend error");
+  } catch {
+    throw new Error("Backend communication failed");
   }
 });
 
@@ -289,25 +350,36 @@ function createWindow(): void {
       contextIsolation: true,
       // Security: enable sandbox.
       sandbox: true,
-      // Security: preload runs in an isolated context.
+      // Security: explicitly disable webview.
+      webviewTag: false,
+      // Security: explicitly enable web security.
+      webSecurity: true,
+      // Preload runs in an isolated context.
       preload: path.join(__dirname, "preload", "index.js"),
     },
   });
 
   // Load the renderer.
   if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, "..", "..", "dist", "index.html"));
+    mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   } else {
-    mainWindow.loadURL("http://localhost:5173");
+    mainWindow.loadURL(DEV_URL);
     // Open DevTools in development.
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 
   // Security: block unexpected navigation.
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    // Only allow navigation within the app.
-    if (url.startsWith("http://localhost:5173") || url.startsWith("file://")) {
-      return;
+    if (!app.isPackaged) {
+      // Development: only allow the Vite dev server.
+      if (url.startsWith(DEV_URL)) {
+        return;
+      }
+    } else {
+      // Packaged: only allow local file URLs.
+      if (url.startsWith("file://")) {
+        return;
+      }
     }
     event.preventDefault();
   });
@@ -315,6 +387,11 @@ function createWindow(): void {
   // Security: block new windows.
   mainWindow.webContents.setWindowOpenHandler(() => {
     return { action: "deny" };
+  });
+
+  // Security: deny permission requests.
+  mainWindow.webContents.session.on("will-download", () => {
+    // Downloads are not needed in the foundation stage.
   });
 
   mainWindow.on("closed", () => {
@@ -329,13 +406,14 @@ function createWindow(): void {
 /**
  * Configure Content-Security-Policy for the renderer.
  * In production, restricts content to the packaged app.
- * In development, allows localhost for the Vite dev server.
+ * In development, allows localhost for the Vite dev server including
+ * WebSocket connections for HMR.
  */
 function configureCSP(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const isDev = !app.isPackaged;
     const csp = isDev
-      ? "default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://localhost:5173; connect-src 'self' http://localhost:5173;"
+      ? "default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:5173; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://localhost:5173; connect-src 'self' http://localhost:5173 ws://localhost:5173;"
       : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';";
 
     callback({
@@ -356,7 +434,12 @@ app.whenReady().then(() => {
 
   // Start the Python backend in development.
   if (!app.isPackaged) {
-    startBackend();
+    try {
+      backend.start();
+    } catch (err) {
+      console.error("[backend]", (err as Error).message);
+      // Continue to show the error in the renderer.
+    }
   }
 
   createWindow();
@@ -371,23 +454,11 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   // On macOS, keep the app running.
   if (process.platform !== "darwin") {
-    stopBackend();
+    backend.stop();
     app.quit();
   }
 });
 
 app.on("before-quit", () => {
-  stopBackend();
-});
-
-// Security: disable webview (already disabled by default in Electron 34,
-// but we set it explicitly for defense in depth).
-app.on("web-contents-created", (_event, contents) => {
-  // Ensure webview is disabled via webPreferences.
-  // Using a type assertion because Electron's TS types don't expose
-  // the "will-attach" event on webContents in all versions.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (contents as any).on("will-attach", (_e: any, webPreferences: any) => {
-    webPreferences.webviewTag = false;
-  });
+  backend.stop();
 });

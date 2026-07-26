@@ -1,23 +1,17 @@
 /** @type {import('eslint').Linter.Config[]} */
 module.exports = [
   {
-    ignores: ["dist/", "node_modules/", "release/", "*.js"],
+    ignores: ["dist/", "node_modules/", "release/", "dist-electron/", "*.js"],
   },
   {
     files: ["**/*.ts", "**/*.tsx"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
-      ecmaFeatures: {
-        jsx: true,
-      },
       parser: require("@typescript-eslint/parser"),
       parserOptions: {
         ecmaVersion: 2022,
         sourceType: "module",
-        ecmaFeatures: {
-          jsx: true,
-        },
       },
     },
     plugins: {

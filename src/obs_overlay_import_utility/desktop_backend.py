@@ -192,8 +192,7 @@ class Backend:
 def run() -> None:
     """Read requests from stdin, write responses to stdout.
 
-    The loop exits cleanly on EOF (``stdin`` closed) or a ``quit`` command
-    (ignored gracefully — the process simply exits).
+    The loop exits cleanly on EOF (``stdin`` closed).
     """
     backend = Backend()
     for raw_line in sys.stdin:
@@ -216,11 +215,11 @@ def run() -> None:
 
         try:
             response = backend.handle(request)
-        except Exception as exc:  # noqa: BLE001 — never crash the backend
+        except Exception:  # noqa: BLE001 — never crash the backend
             response = Response(
                 request_id=request.request_id,
                 type="error",
-                error={"code": "internal_error", "message": str(exc)},
+                error={"code": "internal_error", "message": "Internal backend error"},
             )
 
         _send(response)

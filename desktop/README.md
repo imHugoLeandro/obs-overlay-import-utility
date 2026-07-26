@@ -3,13 +3,16 @@
 > **Foundation stage** — This is the initial Electron + React + TypeScript
 > foundation for the OBS Overlay Import Utility. The real Import, Export,
 > Resizer, and Settings pages are not yet implemented.
+>
+> **Parallel migration**: The Electron shell is being developed in parallel
+> with the existing Tk-based `ui.py`. **Tk remains the shipping/default UI**
+> until a later approval. Portable Electron + bundled Python packaging is
+> **deferred to Stage 3**.
 
 ## Overview
 
 This directory contains a parallel Electron-based desktop shell that
 communicates with the existing Python engine via a stdio JSON-lines backend.
-The existing Tk-based `ui.py` and all Python engines remain unchanged and
-fully supported.
 
 ## Process Boundaries
 
@@ -47,7 +50,7 @@ fully supported.
 |-------|---------------|
 | **Main process** (`src/main/index.ts`) | Window management, IPC validation, Python backend lifecycle |
 | **Preload** (`src/preload/index.ts`) | Exposes typed `electronAPI` via `contextBridge` |
-| **Renderer** (`src/renderer/`) | React UI — never imports Electron, Node, or IPC directly |
+| **Renderer** (`src/renderer/`) | React UI — never imports Electron, Node, filesystem, child_process, or IPC directly |
 | **Python backend** (`desktop_backend.py`) | Stdio JSON-lines protocol — `health` and `app_info` only |
 
 ## Allowed API Surface
@@ -72,16 +75,31 @@ window.electronAPI.appInfo()   // → Promise<{ name, version }>
 2. **`contextIsolation: true`** — The preload runs in an isolated context.
 3. **`sandbox: true`** — The renderer runs in a sandboxed renderer process.
 4. **`webSecurity: true`** — Standard web security is enforced.
-5. **`webview` disabled** — No `<webview>` tags.
+5. **`webviewTag: false`** — No `<webview>` tags.
 6. **Navigation blocked** — Unexpected navigation and new windows are denied.
-7. **CSP restricted** — Production CSP restricts content to the packaged app.
-8. **IPC validation** — Every IPC sender, channel, and payload is validated
+7. **Permission requests denied** — No arbitrary permission grants.
+8. **CSP restricted** — Production CSP restricts content to the packaged app.
+   Development CSP includes the Vite HMR WebSocket source.
+9. **IPC validation** — Every IPC sender, channel, and payload is validated
    in the main process before forwarding to the Python backend.
-9. **No remote content** — The app never loads remote URLs or remote content.
+10. **Fixed IPC channels** — Uses `desktop:health` and `desktop:app-info`
+    via `ipcMain.handle`/`ipcRenderer.invoke`. No dynamic channels.
+11. **No remote content** — The app never loads remote URLs or remote content.
 
 ## Development Commands
 
+### Prerequisites
+
+- Node.js >= 20
+- npm >= 10
+- Python 3 (set via `OBS_OVERLAY_PYTHON` environment variable)
+
+### Linux / macOS
+
 ```bash
+# Set the Python executable
+export OBS_OVERLAY_PYTHON=$(which python3)
+
 # Install dependencies
 cd desktop
 npm ci
@@ -89,14 +107,40 @@ npm ci
 # Development (renderer + Electron with hot reload)
 npm run dev
 
+# Build all development artifacts (renderer + Electron main/preload)
+npm run build
+
 # Type checking
 npm run typecheck
 
 # Run tests
 npm test
 
-# Build for production
+# Lint
+npm run lint
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Set the Python executable
+$env:OBS_OVERLAY_PYTHON = (Get-Command python).Source
+
+# Install dependencies
+cd desktop
+npm ci
+
+# Development
+npm run dev
+
+# Build
 npm run build
+
+# Type checking
+npm run typecheck
+
+# Run tests
+npm test
 
 # Lint
 npm run lint
@@ -107,9 +151,10 @@ npm run lint
 ```
 desktop/
 ├── package.json           # Dependencies and scripts
-├── tsconfig.json          # TypeScript configuration
+├── tsconfig.json          # TypeScript config (renderer + tests)
+├── tsconfig.electron.json # TypeScript config (Electron main + preload)
 ├── vite.config.ts         # Vite build/dev server config
-├── .eslintrc.json         # ESLint configuration
+├── eslint.config.js       # ESLint configuration
 ├── .prettierrc.json       # Prettier configuration
 ├── README.md              # This file
 ├── src/
@@ -125,10 +170,12 @@ desktop/
 │   │   └── App.css        # Component styles
 │   └── types/
 │       └── api.ts         # Shared type definitions
-└── tests/
-    ├── setup.ts           # Vitest setup (mock electronAPI)
-    ├── preload.test.ts    # Preload IPC transport tests
-    └── renderer.test.tsx  # Renderer component tests
+├── tests/
+│   ├── setup.ts           # Vitest setup (mock electronAPI)
+│   ├── preload.test.ts    # Preload IPC transport tests
+│   └── renderer.test.tsx  # Renderer component tests
+├── dist/                  # Renderer build output (gitignored)
+└── dist-electron/         # Electron main/preload build output (gitignored)
 ```
 
 ## Python Backend
@@ -164,11 +211,27 @@ It implements a minimal stdio JSON-lines protocol with two commands:
 {"request_id": "req-123", "type": "error", "error": {"code": "unknown_command", "message": "..."}}
 ```
 
+### Python Executable
+
+The Electron main process starts the Python backend using the path from the
+`OBS_OVERLAY_PYTHON` environment variable. If this variable is not set or
+does not point to a valid Python executable, the backend will not start and
+a clear error message is displayed.
+
+## Packaging Status
+
+**Portable Electron + bundled Python packaging is deferred to Stage 3.**
+
+The `npm run package` command is intentionally disabled and will fail with
+a clear message. The `electron-builder` configuration has been removed.
+Do not attempt to create a packaged distribution until Stage 3 is approved.
+
 ## Migration Status
 
 This is a **foundation** stage. The Electron shell is being developed in
-parallel with the existing Tk-based UI. The Electron shell is **not** the
-shipping default — the Tk-based `ui.py` remains the primary interface.
+**parallel** with the existing Tk-based UI. The Electron shell is **not**
+the shipping default — the Tk-based `ui.py` remains the primary interface.
 
 Future stages will add Import, Export, Resizer, and Settings pages to the
-Electron shell.
+Electron shell, and Stage 3 will add portable packaging with a bundled
+Python engine.

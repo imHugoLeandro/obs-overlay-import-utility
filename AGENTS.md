@@ -123,6 +123,10 @@ interface and must continue to pass all tests.
 - The renderer never imports Electron, Node, filesystem, child_process, or
   IPC primitives directly.
 - The main process validates every IPC sender, channel, and payload.
+- IPC uses fixed channels (`desktop:health`, `desktop:app-info`) via
+  `ipcMain.handle`/`ipcRenderer.invoke`.  No dynamic channels.
+- The Python backend is started using the `OBS_OVERLAY_PYTHON` environment
+  variable.  If it is not set or invalid, a clear error is shown.
 
 ### Development
 
@@ -130,9 +134,10 @@ interface and must continue to pass all tests.
 cd desktop
 npm ci
 npm run dev          # renderer + Electron with hot reload
+npm run build        # build renderer + Electron main/preload
 npm run typecheck    # TypeScript type checking
 npm test             # Vitest unit tests
-npm run build        # production build
+npm run lint         # ESLint
 ```
 
 ### What is not done
@@ -140,6 +145,7 @@ npm run build        # production build
 - Import, Export, Resizer, and Settings pages are not yet implemented in
   the Electron shell.
 - The Electron shell is not wired into the Windows build pipeline.
+- Portable Electron + bundled Python packaging is deferred to Stage 3.
 - Do not merge or ship the Electron shell as the default UI.
 
 ## Non-Negotiable Safety Invariants
