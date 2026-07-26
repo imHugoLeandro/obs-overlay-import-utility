@@ -48,15 +48,17 @@ def automatically_import_overlay(
         overlay_root = overlay_root.expanduser().resolve()
         obs_scenes_directory = obs_scenes_directory.expanduser().resolve()
 
-        from .exporter import detect_portable_package, materialize_portable_collection, validate_portable_manifest
+        from .exporter import detect_portable_package, materialize_portable_collection
 
         manifest_path = detect_portable_package(overlay_root)
         if manifest_path is not None:
-            manifest_data = validate_portable_manifest(manifest_path)
             collection_path = materialize_portable_collection(manifest_path, obs_scenes_directory)
             result.kind = "portable"
             result.success = True
-            result.collection_name = manifest_data.get("collection", {}).get("name", "")
+            # Use the actual chosen collection name (filename stem) from the
+            # installed collection, not the manifest's original name, which may
+            # have been suffixed to avoid a collision.
+            result.collection_name = collection_path.stem
             result.collection_path = collection_path
             return result
 
