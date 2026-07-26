@@ -12,3 +12,12 @@ dist/
 *.spec
 .DS_Store
 Thumbs.db
+
+# Electron desktop shell
+desktop/node_modules/
+desktop/.vite/
+desktop/release/
+desktop/dist/
+desktop/*.exe
+desktop/*.dll
+desktop/.env*

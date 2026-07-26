@@ -107,6 +107,41 @@ tools/render_icons.py      Design-time icon PNG generator (numpy + Pillow + svg.
 
 Update this map when responsibilities change.
 
+## Parallel Electron Migration
+
+An Electron + React + TypeScript desktop shell is under development in
+`desktop/`.  This is a **foundation** stage — the Electron shell is **not**
+the shipping default.  The existing Tk-based `ui.py` remains the primary
+interface and must continue to pass all tests.
+
+### Scope
+
+- The Electron shell communicates with the Python engine via a stdio
+  JSON-lines backend (`src/obs_overlay_import_utility/desktop_backend.py`).
+- The backend exposes **only** `health` and `app_info` commands.  There is
+  no shell, file-read, or generic function-call endpoint.
+- The renderer never imports Electron, Node, filesystem, child_process, or
+  IPC primitives directly.
+- The main process validates every IPC sender, channel, and payload.
+
+### Development
+
+```bash
+cd desktop
+npm ci
+npm run dev          # renderer + Electron with hot reload
+npm run typecheck    # TypeScript type checking
+npm test             # Vitest unit tests
+npm run build        # production build
+```
+
+### What is not done
+
+- Import, Export, Resizer, and Settings pages are not yet implemented in
+  the Electron shell.
+- The Electron shell is not wired into the Windows build pipeline.
+- Do not merge or ship the Electron shell as the default UI.
+
 ## Non-Negotiable Safety Invariants
 
 ### Original data and output
