@@ -10,10 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from obs_overlay_import_utility import exporter
-from obs_overlay_import_utility.core import atomic_write_json
-from obs_overlay_import_utility.models import UtilityError
-from obs_overlay_import_utility.exporter import (
+from obs_overlay_import_utility import exporter  # noqa: E402
+from obs_overlay_import_utility.core import atomic_write_json  # noqa: E402
+from obs_overlay_import_utility.models import UtilityError  # noqa: E402
+from obs_overlay_import_utility.exporter import (  # noqa: E402
     active_obs_scene_collection,
     build_export_inventory,
     build_export_plan,
