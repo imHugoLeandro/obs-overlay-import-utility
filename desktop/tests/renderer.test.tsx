@@ -142,12 +142,19 @@ describe("App component", () => {
     expect(errorText).not.toContain("Connection refused");
   });
 
-  it("shows foundation disclaimer in footer", async () => {
+  it("shows foundation disclaimer in footer mentioning Import is implemented", async () => {
     render(<App />);
 
     await waitFor(() => {
       expect(screen.getByText(/Foundation stage/i)).toBeInTheDocument();
     });
+
+    // The footer should mention that the Import workflow is implemented,
+    // not claim all pages are unimplemented.
+    const footer = screen.getByText(/Foundation stage/i).closest("footer");
+    expect(footer).not.toBeNull();
+    expect(footer!.textContent).toContain("Fix Scene Collection Paths");
+    expect(footer!.textContent).toContain("implemented");
   });
 
   it("supports keyboard navigation between pages", async () => {

@@ -452,6 +452,32 @@ describe("ImportPage", () => {
     });
   });
 
+  it("shows the real collection label after choosing (not 'selected')", async () => {
+    const user = userEvent.setup();
+    renderImportPage();
+
+    await user.click(screen.getByTestId("choose-folder-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("collection-col-abc"));
+
+    await waitFor(() => {
+      expect(mockElectronAPI.chooseCollection).toHaveBeenCalledWith("sel-123", "col-abc");
+    });
+
+    // The convert step should show the real collection label, not "selected".
+    await waitFor(() => {
+      expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
+    });
+
+    // The collection label should be "collection.json" (from the mock),
+    // not the hard-coded "selected" string.
+    expect(screen.getByText("collection.json")).toBeInTheDocument();
+  });
+
   it("has accessible labels and status messages", async () => {
     const user = userEvent.setup();
     renderImportPage();

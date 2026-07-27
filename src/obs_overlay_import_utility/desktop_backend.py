@@ -260,7 +260,10 @@ class Backend:
                 error=_err("scan_failed", str(exc)),
             )
 
-        # Build safe relative labels for each collection.
+        # Build the scan result.  The canonical absolute ``path`` is sent
+        # ONLY to Electron main (the trusted stdio channel).  The safe
+        # relative ``label`` is the only field that may reach the renderer
+        # (via Electron main, which converts it to an opaque collection ID).
         detected: list[dict[str, Any]] = []
         for collection_path in collections:
             try:
@@ -269,6 +272,7 @@ class Backend:
             except ValueError:
                 label = collection_path.name
             detected.append({
+                "path": str(collection_path),
                 "label": label,
             })
 

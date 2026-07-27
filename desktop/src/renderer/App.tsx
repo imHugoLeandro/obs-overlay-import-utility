@@ -105,8 +105,9 @@ function AppContent(): React.ReactElement {
       </main>
       <footer className="app-footer">
         <p>
-          Foundation stage — Import, Export, Resizer, and Settings pages
-          are not yet implemented.
+          Foundation stage — the Fix Scene Collection Paths import workflow is
+          implemented. Export, Resizer, and Settings pages are not yet
+          implemented.
         </p>
       </footer>
     </div>

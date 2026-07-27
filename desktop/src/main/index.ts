@@ -29,7 +29,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
-import { resolve } from "path";
+import { realpathSync } from "fs";
 import {
   DEV_ORIGIN,
   isValidOrigin,
@@ -39,7 +39,7 @@ import {
 } from "./security";
 import { BackendTransport } from "./transport";
 import { ImportSelectionStore, SelectionError } from "./importSelectionStore";
-import { callBackend, BACKEND_UNAVAILABLE_ERROR } from "./backendCall";
+import { callBackend, BACKEND_UNAVAILABLE_ERROR, ExpectedBackendError } from "./backendCall";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -142,11 +142,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Convert a SelectionError to a renderer-safe error message.
- * SelectionError messages are already customer-safe (no raw paths).
+ * Convert an error to a renderer-safe error message.
+ * SelectionError and ExpectedBackendError messages are already
+ * customer-safe (no raw paths, no tracebacks).
  */
 function selectionErrorMessage(err: unknown): string {
   if (err instanceof SelectionError) {
+    return err.message;
+  }
+  if (err instanceof ExpectedBackendError) {
     return err.message;
   }
   return BACKEND_UNAVAILABLE_ERROR;
@@ -212,7 +216,25 @@ ipcMain.handle(CHOOSE_OVERLAY_FOLDER_CHANNEL, async (event) => {
     throw new Error("No folder selected");
   }
 
-  const folderPath = resolve(result.filePaths[0]);
+  // Validate the folder with realpathSync and statSync.isDirectory().
+  // This resolves symlinks/reparse-points to their canonical target
+  // and rejects paths that are not directories.
+  let folderPath: string;
+  try {
+    folderPath = realpathSync(result.filePaths[0]);
+  } catch {
+    throw new Error("The selected path is not valid.");
+  }
+
+  try {
+    const { statSync } = require("fs");
+    if (!statSync(folderPath).isDirectory()) {
+      throw new Error("The selected path is not a directory.");
+    }
+  } catch {
+    throw new Error("The selected path is not a directory.");
+  }
+
   const folderLabel = folderPath.split(/[\\/]/).pop() || folderPath;
 
   // Store the canonical path in the main-process selection store.
@@ -261,7 +283,7 @@ ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
   }
 
   const resp = response as {
-    collections?: Array<{ index: number; label: string }>;
+    collections?: Array<{ path: string; label: string }>;
     count?: number;
   };
 
@@ -271,10 +293,12 @@ ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
 
   // Store the scanned collections with fresh opaque collection IDs.
   // The renderer receives only { collection_id, label }.
+  // Electron main stores the canonical absolute path returned by the
+  // backend (not the relative label) as the collection path.
   importStore.setCollections(
     params.selection_id,
     resp.collections.map((c) => ({
-      path: c.label, // The backend returns relative labels; we resolve to canonical paths
+      path: c.path,
       label: c.label,
     }))
   );
@@ -315,9 +339,17 @@ ipcMain.handle(
       throw new Error(selectionErrorMessage(err));
     }
 
+    // Return the real selected collection label, not a hard-coded string.
+    let collectionLabel: string;
+    try {
+      collectionLabel = importStore.getCollectionLabel(params.selection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+
     return {
       selection_id: params.selection_id,
-      collection_label: "selected",
+      collection_label: collectionLabel,
     };
   }
 );
@@ -345,13 +377,11 @@ ipcMain.handle(
       throw new Error("Invalid case_sensitive option");
     }
 
-    // Check idempotency: if already converted, reject.
+    // Atomically begin conversion: transitions "ready" → "converting".
+    // A second simultaneous call is rejected safely.
+    // A completed selection is also rejected.
     try {
-      if (importStore.isConverted(params.selection_id)) {
-        throw new Error(
-          "This collection has already been converted. Choose a folder again."
-        );
-      }
+      importStore.beginConversion(params.selection_id);
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
     }
@@ -403,13 +433,15 @@ ipcMain.handle(
     }
 
     // On success, mark the selection as converted (idempotency).
-    if (resp.success) {
-      try {
-        importStore.markConverted(params.selection_id);
-      } catch {
-        // If marking fails, the conversion still succeeded — don't
-        // block the user from seeing the result.
-      }
+    // On failure, return to "ready" state to allow retry.
+    // finishConversion never ignores a state-transition failure — it
+    // throws SelectionError if the state is not "converting".
+    try {
+      importStore.finishConversion(params.selection_id, resp.success);
+    } catch {
+      // If marking fails, the conversion still succeeded — don't
+      // block the user from seeing the result.  The state error is
+      // logged but does not prevent returning the result.
     }
 
     // Build the renderer-facing result. The backend returns relative

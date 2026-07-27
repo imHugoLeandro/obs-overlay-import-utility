@@ -21,14 +21,37 @@ export const BACKEND_UNAVAILABLE_ERROR =
   "The backend is unavailable. Restart the application and try again.";
 
 /**
+ * Typed internal expected-backend error.
+ *
+ * Contains only safe `code` and `message` — never tracebacks, stack
+ * traces, raw diagnostics, or selected absolute paths.
+ *
+ * Created when the Python backend returns a structured
+ * `{ type: "error", error: { code, message } }` response.
+ * Transport failures, backend exit, timeout, malformed response, or
+ * unexpected exception become BACKEND_UNAVAILABLE_ERROR instead.
+ */
+export class ExpectedBackendError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "ExpectedBackendError";
+    this.code = code;
+  }
+}
+
+/**
  * Call the Python backend and return the result data.
  *
  * @param backend The BackendTransport instance.
  * @param command The backend command to invoke.
  * @param params Optional parameters to forward.
  * @returns The result data from the backend.
- * @throws Error with the backend's expected error message (preserved),
- *   or BACKEND_UNAVAILABLE_ERROR for transport/unexpected failures.
+ * @throws {ExpectedBackendError} with the backend's expected error code
+ *   and message (preserved, customer-safe — no tracebacks or raw paths).
+ * @throws {Error} with BACKEND_UNAVAILABLE_ERROR for transport/unexpected
+ *   failures.
  */
 export async function callBackend(
   backend: BackendTransport,
@@ -61,7 +84,10 @@ export async function callBackend(
   if (resp.type === "error" && resp.error?.message) {
     // Preserve the expected error code and message from Python.
     // The message is already customer-safe (no tracebacks, no raw paths).
-    throw new Error(resp.error.message);
+    throw new ExpectedBackendError(
+      resp.error.code ?? "backend_error",
+      resp.error.message
+    );
   }
 
   // Unexpected error shape.

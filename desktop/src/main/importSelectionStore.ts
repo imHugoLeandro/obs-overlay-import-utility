@@ -25,8 +25,8 @@
  */
 
 import { randomUUID } from "crypto";
-import { statSync } from "fs";
-import { resolve, sep } from "path";
+import { realpathSync, statSync } from "fs";
+import { sep } from "path";
 
 /** Injectable clock interface for deterministic TTL testing. */
 export interface Clock {
@@ -69,6 +69,8 @@ export interface FolderSelection {
   createdAt: number;
   /** Whether conversion has been completed for this selection. */
   converted: boolean;
+  /** Atomic conversion state: "ready" | "converting" | "completed". */
+  conversionState: "ready" | "converting" | "completed";
 }
 
 /**
@@ -116,6 +118,7 @@ export class ImportSelectionStore {
       chosenCollectionId: null,
       createdAt: this._clock.now(),
       converted: false,
+      conversionState: "ready",
     });
     return selectionId;
   }
@@ -214,7 +217,7 @@ export class ImportSelectionStore {
    *
    * Used by Electron main to pass the trusted path to the Python backend.
    * Revalidates that the collection still exists, is a regular file,
-   * and resolves under the selected folder.
+   * and resolves under the selected canonical folder.
    *
    * @param selectionId The opaque selection ID.
    * @returns The canonical absolute collection path.
@@ -243,15 +246,21 @@ export class ImportSelectionStore {
 
     // Revalidate: the collection must still exist and be a regular file.
     // This prevents TOCTOU issues where the file was deleted or replaced
-    // after scanning.
+    // after scanning.  Use realpathSync to resolve symlinks/reparse-points
+    // to their canonical target before checking containment.
+    let realCollectionPath: string;
     try {
-      const stat = statSync(collection.path);
+      realCollectionPath = realpathSync(collection.path);
+      const stat = statSync(realCollectionPath);
       if (!stat.isFile()) {
         throw new SelectionError(
           "The selected collection is no longer a valid file. Scan the folder again."
         );
       }
     } catch (err) {
+      if (err instanceof SelectionError) {
+        throw err;
+      }
       throw new SelectionError(
         "The selected collection is no longer available. Scan the folder again."
       );
@@ -259,32 +268,93 @@ export class ImportSelectionStore {
 
     // Revalidate: the collection must resolve under the selected folder.
     // This prevents symlink/reparse-point escapes.
-    const folderResolved = resolve(selection.folderPath);
-    const collectionResolved = resolve(collection.path);
-    if (!collectionResolved.startsWith(folderResolved + sep)) {
+    const folderResolved = realpathSync(selection.folderPath);
+    if (!realCollectionPath.startsWith(folderResolved + sep)) {
       throw new SelectionError(
         "The selected collection is not inside the chosen folder."
       );
     }
 
-    return collection.path;
+    return realCollectionPath;
   }
 
   /**
-   * Mark a selection as converted (idempotency check).
+   * Get the safe display label for the chosen collection.
    *
    * @param selectionId The opaque selection ID.
+   * @returns The safe relative label of the chosen collection.
    * @throws {SelectionError} if the selection is unknown/expired or
-   *   already converted.
+   *   no collection is chosen.
    */
-  markConverted(selectionId: string): void {
+  getCollectionLabel(selectionId: string): string {
     const selection = this._getValid(selectionId);
-    if (selection.converted) {
+
+    if (!selection.chosenCollectionId) {
+      throw new SelectionError(
+        "No collection has been selected. Choose one first."
+      );
+    }
+
+    const collection = selection.collections.find(
+      (c) => c.collectionId === selection.chosenCollectionId
+    );
+
+    if (!collection) {
+      throw new SelectionError(
+        "This collection is no longer available. Scan the folder again."
+      );
+    }
+
+    return collection.label;
+  }
+
+  /**
+   * Atomically begin a conversion for this selection.
+   *
+   * Transitions the selection from "ready" to "converting".
+   * A second simultaneous call is rejected safely.
+   *
+   * @param selectionId The opaque selection ID.
+   * @throws {SelectionError} if the selection is unknown/expired,
+   *   already converting, or already completed.
+   */
+  beginConversion(selectionId: string): void {
+    const selection = this._getValid(selectionId);
+    if (selection.conversionState === "converting") {
+      throw new SelectionError(
+        "This collection is currently being converted. Please wait."
+      );
+    }
+    if (selection.conversionState === "completed") {
       throw new SelectionError(
         "This collection has already been converted. Choose a folder again."
       );
     }
-    selection.converted = true;
+    selection.conversionState = "converting";
+  }
+
+  /**
+   * Finish a conversion, transitioning to either "completed" or "ready".
+   *
+   * @param selectionId The opaque selection ID.
+   * @param success Whether the conversion succeeded.
+   * @throws {SelectionError} if the selection is unknown/expired or
+   *   not in the "converting" state (state-transition failure is never
+   *   silently ignored).
+   */
+  finishConversion(selectionId: string, success: boolean): void {
+    const selection = this._getValid(selectionId);
+    if (selection.conversionState !== "converting") {
+      throw new SelectionError(
+        "Conversion state error. Choose a folder again."
+      );
+    }
+    if (success) {
+      selection.conversionState = "completed";
+      selection.converted = true;
+    } else {
+      selection.conversionState = "ready";
+    }
   }
 
   /**
@@ -296,7 +366,7 @@ export class ImportSelectionStore {
    */
   isConverted(selectionId: string): boolean {
     const selection = this._getValid(selectionId);
-    return selection.converted;
+    return selection.conversionState === "completed";
   }
 
   /**

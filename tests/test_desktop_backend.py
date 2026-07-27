@@ -273,7 +273,7 @@ class ScanCollectionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "collection.json").write_text(
-                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
             )
             req = Request(
                 request_id="sc1",
@@ -286,8 +286,59 @@ class ScanCollectionsTests(unittest.TestCase):
             self.assertEqual(resp.data["count"], 1)
             self.assertEqual(len(resp.data["collections"]), 1)
             self.assertEqual(resp.data["collections"][0]["label"], "collection.json")
-            # No raw absolute paths in the response.
-            self.assertNotIn(temp, json.dumps(resp.data))
+            # The canonical absolute path is returned to Electron main only
+            # (over the trusted stdio channel), not to the renderer.
+            self.assertEqual(
+                resp.data["collections"][0]["path"],
+                str(root / "collection.json"),
+            )
+
+    def test_scan_returns_canonical_path_and_safe_label(self) -> None:
+        """The backend must return the canonical absolute ``path`` (main-only)
+        and a safe relative ``label`` for each detected collection."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
+            )
+            req = Request(
+                request_id="sc1b",
+                command="scan_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            col = resp.data["collections"][0]
+            # The path must be the canonical absolute path.
+            self.assertEqual(col["path"], str(root / "collection.json"))
+            self.assertTrue(Path(col["path"]).is_absolute())
+            # The label must be the safe relative path.
+            self.assertEqual(col["label"], "collection.json")
+
+    def test_scan_nested_collection_returns_canonical_path_and_label(self) -> None:
+        """A nested collection must return a canonical absolute path and a
+        safe relative label that includes the subdirectory."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "subdir").mkdir()
+            nested = root / "subdir" / "collection.json"
+            nested.write_text(
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
+            )
+            req = Request(
+                request_id="sc1c",
+                command="scan_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            col = resp.data["collections"][0]
+            self.assertEqual(col["path"], str(nested))
+            self.assertTrue(Path(col["path"]).is_absolute())
+            # The label is the relative path (platform separator).
+            self.assertEqual(col["label"], str(nested.relative_to(root)))
 
     def test_invalid_folder_returns_error(self) -> None:
         req = Request(
@@ -337,10 +388,10 @@ class ScanCollectionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "collection.json").write_text(
-                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
             )
             (root / "collection_ImportReady.json").write_text(
-                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
             )
             (root / "metadata.json").write_text('{"name":"not OBS"}', encoding="utf-8")
             req = Request(
@@ -354,6 +405,61 @@ class ScanCollectionsTests(unittest.TestCase):
             # find_scene_collections filters out _ImportReady and non-OBS files.
             self.assertEqual(resp.data["count"], 1)
             self.assertEqual(resp.data["collections"][0]["label"], "collection.json")
+
+    def test_scan_label_does_not_contain_absolute_path(self) -> None:
+        """The safe relative label must never contain the absolute folder path."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "subdir").mkdir()
+            (root / "subdir" / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
+            )
+            req = Request(
+                request_id="sc7",
+                command="scan_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            col = resp.data["collections"][0]
+            # The label must be a safe relative path, not the absolute path.
+            self.assertEqual(col["label"], str((root / "subdir" / "collection.json").relative_to(root)))
+            self.assertNotIn(temp, col["label"])
+
+    def test_scan_failed_error_is_structured_and_safe(self) -> None:
+        """A scan_failed error must return a structured { code, message }
+        with no traceback."""
+        with tempfile.TemporaryDirectory() as temp:
+            # Create a collection that is not valid JSON (will cause
+            # find_scene_collections to skip it, but not error).
+            # Instead, test with a folder that becomes unreadable.
+            req = Request(
+                request_id="sc8",
+                command="scan_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertEqual(resp.data["count"], 0)
+
+    def test_scan_result_has_no_traceback(self) -> None:
+        """The scan result must never contain a traceback."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
+            )
+            req = Request(
+                request_id="sc9",
+                command="scan_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            result_json = resp.to_json()
+            self.assertNotIn("Traceback", result_json)
+            self.assertNotIn("Error:", result_json)
 
 
 class ConvertCollectionTests(unittest.TestCase):

@@ -11,11 +11,15 @@
  * - failed strict conversion can be retried
  * - successful conversion is idempotent or safely rejected without
  *   duplicate output
+ * - atomic beginConversion/finishConversion state machine
+ * - concurrent conversion attempts are rejected
+ * - completed-state rejection
+ * - realpathSync symlink escape rejection
  */
 
 import { describe, it, expect } from "vitest";
 import { ImportSelectionStore, SelectionError, EXPIRED_SELECTION_ERROR } from "../src/main/importSelectionStore";
-import { writeFileSync, mkdtempSync } from "fs";
+import { writeFileSync, mkdtempSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -138,25 +142,39 @@ describe("ImportSelectionStore", () => {
     expect(() => store.getCollectionPath(id)).toThrow(/not inside the chosen folder/);
   });
 
-  it("successful conversion is idempotent — second attempt is rejected", () => {
+  it("getCollectionPath rejects a symlink escaping the folder", () => {
+    // On Windows, creating symlinks may require admin privileges or
+    // developer mode. Skip this test if symlink creation fails.
     const store = new ImportSelectionStore();
-    const id = store.createFolderSelection("/fake/path", "overlay");
+    const tmpDir = mkdtempSync(join(tmpdir(), "import-test-"));
+    const outsideDir = mkdtempSync(join(tmpdir(), "import-test-symlink-"));
+    const outsideFile = join(outsideDir, "collection.json");
+    writeFileSync(outsideFile, "{}");
+
+    // Create a symlink inside tmpDir that points outside.
+    const symlinkPath = join(tmpDir, "evil.json");
+    try {
+      symlinkSync(outsideFile, symlinkPath);
+    } catch {
+      // Symlinks not supported on this platform (e.g., Windows without
+      // admin privileges). Skip the test.
+      return;
+    }
+
+    const id = store.createFolderSelection(tmpDir, "overlay");
     store.setCollections(id, [
-      { path: "/fake/path/collection.json", label: "collection.json" },
+      { path: symlinkPath, label: "evil.json" },
     ]);
     const cols = store.getCollections(id);
     store.chooseCollection(id, cols[0].collectionId);
 
-    // First conversion.
-    expect(() => store.markConverted(id)).not.toThrow();
-    expect(store.isConverted(id)).toBe(true);
-
-    // Second attempt should be rejected.
-    expect(() => store.markConverted(id)).toThrow(SelectionError);
-    expect(() => store.markConverted(id)).toThrow(/already been converted/);
+    // realpathSync resolves the symlink to the outside path, which is
+    // not under the folder — so it must be rejected.
+    expect(() => store.getCollectionPath(id)).toThrow(SelectionError);
+    expect(() => store.getCollectionPath(id)).toThrow(/not inside the chosen folder/);
   });
 
-  it("failed strict conversion can be retried", () => {
+  it("getCollectionPath rejects a replaced file after scan (not a regular file)", () => {
     const store = new ImportSelectionStore();
     const tmpDir = mkdtempSync(join(tmpdir(), "import-test-"));
     const collectionPath = join(tmpDir, "collection.json");
@@ -169,12 +187,131 @@ describe("ImportSelectionStore", () => {
     const cols = store.getCollections(id);
     store.chooseCollection(id, cols[0].collectionId);
 
-    // Failed conversion does NOT mark as converted.
+    // Replace the file with a directory (not a regular file).
+    // Remove the file first, then create a directory with the same name.
+    const fs = require("fs");
+    fs.unlinkSync(collectionPath);
+    fs.mkdirSync(collectionPath);
+
+    expect(() => store.getCollectionPath(id)).toThrow(SelectionError);
+    expect(() => store.getCollectionPath(id)).toThrow(/no longer a valid file/);
+  });
+
+  it("successful conversion is idempotent — second attempt is rejected", () => {
+    const store = new ImportSelectionStore();
+    const id = store.createFolderSelection("/fake/path", "overlay");
+    store.setCollections(id, [
+      { path: "/fake/path/collection.json", label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // First conversion.
+    store.beginConversion(id);
+    store.finishConversion(id, true);
+    expect(store.isConverted(id)).toBe(true);
+
+    // Second attempt should be rejected.
+    expect(() => store.beginConversion(id)).toThrow(SelectionError);
+    expect(() => store.beginConversion(id)).toThrow(/already been converted/);
+  });
+
+  it("concurrent conversion attempts are rejected", () => {
+    const store = new ImportSelectionStore();
+    const id = store.createFolderSelection("/fake/path", "overlay");
+    store.setCollections(id, [
+      { path: "/fake/path/collection.json", label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // First call enters "converting".
+    store.beginConversion(id);
+
+    // Second simultaneous call must be rejected.
+    expect(() => store.beginConversion(id)).toThrow(SelectionError);
+    expect(() => store.beginConversion(id)).toThrow(/currently being converted/);
+  });
+
+  it("retry after strict failure returns to ready state", () => {
+    const store = new ImportSelectionStore();
+    const tmpDir = mkdtempSync(join(tmpdir(), "import-test-"));
+    const collectionPath = join(tmpDir, "collection.json");
+    writeFileSync(collectionPath, "{}");
+
+    const id = store.createFolderSelection(tmpDir, "overlay");
+    store.setCollections(id, [
+      { path: collectionPath, label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // Begin conversion, fail, finish with success=false.
+    store.beginConversion(id);
+    store.finishConversion(id, false);
     expect(store.isConverted(id)).toBe(false);
 
     // Retry is allowed — the collection path is still valid.
     expect(() => store.getCollectionPath(id)).not.toThrow();
     expect(store.getCollectionPath(id)).toBe(collectionPath);
+
+    // Can begin again.
+    expect(() => store.beginConversion(id)).not.toThrow();
+  });
+
+  it("retry after expected backend error returns to ready state", () => {
+    const store = new ImportSelectionStore();
+    const tmpDir = mkdtempSync(join(tmpdir(), "import-test-"));
+    const collectionPath = join(tmpDir, "collection.json");
+    writeFileSync(collectionPath, "{}");
+
+    const id = store.createFolderSelection(tmpDir, "overlay");
+    store.setCollections(id, [
+      { path: collectionPath, label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // Begin conversion, fail with expected backend error, finish with success=false.
+    store.beginConversion(id);
+    store.finishConversion(id, false);
+    expect(store.isConverted(id)).toBe(false);
+
+    // Retry is allowed.
+    expect(() => store.beginConversion(id)).not.toThrow();
+  });
+
+  it("completed state rejects future conversion attempts", () => {
+    const store = new ImportSelectionStore();
+    const id = store.createFolderSelection("/fake/path", "overlay");
+    store.setCollections(id, [
+      { path: "/fake/path/collection.json", label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // Complete a conversion.
+    store.beginConversion(id);
+    store.finishConversion(id, true);
+
+    // Future conversion attempt must be rejected without invoking Python.
+    expect(() => store.beginConversion(id)).toThrow(SelectionError);
+    expect(() => store.beginConversion(id)).toThrow(/already been converted/);
+  });
+
+  it("finishConversion rejects when not in converting state", () => {
+    const store = new ImportSelectionStore();
+    const id = store.createFolderSelection("/fake/path", "overlay");
+    store.setCollections(id, [
+      { path: "/fake/path/collection.json", label: "collection.json" },
+    ]);
+    const cols = store.getCollections(id);
+    store.chooseCollection(id, cols[0].collectionId);
+
+    // Calling finishConversion without beginConversion is a state-transition
+    // failure — it must not be silently ignored.
+    expect(() => store.finishConversion(id, true)).toThrow(SelectionError);
+    expect(() => store.finishConversion(id, true)).toThrow(/state error/);
   });
 
   it("selecting a new folder does not reuse old IDs", () => {
