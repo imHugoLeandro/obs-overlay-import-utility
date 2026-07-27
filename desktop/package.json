@@ -17,13 +17,14 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,md}\"",
+    "verify:compiled": "vitest run --config vitest.verify.config.ts",
     "package": "echo \"Error: Portable Electron packaging is deferred to Stage 3. Use 'npm run build' for development artifacts.\" && exit 1"
   },
   "config": {
     "electron:serve": "http://localhost:5173"
   },
   "dependencies": {
-    "electron": "34.0.0"
+    "electron": "43.2.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.0",
@@ -36,7 +37,7 @@
     "@typescript-eslint/parser": "8.18.0",
     "@vitejs/plugin-react": "5.1.0",
     "concurrently": "9.1.2",
-    "electron-builder": "26.0.2",
+    "electron-builder": "26.15.3",
     "eslint": "9.17.0",
     "eslint-config-prettier": "9.1.0",
     "eslint-plugin-react": "7.37.2",
@@ -45,9 +46,9 @@
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "typescript": "5.7.3",
-    "vite": "6.0.7",
+    "vite": "6.4.3",
     "wait-on": "8.0.1",
-    "vitest": "3.0.0"
+    "vitest": "3.2.7"
   },
   "engines": {
     "node": ">=20",

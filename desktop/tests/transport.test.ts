@@ -1,264 +1,254 @@
 /**
- * Tests for the BackendTransport stdout buffering and request handling.
+ * Tests for the BackendTransport class.
  *
- * Since BackendTransport is not exported from the main process, we test
- * the transport protocol logic directly by simulating the stdout buffering
- * and JSON parsing behavior.
+ * These tests import and exercise the same production implementation used
+ * by the Electron main process.  No protocol logic is reimplemented here.
  *
  * Tests:
- * - stdout split across chunks
- * - multiple JSON lines in one chunk
- * - concurrent requests resolve correctly
- * - timeout cleanup
- * - backend exit/error rejects all pending requests
+ * - one response split across stdout chunks
+ * - multiple lines in one chunk
+ * - concurrent requests resolve to their correct caller
+ * - malformed/unrelated output does not corrupt pending requests
+ * - backend exit/error rejects every pending request
+ * - timeout rejects and removes the request
+ * - successful response clears the request timeout
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { BackendTransport } from "../src/main/transport";
 
-/** A parsed JSON-lines response from the backend. */
-interface BackendResponse {
-  request_id: string;
-  type: string;
-  data?: Record<string, unknown>;
-  error?: { code: string; message: string };
+/**
+ * Helper: create a BackendResponse JSON line for a given request ID.
+ */
+function makeResponseLine(
+  requestId: string,
+  type: string,
+  data?: Record<string, unknown>,
+  error?: { code: string; message: string }
+): string {
+  const obj: { request_id: string; type: string; data?: Record<string, unknown>; error?: { code: string; message: string } } = {
+    request_id: requestId,
+    type,
+  };
+  if (data) obj.data = data;
+  if (error) obj.error = error;
+  return JSON.stringify(obj);
 }
 
 /**
- * Simulate the BackendTransport's stdout buffering logic.
- * This mirrors the handleStdout method in the main process.
+ * Helper: create a BackendTransport with a mocked stdin so we can
+ * feed stdout data without spawning a real subprocess.
  */
-function simulateStdoutBuffering(
-  chunks: Buffer[],
-  pending: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>
-): void {
-  let buffer = "";
-  for (const chunk of chunks) {
-    buffer += chunk.toString();
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-      if (!line) continue;
-      try {
-        const response = JSON.parse(line) as BackendResponse;
-        const pendingReq = pending.get(response.request_id);
-        if (pendingReq) {
-          pendingReq.resolve(response);
-          pending.delete(response.request_id);
-        }
-      } catch {
-        // Ignore non-JSON lines.
-      }
-    }
-  }
+function makeTransport(): BackendTransport {
+  const transport = new BackendTransport();
+  // Inject a mock stdin so sendRequest can write to it.
+  // We use a minimal mock that accepts writes and calls the callback.
+  const mockStdin = {
+    write: vi.fn((_data: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return true;
+    }),
+  };
+  // Set the private pyStdin via type assertion.
+  (transport as unknown as { pyStdin: unknown }).pyStdin = mockStdin;
+  return transport;
 }
 
-describe("BackendTransport stdout buffering", () => {
-  it("handles stdout split across chunks", () => {
-    const jsonResponse = JSON.stringify({
-      request_id: "req-1",
-      type: "result",
-      data: { status: "ok" },
-    });
+describe("BackendTransport", () => {
+  let transport: BackendTransport;
 
-    const pending = new Map();
-    let resolved: unknown = null;
-    pending.set("req-1", {
-      resolve: (v: unknown) => {
-        resolved = v;
-      },
-      reject: () => {},
-    });
-
-    // Split the JSON response (including newline) across two chunks.
-    const fullLine = jsonResponse + "\n";
-    const firstChunk = Buffer.from(fullLine.slice(0, 10));
-    const secondChunk = Buffer.from(fullLine.slice(10));
-
-    simulateStdoutBuffering([firstChunk, secondChunk], pending);
-
-    expect(resolved).not.toBeNull();
-    const resp = resolved as BackendResponse;
-    expect(resp.request_id).toBe("req-1");
-    expect(resp.type).toBe("result");
-    expect(pending.size).toBe(0);
+  beforeEach(() => {
+    vi.useFakeTimers();
+    transport = makeTransport();
   });
 
-  it("handles multiple JSON lines in one chunk", () => {
-    const line1 = JSON.stringify({ request_id: "req-1", type: "result", data: { status: "ok" } });
-    const line2 = JSON.stringify({ request_id: "req-2", type: "result", data: { name: "test" } });
-    const chunk = Buffer.from(line1 + "\n" + line2 + "\n");
-
-    const resolved: unknown[] = [];
-    const pending = new Map();
-    pending.set("req-1", {
-      resolve: (v: unknown) => {
-        resolved.push(v);
-      },
-      reject: () => {},
-    });
-    pending.set("req-2", {
-      resolve: (v: unknown) => {
-        resolved.push(v);
-      },
-      reject: () => {},
-    });
-
-    simulateStdoutBuffering([chunk], pending);
-
-    expect(resolved.length).toBe(2);
-    expect((resolved[0] as BackendResponse).request_id).toBe("req-1");
-    expect((resolved[1] as BackendResponse).request_id).toBe("req-2");
-    expect(pending.size).toBe(0);
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("handles concurrent requests resolving to correct callers", () => {
-    const line1 = JSON.stringify({ request_id: "req-1", type: "result", data: { status: "ok" } });
-    const line2 = JSON.stringify({ request_id: "req-2", type: "result", data: { name: "test" } });
-    const line3 = JSON.stringify({ request_id: "req-3", type: "result", data: { version: "1.0" } });
-    const chunk = Buffer.from(line1 + "\n" + line2 + "\n" + line3 + "\n");
+  describe("stdout buffering", () => {
+    it("handles one response split across stdout chunks", async () => {
+      const promise = transport.sendRequest("health");
+      const requestId = getRequestId(transport);
 
-    const results: Record<string, BackendResponse> = {};
-    const pending = new Map();
-    ["req-1", "req-2", "req-3"].forEach((id) => {
-      pending.set(id, {
-        resolve: (v: unknown) => {
-          results[id] = v as BackendResponse;
-        },
-        reject: () => {},
-      });
+      // Split the JSON response (including newline) across two chunks.
+      const fullLine = makeResponseLine(requestId, "result", { status: "ok" }) + "\n";
+      const firstChunk = Buffer.from(fullLine.slice(0, 10));
+      const secondChunk = Buffer.from(fullLine.slice(10));
+
+      transport.handleStdout(firstChunk);
+      // Promise should not resolve yet — the line is incomplete.
+      await Promise.resolve();
+      expect(transport.getPendingCount()).toBe(1);
+
+      transport.handleStdout(secondChunk);
+
+      const result = await promise;
+      const resp = result as { request_id: string; type: string; data?: Record<string, unknown> };
+      expect(resp.request_id).toBe(requestId);
+      expect(resp.type).toBe("result");
+      expect(resp.data?.status).toBe("ok");
+      expect(transport.getPendingCount()).toBe(0);
     });
 
-    simulateStdoutBuffering([chunk], pending);
+    it("handles multiple JSON lines in one chunk", async () => {
+      const promise1 = transport.sendRequest("health");
+      const promise2 = transport.sendRequest("app_info");
+      const requestId1 = getRequestId(transport, 0);
+      const requestId2 = getRequestId(transport, 1);
 
-    expect(results["req-1"].data?.status).toBe("ok");
-    expect(results["req-2"].data?.name).toBe("test");
-    expect(results["req-3"].data?.version).toBe("1.0");
-    expect(pending.size).toBe(0);
+      const chunk = Buffer.from(
+        makeResponseLine(requestId1, "result", { status: "ok" }) + "\n" +
+          makeResponseLine(requestId2, "result", { name: "test" }) + "\n"
+      );
+
+      transport.handleStdout(chunk);
+
+      const [result1, result2] = await Promise.all([promise1, promise2]);
+      const resp1 = result1 as { data?: Record<string, unknown> };
+      const resp2 = result2 as { data?: Record<string, unknown> };
+      expect(resp1.data?.status).toBe("ok");
+      expect(resp2.data?.name).toBe("test");
+      expect(transport.getPendingCount()).toBe(0);
+    });
+
+    it("concurrent requests resolve to their correct caller", async () => {
+      const promise1 = transport.sendRequest("health");
+      const promise2 = transport.sendRequest("app_info");
+      const promise3 = transport.sendRequest("health");
+      const requestId1 = getRequestId(transport, 0);
+      const requestId2 = getRequestId(transport, 1);
+      const requestId3 = getRequestId(transport, 2);
+
+      const chunk = Buffer.from(
+        makeResponseLine(requestId1, "result", { a: 1 }) + "\n" +
+          makeResponseLine(requestId2, "result", { b: 2 }) + "\n" +
+          makeResponseLine(requestId3, "result", { c: 3 }) + "\n"
+      );
+
+      transport.handleStdout(chunk);
+
+      const [result1, result2, result3] = await Promise.all([promise1, promise2, promise3]);
+      const resp1 = result1 as { data?: Record<string, unknown> };
+      const resp2 = result2 as { data?: Record<string, unknown> };
+      const resp3 = result3 as { data?: Record<string, unknown> };
+      expect(resp1.data?.a).toBe(1);
+      expect(resp2.data?.b).toBe(2);
+      expect(resp3.data?.c).toBe(3);
+      expect(transport.getPendingCount()).toBe(0);
+    });
+
+    it("malformed/unrelated output does not corrupt pending requests", async () => {
+      const promise = transport.sendRequest("health");
+      const requestId = getRequestId(transport);
+
+      // Send non-JSON output, then a valid response.
+      const chunk = Buffer.from(
+        "Python startup warning\n" +
+          "{invalid json\n" +
+          makeResponseLine(requestId, "result", { status: "ok" }) + "\n"
+      );
+
+      transport.handleStdout(chunk);
+
+      const result = await promise;
+      const resp = result as { data?: Record<string, unknown> };
+      expect(resp.data?.status).toBe("ok");
+      expect(transport.getPendingCount()).toBe(0);
+    });
+
+    it("ignores responses for unknown request IDs", async () => {
+      const promise = transport.sendRequest("health");
+      const requestId = getRequestId(transport);
+
+      // A response for a request ID we never sent.
+      const chunk = Buffer.from(
+        makeResponseLine("req-unknown", "result", { data: "should be ignored" }) + "\n" +
+          makeResponseLine(requestId, "result", { status: "ok" }) + "\n"
+      );
+
+      transport.handleStdout(chunk);
+
+      const result = await promise;
+      const resp = result as { data?: Record<string, unknown> };
+      expect(resp.data?.status).toBe("ok");
+      expect(transport.getPendingCount()).toBe(0);
+    });
   });
 
-  it("ignores non-JSON lines in stdout", () => {
-    const jsonResponse = JSON.stringify({
-      request_id: "req-1",
-      type: "result",
-      data: { status: "ok" },
+  describe("backend exit / error", () => {
+    it("rejects every pending request on backend exit", async () => {
+      const promise1 = transport.sendRequest("health");
+      const promise2 = transport.sendRequest("app_info");
+      const promise3 = transport.sendRequest("health");
+
+      expect(transport.getPendingCount()).toBe(3);
+
+      transport.rejectAllPending(new Error("Backend process exited"));
+
+      expect(transport.getPendingCount()).toBe(0);
+      await expect(promise1).rejects.toThrow("Backend process exited");
+      await expect(promise2).rejects.toThrow("Backend process exited");
+      await expect(promise3).rejects.toThrow("Backend process exited");
     });
-    const chunk = Buffer.from("Python startup output\n" + jsonResponse + "\n");
-
-    const resolved: unknown[] = [];
-    const pending = new Map();
-    pending.set("req-1", {
-      resolve: (v: unknown) => {
-        resolved.push(v);
-      },
-      reject: () => {},
-    });
-
-    simulateStdoutBuffering([chunk], pending);
-
-    expect(resolved.length).toBe(1);
-    expect((resolved[0] as BackendResponse).request_id).toBe("req-1");
   });
 
-  it("handles blank lines in stdout", () => {
-    const jsonResponse = JSON.stringify({
-      request_id: "req-1",
-      type: "result",
-      data: { status: "ok" },
-    });
-    const chunk = Buffer.from("\n\n" + jsonResponse + "\n\n");
+  describe("timeout", () => {
+    it("rejects and removes the request on timeout", async () => {
+      const promise = transport.sendRequest("health");
 
-    const resolved: unknown[] = [];
-    const pending = new Map();
-    pending.set("req-1", {
-      resolve: (v: unknown) => {
-        resolved.push(v);
-      },
-      reject: () => {},
+      expect(transport.getPendingCount()).toBe(1);
+
+      // Advance past the 10-second timeout.
+      vi.advanceTimersByTime(10000);
+
+      expect(transport.getPendingCount()).toBe(0);
+      await expect(promise).rejects.toThrow("Backend request timed out: health");
     });
 
-    simulateStdoutBuffering([chunk], pending);
+    it("successful response clears the request timeout", async () => {
+      const promise = transport.sendRequest("health");
+      const requestId = getRequestId(transport);
 
-    expect(resolved.length).toBe(1);
-    expect((resolved[0] as BackendResponse).request_id).toBe("req-1");
+      expect(transport.getPendingCount()).toBe(1);
+
+      // Send the response before the timeout fires.
+      const chunk = Buffer.from(makeResponseLine(requestId, "result", { status: "ok" }) + "\n");
+      transport.handleStdout(chunk);
+
+      const result = await promise;
+      const resp = result as { data?: Record<string, unknown> };
+      expect(resp.data?.status).toBe("ok");
+      expect(transport.getPendingCount()).toBe(0);
+
+      // Advancing past the timeout should NOT reject (the timer was cleared).
+      vi.advanceTimersByTime(10000);
+      // The promise already resolved; advancing timers should not cause issues.
+    });
   });
 
-  it("handles interleaved chunks with multiple responses", () => {
-    const line1 = JSON.stringify({ request_id: "req-1", type: "result", data: { a: 1 } });
-    const line2 = JSON.stringify({ request_id: "req-2", type: "result", data: { b: 2 } });
-    const line3 = JSON.stringify({ request_id: "req-3", type: "result", data: { c: 3 } });
-
-    // Realistic scenario: two complete responses in one chunk,
-    // then the third response in a separate chunk.
-    const chunk1 = Buffer.from(line1 + "\n" + line2 + "\n");
-    const chunk2 = Buffer.from(line3 + "\n");
-
-    const results: Record<string, BackendResponse> = {};
-    const pending = new Map();
-    ["req-1", "req-2", "req-3"].forEach((id) => {
-      pending.set(id, {
-        resolve: (v: unknown) => {
-          results[id] = v as BackendResponse;
-        },
-        reject: () => {},
-      });
+  describe("sendRequest without stdin", () => {
+    it("rejects when backend is not running", async () => {
+      const transport = new BackendTransport();
+      await expect(transport.sendRequest("health")).rejects.toThrow("Backend not running");
     });
-
-    simulateStdoutBuffering([chunk1, chunk2], pending);
-
-    expect(results["req-1"].data?.a).toBe(1);
-    expect(results["req-2"].data?.b).toBe(2);
-    expect(results["req-3"].data?.c).toBe(3);
-    expect(pending.size).toBe(0);
-  });
-
-  it("rejects all pending on backend exit", () => {
-    const pending = new Map();
-    const rejected: string[] = [];
-    ["req-1", "req-2", "req-3"].forEach((id) => {
-      pending.set(id, {
-        resolve: () => {},
-        reject: (_e: Error) => {
-          rejected.push(id);
-        },
-      });
-    });
-
-    // Simulate backend exit: reject all pending.
-    pending.forEach((p, requestId) => {
-      p.reject(new Error("Backend process exited"));
-      pending.delete(requestId);
-    });
-
-    expect(rejected.length).toBe(3);
-    expect(pending.size).toBe(0);
-  });
-
-  it("timeout cleanup removes pending request", () => {
-    const pending = new Map();
-    const resolved: unknown[] = [];
-    const rejected: unknown[] = [];
-
-    pending.set("req-1", {
-      resolve: (v: unknown) => {
-        resolved.push(v);
-      },
-      reject: (e: unknown) => {
-        rejected.push(e);
-      },
-    });
-
-    // Simulate timeout: delete and reject.
-    const timer = setTimeout(() => {
-      pending.delete("req-1");
-      pending.get("req-1")?.reject(new Error("timeout"));
-    }, 10000);
-
-    // Clear the timer (simulating successful response before timeout).
-    clearTimeout(timer);
-    pending.delete("req-1");
-
-    expect(pending.size).toBe(0);
-    expect(rejected.length).toBe(0);
   });
 });
+
+/**
+ * Extract the request ID that BackendTransport.generateRequestId() produced
+ * for the Nth sendRequest call (0-indexed).
+ *
+ * Since generateRequestId uses Date.now() and a counter, we can predict
+ * the IDs by calling sendRequest and reading the mock stdin writes.
+ */
+function getRequestId(transport: BackendTransport, callIndex = 0): string {
+  const mockStdin = (transport as unknown as { pyStdin: { write: ReturnType<typeof vi.fn> } }).pyStdin;
+  const writeCall = mockStdin.write.mock.calls[callIndex];
+  if (!writeCall) {
+    throw new Error(`No write call at index ${callIndex}`);
+  }
+  const data = writeCall[0] as string;
+  const parsed = JSON.parse(data.trim());
+  return parsed.request_id;
+}

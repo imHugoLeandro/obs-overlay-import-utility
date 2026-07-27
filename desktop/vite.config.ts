@@ -30,6 +30,11 @@ export default defineConfig({
       resolve(__dirname, "tests/**/*.test.ts"),
       resolve(__dirname, "tests/**/*.test.tsx"),
     ],
+    exclude: [
+      // Compiled-output verification runs only via `npm run verify:compiled`
+      // after `npm run build`.  It must not run as part of `npm test`.
+      resolve(__dirname, "tests/compiled-output.test.ts"),
+    ],
     css: true,
   },
 });

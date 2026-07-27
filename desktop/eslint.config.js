@@ -25,6 +25,9 @@ module.exports = [
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-explicit-any": "warn",
+      // Renderer and shared code must not use console — all diagnostics
+      // go through the typed IPC layer to the renderer's error display.
+      "no-console": "error",
     },
     settings: {
       react: {

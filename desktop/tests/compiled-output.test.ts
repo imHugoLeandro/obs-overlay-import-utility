@@ -1,161 +1,160 @@
-/**
- * Tests for compiled Electron output verification.
- *
- * These tests verify that:
- * - The compiled main process exists at the expected path
- * - The compiled preload exists at the expected path
- * - The compiled main process does not use process.execPath as Python
- * - The compiled main process has the correct security settings
- */
+// Deterministic verification of compiled Electron output.
+//
+// This test file is run via npm run verify:compiled, which must be
+// executed AFTER npm run build.  It does NOT run as part of npm test
+// (vitest run) — the vitest config excludes this file.
+//
+// These tests FAIL (not skip) when build artifacts are missing or when
+// compiled output violates a checked security invariant.
+//
+// Security invariants checked:
+// - No process.execPath used as the Python executable
+// - No eval() calls in compiled output
+// - nodeIntegration: false
+// - contextIsolation: true
+// - sandbox: true
+// - webSecurity: true
+// - webviewTag: false
+// - Fixed IPC channels present
+// - Preload uses ipcRenderer.invoke (not send/on/once)
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
 const distElectron = path.resolve(__dirname, "..", "dist-electron");
+const dist = path.resolve(__dirname, "..", "dist");
+
 const mainJs = path.join(distElectron, "main", "index.js");
 const preloadJs = path.join(distElectron, "preload", "index.js");
+const securityJs = path.join(distElectron, "main", "security.js");
+const rendererIndexHtml = path.join(dist, "index.html");
 
-describe("Compiled Electron output", () => {
-  // Only run these tests if the build has been run.
-  const buildExists = fs.existsSync(mainJs);
+// Assert that a file exists.  Throws with a descriptive message if not.
+function assertFileExists(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      "Expected compiled artifact not found: " +
+        filePath +
+        "\nRun 'npm run build' before 'npm run verify:compiled'."
+    );
+  }
+}
 
-  it("compiled main process exists at dist-electron/main/index.js", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    expect(fs.existsSync(mainJs)).toBe(true);
+// Read a file, asserting it exists first.
+function readCompiledFile(filePath: string): string {
+  assertFileExists(filePath);
+  return fs.readFileSync(filePath, "utf8");
+}
+
+describe("Compiled Electron output verification", () => {
+  describe("artifact existence", () => {
+    it("compiled main process exists at dist-electron/main/index.js", () => {
+      assertFileExists(mainJs);
+    });
+
+    it("compiled preload exists at dist-electron/preload/index.js", () => {
+      assertFileExists(preloadJs);
+    });
+
+    it("compiled security module exists at dist-electron/main/security.js", () => {
+      assertFileExists(securityJs);
+    });
+
+    it("compiled renderer exists at dist/index.html", () => {
+      assertFileExists(rendererIndexHtml);
+    });
+
+    it("preload is NOT at dist-electron/main/preload/index.js", () => {
+      const wrongPath = path.join(distElectron, "main", "preload", "index.js");
+      expect(fs.existsSync(wrongPath)).toBe(false);
+    });
   });
 
-  it("compiled preload exists at dist-electron/preload/index.js", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    expect(fs.existsSync(preloadJs)).toBe(true);
+  describe("main process security invariants", () => {
+    let mainContent: string;
+
+    beforeAll(() => {
+      mainContent = readCompiledFile(mainJs);
+    });
+
+    it("does not use process.execPath as Python", () => {
+      expect(mainContent).not.toContain("process.execPath");
+    });
+
+    it("uses OBS_OVERLAY_PYTHON environment variable", () => {
+      expect(mainContent).toContain("OBS_OVERLAY_PYTHON");
+    });
+
+    it("has nodeIntegration: false", () => {
+      expect(mainContent).toMatch(/nodeIntegration:\s*false/);
+    });
+
+    it("has contextIsolation: true", () => {
+      expect(mainContent).toMatch(/contextIsolation:\s*true/);
+    });
+
+    it("has sandbox: true", () => {
+      expect(mainContent).toMatch(/sandbox:\s*true/);
+    });
+
+    it("has webSecurity: true", () => {
+      expect(mainContent).toMatch(/webSecurity:\s*true/);
+    });
+
+    it("has webviewTag: false", () => {
+      expect(mainContent).toMatch(/webviewTag:\s*false/);
+    });
+
+    it("has setPermissionCheckHandler denying all", () => {
+      expect(mainContent).toContain("setPermissionCheckHandler");
+      expect(mainContent).toContain("setPermissionRequestHandler");
+    });
+
+    it("has fixed IPC channels", () => {
+      expect(mainContent).toContain("desktop:health");
+      expect(mainContent).toContain("desktop:app-info");
+    });
+
+    it("does not contain eval() calls", () => {
+      expect(mainContent).not.toMatch(/\beval\s*\(/);
+    });
+
+    it("uses exact origin validation (not startsWith)", () => {
+      const securityContent = fs.existsSync(securityJs)
+        ? fs.readFileSync(securityJs, "utf8")
+        : "";
+      const combined = mainContent + securityContent;
+      expect(combined).toContain("origin");
+      // Should NOT use startsWith for origin validation.
+      const startsWithMatches = combined.match(
+        /startsWith\s*\(\s*DEV_ORIGIN\s*\)/g
+      );
+      expect(startsWithMatches).toBeNull();
+    });
   });
 
-  it("preload is NOT at dist-electron/main/preload/index.js", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const wrongPath = path.join(distElectron, "main", "preload", "index.js");
-    expect(fs.existsSync(wrongPath)).toBe(false);
-  });
+  describe("preload security invariants", () => {
+    let preloadContent: string;
 
-  it("does not use process.execPath as Python", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).not.toContain("process.execPath");
-  });
+    beforeAll(() => {
+      preloadContent = readCompiledFile(preloadJs);
+    });
 
-  it("uses OBS_OVERLAY_PYTHON environment variable", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toContain("OBS_OVERLAY_PYTHON");
-  });
+    it("uses ipcRenderer.invoke (not send/on/once)", () => {
+      expect(preloadContent).toContain("ipcRenderer.invoke");
+      expect(preloadContent).not.toContain("ipcRenderer.send");
+      expect(preloadContent).not.toContain("ipcRenderer.on");
+      expect(preloadContent).not.toContain("ipcRenderer.once");
+    });
 
-  it("has nodeIntegration: false", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toMatch(/nodeIntegration:\s*false/);
-  });
+    it("exposes only health and appInfo channels", () => {
+      expect(preloadContent).toContain("desktop:health");
+      expect(preloadContent).toContain("desktop:app-info");
+    });
 
-  it("has contextIsolation: true", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toMatch(/contextIsolation:\s*true/);
-  });
-
-  it("has sandbox: true", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toMatch(/sandbox:\s*true/);
-  });
-
-  it("has webSecurity: true", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toMatch(/webSecurity:\s*true/);
-  });
-
-  it("has webviewTag: false", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toMatch(/webviewTag:\s*false/);
-  });
-
-  it("has setPermissionCheckHandler denying all", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toContain("setPermissionCheckHandler");
-    expect(content).toContain("setPermissionRequestHandler");
-  });
-
-  it("has fixed IPC channels", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(mainJs, "utf8");
-    expect(content).toContain("desktop:health");
-    expect(content).toContain("desktop:app-info");
-  });
-
-  it("uses exact origin validation (not startsWith)", () => {
-    if (!buildExists) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    // Check both main and security modules.
-    const mainContent = fs.readFileSync(mainJs, "utf8");
-    const securityJs = path.join(distElectron, "main", "security.js");
-    let securityContent = "";
-    if (fs.existsSync(securityJs)) {
-      securityContent = fs.readFileSync(securityJs, "utf8");
-    }
-    const combined = mainContent + securityContent;
-    expect(combined).toContain("origin");
-    // Should NOT use startsWith for origin validation.
-    const startsWithMatches = combined.match(/startsWith\(DEV_ORIGIN\)/g);
-    expect(startsWithMatches).toBeNull();
-  });
-
-  it("preloads use ipcRenderer.invoke (not send)", () => {
-    if (!fs.existsSync(preloadJs)) {
-      console.warn("Skipping: run 'npm run build' first");
-      return;
-    }
-    const content = fs.readFileSync(preloadJs, "utf8");
-    expect(content).toContain("ipcRenderer.invoke");
-    expect(content).not.toContain("ipcRenderer.send");
-    expect(content).not.toContain("ipcRenderer.on");
-    expect(content).not.toContain("ipcRenderer.once");
+    it("does not contain eval() calls", () => {
+      expect(preloadContent).not.toMatch(/\beval\s*\(/);
+    });
   });
 });
