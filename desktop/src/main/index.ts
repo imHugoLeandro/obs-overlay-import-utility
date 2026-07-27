@@ -22,8 +22,14 @@
  */
 
 import { app, BrowserWindow, ipcMain, session } from "electron";
-import * as path from "path";
 import * as child_process from "child_process";
+import {
+  DEV_ORIGIN,
+  isValidOrigin,
+  isAllowedNavigation,
+  resolvePythonPath,
+  resolvePreloadPath,
+} from "./security";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -43,9 +49,6 @@ function isAllowedCommand(command: string): boolean {
 /** Fixed IPC channels — no dynamic channel construction. */
 const HEALTH_CHANNEL = "desktop:health";
 const APP_INFO_CHANNEL = "desktop:app-info";
-
-/** Expected Vite dev server origin (exact match, no startsWith). */
-const DEV_ORIGIN = "http://localhost:5173";
 
 /**
  * Resolve the Python executable for development.
@@ -72,31 +75,6 @@ function isValidExecutable(filePath: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Resolve the repository root directory.
- *
- * In development, the compiled main process is at:
- *   desktop/dist-electron/main/index.js
- *
- * We need to resolve to the repository root (parent of desktop/),
- * so Python receives PYTHONPATH=<repo>/src.
- *
- * Strategy:
- * - In development: use app.getAppPath() which returns the desktop/ dir,
- *   then resolve its parent.
- * - Fallback: use __dirname and navigate up from dist-electron/main/.
- */
-function resolveRepoRoot(): string {
-  if (!app.isPackaged) {
-    // app.getAppPath() returns the directory containing package.json,
-    // which is desktop/ in development.
-    const appPath = app.getAppPath();
-    return path.resolve(appPath, "..");
-  }
-  // Packaged mode should fail closed — this path should never be reached.
-  return path.resolve(__dirname, "..", "..", "..");
 }
 
 // ---------------------------------------------------------------------------
@@ -147,14 +125,14 @@ class BackendTransport {
       throw error;
     }
 
-    // Resolve the repository root so PYTHONPATH points to <repo>/src.
-    const repoRoot = resolveRepoRoot();
+    // Resolve the PYTHONPATH so Python receives <repo>/src.
+    const pythonPath = resolvePythonPath();
 
     this.pyProcess = child_process.spawn(pythonExec, ["-u", "-m", "obs_overlay_import_utility.desktop_backend"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        PYTHONPATH: path.join(repoRoot, "src"),
+        PYTHONPATH: pythonPath,
       },
     });
 
@@ -282,48 +260,6 @@ class BackendTransport {
 const backend = new BackendTransport();
 
 // ---------------------------------------------------------------------------
-// URL validation — exact origin matching, no startsWith
-// ---------------------------------------------------------------------------
-
-/**
- * Validate that the sender's URL is an expected origin.
- * - Development: exact http://localhost:5173 origin.
- * - Packaged mode: fails closed (Stage 3 packaging deferred).
- */
-function isValidOrigin(sender: Electron.WebContents): boolean {
-  const senderUrl = sender.getURL();
-  if (!app.isPackaged) {
-    // Development: allow only the exact Vite dev server origin.
-    try {
-      const parsed = new URL(senderUrl);
-      return parsed.origin === DEV_ORIGIN;
-    } catch {
-      return false;
-    }
-  }
-  // Packaged mode: fail closed. Stage 3 packaging is deferred.
-  return false;
-}
-
-/**
- * Validate that a navigation URL is allowed.
- * - Development: exact http://localhost:5173 origin.
- * - Packaged mode: fails closed.
- */
-function isAllowedNavigation(targetUrl: string): boolean {
-  if (!app.isPackaged) {
-    try {
-      const parsed = new URL(targetUrl);
-      return parsed.origin === DEV_ORIGIN;
-    } catch {
-      return false;
-    }
-  }
-  // Packaged mode: fail closed.
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // IPC handlers — fixed channels via ipcMain.handle
 // ---------------------------------------------------------------------------
 
@@ -343,7 +279,7 @@ function isValidSender(sender: Electron.WebContents): boolean {
  * Validates sender, origin, and command before forwarding to the backend.
  */
 ipcMain.handle(HEALTH_CHANNEL, async (event) => {
-  if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
   }
   if (!isAllowedCommand("health")) {
@@ -366,7 +302,7 @@ ipcMain.handle(HEALTH_CHANNEL, async (event) => {
  * Validates sender, origin, and command before forwarding to the backend.
  */
 ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
-  if (!isValidSender(event.sender) || !isValidOrigin(event.sender)) {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
   }
   if (!isAllowedCommand("app_info")) {
@@ -445,7 +381,7 @@ function createWindow(): void {
       webSecurity: true,
       // Preload runs in an isolated context.
       // Compiled preload is at dist-electron/preload/index.js (sibling of main/).
-      preload: path.join(__dirname, "..", "preload", "index.js"),
+      preload: resolvePreloadPath(),
     },
   });
 
@@ -466,13 +402,17 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  // Security: deny all permission requests.
+  // Security: block downloads.
   mainWindow.webContents.session.on("will-download", (event) => {
     event.preventDefault();
   });
 
   // Security: deny all permission requests via session handler.
   mainWindow.webContents.session.setPermissionCheckHandler(() => false);
+  // Also deny permission requests explicitly (defense in depth).
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => callback(false)
+  );
 
   mainWindow.on("closed", () => {
     mainWindow = null;

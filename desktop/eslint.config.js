@@ -25,12 +25,20 @@ module.exports = [
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-explicit-any": "warn",
-      "no-console": "warn",
     },
     settings: {
       react: {
         version: "detect",
       },
+    },
+  },
+  // Main process: console.log is used for backend diagnostics.
+  // This is intentional — the main process logs to stderr for debugging
+  // the Python backend lifecycle. The renderer must not use console.
+  {
+    files: ["src/main/**/*.ts"],
+    rules: {
+      "no-console": "off",
     },
   },
 ];

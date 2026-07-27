@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import App from "../src/renderer/App";
 
 // The mock electronAPI is set up in tests/setup.ts.
@@ -18,7 +18,7 @@ describe("App component", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the app title and subtitle", () => {
+  it("renders the app title and subtitle", async () => {
     mockElectronAPI.health.mockResolvedValue({
       status: "ok",
       pid: 1234,
@@ -32,15 +32,18 @@ describe("App component", () => {
 
     render(<App />);
 
+    // The title is rendered immediately (not async).
     expect(screen.getByText("OBS Overlay Import Utility")).toBeInTheDocument();
     expect(screen.getByText("Electron + React foundation")).toBeInTheDocument();
   });
 
-  it("displays loading state initially", () => {
+  it("displays loading state initially", async () => {
     mockElectronAPI.health.mockImplementation(() => new Promise(() => {}));
     mockElectronAPI.appInfo.mockImplementation(() => new Promise(() => {}));
 
-    render(<App />);
+    await act(async () => {
+      render(<App />);
+    });
 
     expect(screen.getByText(/Checking backend status/i)).toBeInTheDocument();
     expect(screen.getByText(/Loading application info/i)).toBeInTheDocument();
@@ -58,7 +61,9 @@ describe("App component", () => {
       version: "2.0.0",
     });
 
-    render(<App />);
+    await act(async () => {
+      render(<App />);
+    });
 
     await waitFor(() => {
       expect(screen.getByText("ok")).toBeInTheDocument();
@@ -81,15 +86,14 @@ describe("App component", () => {
       version: "2.0.0",
     });
 
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByText("OBS Overlay Import Utility")).toBeInTheDocument();
+    await act(async () => {
+      render(<App />);
     });
 
-    // The app name appears in both the header and the info list.
-    const nameElements = screen.getAllByText("OBS Overlay Import Utility");
-    expect(nameElements.length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => {
+      expect(screen.getAllByText("OBS Overlay Import Utility").length).toBeGreaterThanOrEqual(1);
+    });
+
     expect(screen.getByText("2.0.0")).toBeInTheDocument();
   });
 
@@ -100,7 +104,9 @@ describe("App component", () => {
       version: "2.0.0",
     });
 
-    render(<App />);
+    await act(async () => {
+      render(<App />);
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/Backend unavailable/i)).toBeInTheDocument();
@@ -116,14 +122,16 @@ describe("App component", () => {
     });
     mockElectronAPI.appInfo.mockRejectedValue(new Error("Connection refused"));
 
-    render(<App />);
+    await act(async () => {
+      render(<App />);
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/Connection refused/i)).toBeInTheDocument();
     });
   });
 
-  it("shows foundation disclaimer in footer", () => {
+  it("shows foundation disclaimer in footer", async () => {
     mockElectronAPI.health.mockResolvedValue({
       status: "ok",
       pid: 1234,
@@ -135,10 +143,12 @@ describe("App component", () => {
       version: "2.0.0",
     });
 
-    render(<App />);
+    await act(async () => {
+      render(<App />);
+    });
 
-    expect(
-      screen.getByText(/Foundation stage/i)
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/Foundation stage/i)).toBeInTheDocument();
+    });
   });
 });
