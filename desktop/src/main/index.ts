@@ -3,11 +3,15 @@
  *
  * Architecture:
  * - The main process spawns and manages a Python stdio backend.
- * - The Python backend exposes only `health` and `app_info` commands.
- * - IPC requests from the renderer use fixed channels (desktop:health,
- *   desktop:app-info) via ipcMain.handle / ipcRenderer.invoke.
+ * - The Python backend exposes a finite set of commands via JSON-lines.
+ * - IPC requests from the renderer use fixed channels via
+ *   ipcMain.handle / ipcRenderer.invoke.
  * - The renderer never imports Electron, Node, filesystem, child_process,
  *   or IPC primitives directly.
+ * - Selected absolute paths are held in the main process (for the folder
+ *   dialog) and forwarded to the Python backend, which stores them in an
+ *   in-memory, session-only selection store.  The renderer receives only
+ *   opaque selection IDs and safe display labels.
  *
  * Security configuration:
  * - nodeIntegration: false
@@ -21,7 +25,7 @@
  * - Every IPC sender, channel, and payload is validated.
  */
 
-import { app, BrowserWindow, ipcMain, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
 import {
   DEV_ORIGIN,
   isValidOrigin,
@@ -36,7 +40,14 @@ import { BackendTransport } from "./transport";
 // ---------------------------------------------------------------------------
 
 /** Allowed commands that can be sent to the Python backend. */
-const ALLOWED_COMMANDS = new Set(["health", "app_info"]);
+const ALLOWED_COMMANDS = new Set([
+  "health",
+  "app_info",
+  "choose_folder",
+  "scan_collections",
+  "choose_collection",
+  "convert_collection",
+]);
 
 /**
  * Validate that a command is in the allowed set.
@@ -49,6 +60,10 @@ function isAllowedCommand(command: string): boolean {
 /** Fixed IPC channels — no dynamic channel construction. */
 const HEALTH_CHANNEL = "desktop:health";
 const APP_INFO_CHANNEL = "desktop:app-info";
+const CHOOSE_FOLDER_CHANNEL = "desktop:choose-folder";
+const SCAN_COLLECTIONS_CHANNEL = "desktop:scan-collections";
+const CHOOSE_COLLECTION_CHANNEL = "desktop:choose-collection";
+const CONVERT_COLLECTION_CHANNEL = "desktop:convert-collection";
 
 /**
  * Resolve the Python executable for development.
@@ -99,6 +114,24 @@ function isValidSender(sender: Electron.WebContents): boolean {
 }
 
 /**
+ * Validate that a value is a non-empty string.
+ */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * Validate that a value is a plain object (not array, not null).
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+/**
  * IPC handler for the health command.
  * Validates sender, origin, and command before forwarding to the backend.
  */
@@ -111,7 +144,11 @@ ipcMain.handle(HEALTH_CHANNEL, async (event) => {
   }
   try {
     const response = await backend.sendRequest("health");
-    const resp = response as { type: string; data?: unknown; error?: { message: string } };
+    const resp = response as {
+      type: string;
+      data?: unknown;
+      error?: { message: string };
+    };
     if (resp.type === "result") {
       return resp.data;
     }
@@ -134,7 +171,11 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
   }
   try {
     const response = await backend.sendRequest("app_info");
-    const resp = response as { type: string; data?: unknown; error?: { message: string } };
+    const resp = response as {
+      type: string;
+      data?: unknown;
+      error?: { message: string };
+    };
     if (resp.type === "result") {
       return resp.data;
     }
@@ -143,6 +184,172 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
     throw new Error("Backend communication failed");
   }
 });
+
+/**
+ * IPC handler for the choose_folder command.
+ *
+ * Opens a folder dialog, validates the selected path, and forwards it to
+ * the Python backend's `choose_folder` command.  The backend stores the
+ * absolute path in its in-memory selection store and returns an opaque
+ * selection ID plus a safe label.  The raw absolute path never reaches
+ * the renderer.
+ */
+ipcMain.handle(CHOOSE_FOLDER_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  if (!isAllowedCommand("choose_folder")) {
+    throw new Error("Command not allowed");
+  }
+
+  // Open a folder dialog — the main process holds the absolute path.
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: "Choose an extracted overlay folder",
+    properties: ["openDirectory", "dontAddToRecent", "createDirectory"],
+    buttonLabel: "Select Overlay Folder",
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    throw new Error("No folder selected");
+  }
+
+  const folderPath = result.filePaths[0];
+
+  try {
+    const response = await backend.sendRequest("choose_folder", {
+      folder_path: folderPath,
+    });
+    const resp = response as {
+      type: string;
+      data?: unknown;
+      error?: { message: string };
+    };
+    if (resp.type === "result") {
+      return resp.data;
+    }
+    throw new Error(resp.error?.message ?? "Backend error");
+  } catch {
+    throw new Error("Backend communication failed");
+  }
+});
+
+/**
+ * IPC handler for the scan_collections command.
+ * Validates the selection ID payload before forwarding to the backend.
+ */
+ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  if (!isAllowedCommand("scan_collections")) {
+    throw new Error("Command not allowed");
+  }
+  if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+    throw new Error("Invalid selection_id");
+  }
+  try {
+    const response = await backend.sendRequest("scan_collections", {
+      selection_id: params.selection_id,
+    });
+    const resp = response as {
+      type: string;
+      data?: unknown;
+      error?: { message: string };
+    };
+    if (resp.type === "result") {
+      return resp.data;
+    }
+    throw new Error(resp.error?.message ?? "Backend error");
+  } catch {
+    throw new Error("Backend communication failed");
+  }
+});
+
+/**
+ * IPC handler for the choose_collection command.
+ * Validates the selection ID and collection index before forwarding.
+ */
+ipcMain.handle(
+  CHOOSE_COLLECTION_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isAllowedCommand("choose_collection")) {
+      throw new Error("Command not allowed");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+      throw new Error("Invalid selection_id");
+    }
+    if (
+      typeof params.collection_index !== "number" ||
+      !Number.isInteger(params.collection_index) ||
+      params.collection_index < 0
+    ) {
+      throw new Error("Invalid collection_index");
+    }
+    try {
+      const response = await backend.sendRequest("choose_collection", {
+        selection_id: params.selection_id,
+        collection_index: params.collection_index,
+      });
+      const resp = response as {
+        type: string;
+        data?: unknown;
+        error?: { message: string };
+      };
+      if (resp.type === "result") {
+        return resp.data;
+      }
+      throw new Error(resp.error?.message ?? "Backend error");
+    } catch {
+      throw new Error("Backend communication failed");
+    }
+  }
+);
+
+/**
+ * IPC handler for the convert_collection command.
+ * Validates the selection ID and boolean options before forwarding.
+ */
+ipcMain.handle(
+  CONVERT_COLLECTION_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isAllowedCommand("convert_collection")) {
+      throw new Error("Command not allowed");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+      throw new Error("Invalid selection_id");
+    }
+    if (typeof params.strict !== "boolean") {
+      throw new Error("Invalid strict option");
+    }
+    if (typeof params.case_sensitive !== "boolean") {
+      throw new Error("Invalid case_sensitive option");
+    }
+    try {
+      const response = await backend.sendRequest("convert_collection", {
+        selection_id: params.selection_id,
+        strict: params.strict,
+        case_sensitive: params.case_sensitive,
+      });
+      const resp = response as {
+        type: string;
+        data?: unknown;
+        error?: { message: string };
+      };
+      if (resp.type === "result") {
+        return resp.data;
+      }
+      throw new Error(resp.error?.message ?? "Backend error");
+    } catch {
+      throw new Error("Backend communication failed");
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Window management

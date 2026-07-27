@@ -111,14 +111,21 @@ export class BackendTransport {
    *
    * Uses a line-delimited JSON protocol over stdin/stdout.
    * Supports concurrent requests via the pending-request map.
+   *
+   * @param command  The backend command to invoke.
+   * @param params   Optional parameters object forwarded as ``params``.
    */
-  sendRequest(command: string): Promise<unknown> {
+  sendRequest(command: string, params?: Record<string, unknown>): Promise<unknown> {
     if (!this.pyStdin) {
       return Promise.reject(new Error("Backend not running"));
     }
 
     const requestId = this.generateRequestId();
-    const requestLine = JSON.stringify({ request_id: requestId, command }) + "\n";
+    const requestLine = JSON.stringify({
+      request_id: requestId,
+      command,
+      ...(params ? { params } : {}),
+    }) + "\n";
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
