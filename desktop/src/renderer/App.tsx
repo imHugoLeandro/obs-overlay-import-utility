@@ -3,7 +3,7 @@
  *
  * Layout:
  * - Persistent navigation sidebar (Import, Export, Auto Resizer, Settings)
- * - Main content area with placeholder pages
+ * - Main content area with the Import page and placeholder pages
  * - Backend status area (health + app version)
  *
  * Theme state lives in React only.  No Python settings integration yet.
@@ -21,11 +21,13 @@ import {
 import { PlaceholderPage } from "./PlaceholderPages";
 import { ThemeSelector } from "./ThemeSelector";
 import { BackendStatus } from "./BackendStatus";
+import { ImportPage } from "./ImportPage";
 import "./App.css";
 
 /**
  * Render the content for the active page.
- * Import, Export, and Auto Resizer are placeholder pages.
+ * Import is the functional Fix Scene Collection Paths workflow.
+ * Export and Auto Resizer are placeholder pages.
  * Settings exposes only the theme selector.
  */
 function PageContent({
@@ -34,6 +36,10 @@ function PageContent({
   activePage: PageId;
 }): React.ReactElement {
   const item = NAV_ITEMS.find((n) => n.id === activePage);
+
+  if (activePage === "import") {
+    return <ImportPage />;
+  }
 
   if (activePage === "settings") {
     return (

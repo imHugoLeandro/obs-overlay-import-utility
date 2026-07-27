@@ -42,9 +42,9 @@ describe("App component", () => {
 
   it("shows the Import page content by default", () => {
     render(<App />);
-    // The Import page shows its title and description.
-    expect(screen.getByRole("heading", { name: "Import" })).toBeInTheDocument();
-    expect(screen.getByText("Import workflows are coming next.")).toBeInTheDocument();
+    // The Import page now shows the functional Fix Scene Collection Paths workflow.
+    expect(screen.getByRole("heading", { name: "Fix Scene Collection Paths" })).toBeInTheDocument();
+    expect(screen.getByTestId("choose-folder-button")).toBeInTheDocument();
   });
 
   it("shows placeholder content for Export page", async () => {

@@ -33,6 +33,10 @@ Object.defineProperty(window, "matchMedia", {
 const mockElectronAPI = {
   health: vi.fn(),
   appInfo: vi.fn(),
+  chooseFolder: vi.fn(),
+  scanCollections: vi.fn(),
+  chooseCollection: vi.fn(),
+  convertCollection: vi.fn(),
 };
 
 // Assign to window so the renderer can access it.
