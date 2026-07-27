@@ -60,7 +60,7 @@ export function ImportPage(): React.ReactElement {
   const [collections, setCollections] = React.useState<DetectedCollection[]>([]);
 
   // Collection selection state.
-  const [selectedCollectionIndex, setSelectedCollectionIndex] = React.useState<number | null>(null);
+  const [selectedCollectionId, setSelectedCollectionId] = React.useState<string | null>(null);
   const [collectionLabel, setCollectionLabel] = React.useState<string>("");
 
   // Options — defaults match AppSettings: strict_validation=True,
@@ -100,7 +100,7 @@ export function ImportPage(): React.ReactElement {
         handleError("Backend is not available. Start the application in development mode.");
         return;
       }
-      const data = await api.chooseFolder("");
+      const data = await api.chooseOverlayFolder();
       setSelectionId(data.selection_id);
       setFolderLabel(data.folder_label);
       setStep("scan");
@@ -154,7 +154,7 @@ export function ImportPage(): React.ReactElement {
   // Step 3: Choose collection
   // -----------------------------------------------------------------------
 
-  async function handleChooseCollection(index: number): Promise<void> {
+  async function handleChooseCollection(collectionId: string): Promise<void> {
     if (!selectionId) {
       handleError("No folder selected.");
       return;
@@ -166,8 +166,8 @@ export function ImportPage(): React.ReactElement {
         handleError("Backend is not available.");
         return;
       }
-      const data = await api.chooseCollection(selectionId, index);
-      setSelectedCollectionIndex(index);
+      const data = await api.chooseCollection(selectionId, collectionId);
+      setSelectedCollectionId(collectionId);
       setCollectionLabel(data.collection_label);
       setStep("convert");
       stopBusy();
@@ -189,7 +189,7 @@ export function ImportPage(): React.ReactElement {
       handleError("No folder selected.");
       return;
     }
-    if (selectedCollectionIndex === null) {
+    if (selectedCollectionId === null) {
       handleError("No collection selected.");
       return;
     }
@@ -228,7 +228,7 @@ export function ImportPage(): React.ReactElement {
     setSelectionId(null);
     setFolderLabel("");
     setCollections([]);
-    setSelectedCollectionIndex(null);
+    setSelectedCollectionId(null);
     setCollectionLabel("");
     setStrict(true);
     setCaseSensitive(true);
@@ -398,13 +398,13 @@ export function ImportPage(): React.ReactElement {
             {collections.length > 0 ? (
               <ul className="collection-list" data-testid="collection-list">
                 {collections.map((col) => (
-                  <li key={col.index}>
+                  <li key={col.collection_id}>
                     <button
                       type="button"
                       className="collection-button"
-                      onClick={() => handleChooseCollection(col.index)}
+                      onClick={() => handleChooseCollection(col.collection_id)}
                       disabled={isBusy}
-                      data-testid={`collection-${col.index}`}
+                      data-testid={`collection-${col.collection_id.slice(0, 8)}`}
                     >
                       <span className="collection-label">{col.label}</span>
                     </button>

@@ -33,7 +33,7 @@ Object.defineProperty(window, "matchMedia", {
 const mockElectronAPI = {
   health: vi.fn(),
   appInfo: vi.fn(),
-  chooseFolder: vi.fn(),
+  chooseOverlayFolder: vi.fn(),
   scanCollections: vi.fn(),
   chooseCollection: vi.fn(),
   convertCollection: vi.fn(),

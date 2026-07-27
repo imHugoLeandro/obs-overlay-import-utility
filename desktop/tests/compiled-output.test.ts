@@ -114,7 +114,7 @@ describe("Compiled Electron output verification", () => {
     it("has fixed IPC channels", () => {
       expect(mainContent).toContain("desktop:health");
       expect(mainContent).toContain("desktop:app-info");
-      expect(mainContent).toContain("desktop:choose-folder");
+      expect(mainContent).toContain("desktop:choose-overlay-folder");
       expect(mainContent).toContain("desktop:scan-collections");
       expect(mainContent).toContain("desktop:choose-collection");
       expect(mainContent).toContain("desktop:convert-collection");
@@ -155,7 +155,7 @@ describe("Compiled Electron output verification", () => {
     it("exposes only health, appInfo, and import workflow channels", () => {
       expect(preloadContent).toContain("desktop:health");
       expect(preloadContent).toContain("desktop:app-info");
-      expect(preloadContent).toContain("desktop:choose-folder");
+      expect(preloadContent).toContain("desktop:choose-overlay-folder");
       expect(preloadContent).toContain("desktop:scan-collections");
       expect(preloadContent).toContain("desktop:choose-collection");
       expect(preloadContent).toContain("desktop:convert-collection");

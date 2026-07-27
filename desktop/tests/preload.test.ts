@@ -1,5 +1,5 @@
 /**
- * Tests for the preload script's IPC transport and request ID generation.
+ * Tests for the preload script's IPC transport.
  *
  * These tests verify the preload logic in isolation by mocking the
  * Electron `contextBridge` and `ipcRenderer` modules.
@@ -50,16 +50,40 @@ describe("Preload script", () => {
       expect.objectContaining({
         health: expect.any(Function),
         appInfo: expect.any(Function),
+        chooseOverlayFolder: expect.any(Function),
+        scanCollections: expect.any(Function),
+        chooseCollection: expect.any(Function),
+        convertCollection: expect.any(Function),
       })
     );
   });
 
-  it("exposes only health and appInfo methods", () => {
+  it("exposes exactly the finite API surface", () => {
+    expect(api).toBeDefined();
+    const keys = Object.keys(api).sort();
+    expect(keys).toEqual([
+      "appInfo",
+      "chooseCollection",
+      "chooseOverlayFolder",
+      "convertCollection",
+      "health",
+      "scanCollections",
+    ]);
+  });
+
+  it("does not expose raw paths or raw IPC", () => {
     expect(api).toBeDefined();
     const keys = Object.keys(api);
-    expect(keys).toHaveLength(2);
-    expect(keys).toContain("health");
-    expect(keys).toContain("appInfo");
+    // No raw filesystem, shell, or process APIs.
+    expect(keys).not.toContain("readFile");
+    expect(keys).not.toContain("writeFile");
+    expect(keys).not.toContain("shell");
+    expect(keys).not.toContain("exec");
+    expect(keys).not.toContain("spawn");
+    expect(keys).not.toContain("process");
+    expect(keys).not.toContain("chooseFolder");
+    // Only invoke is used (no send, on, once, etc.)
+    expect(typeof ipcRenderer.invoke).toBe("function");
   });
 
   it("health invokes the fixed desktop:health channel", () => {
@@ -92,6 +116,79 @@ describe("Preload script", () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:app-info");
   });
 
+  it("chooseOverlayFolder invokes its fixed channel with no payload", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      selection_id: "sel-123",
+      folder_label: "overlay",
+    });
+
+    api.chooseOverlayFolder();
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:choose-overlay-folder");
+  });
+
+  it("scanCollections invokes the fixed desktop:scan-collections channel with selection_id only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      selection_id: "sel-123",
+      folder_label: "overlay",
+      collections: [{ collection_id: "col-1", label: "collection.json" }],
+      count: 1,
+    });
+
+    api.scanCollections("sel-123");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:scan-collections", {
+      selection_id: "sel-123",
+    });
+  });
+
+  it("chooseCollection invokes the fixed desktop:choose-collection channel with selection_id and collection_id", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      selection_id: "sel-123",
+      collection_label: "collection.json",
+    });
+
+    api.chooseCollection("sel-123", "col-1");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:choose-collection", {
+      selection_id: "sel-123",
+      collection_id: "col-1",
+    });
+  });
+
+  it("convertCollection invokes the fixed desktop:convert-collection channel with selection_id, strict, case_sensitive", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      changed: 1,
+      unchanged: 0,
+      missing: [],
+      ambiguous: [],
+      indexed_files: 10,
+      candidate_paths: 5,
+      output_filename: "collection_ImportReady.json",
+    });
+
+    api.convertCollection("sel-123", true, true);
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:convert-collection", {
+      selection_id: "sel-123",
+      strict: true,
+      case_sensitive: true,
+    });
+  });
+
   it("rejects error responses from the backend", async () => {
     expect(api).toBeDefined();
 
@@ -100,12 +197,15 @@ describe("Preload script", () => {
     await expect(api.health()).rejects.toThrow("Backend unavailable");
   });
 
-  it("does not use dynamic channels or raw IPC", () => {
+  it("does not expose chooseFolder (renamed to chooseOverlayFolder)", () => {
     expect(api).toBeDefined();
+    expect(api.chooseFolder).toBeUndefined();
+    expect(api.chooseOverlayFolder).toBeDefined();
+  });
 
-    // Verify that only invoke is used (no send, on, once, etc.)
-    expect(ipcRenderer.invoke).toBeDefined();
-    // The mock only has invoke — send, on, once are not present
-    expect(typeof ipcRenderer.invoke).toBe("function");
+  it("does not accept a renderer-provided folder path", () => {
+    expect(api).toBeDefined();
+    // chooseOverlayFolder takes no parameters.
+    expect(api.chooseOverlayFolder.length).toBe(0);
   });
 });

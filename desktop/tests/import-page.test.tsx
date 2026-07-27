@@ -3,14 +3,15 @@
  *
  * Tests:
  * - Initial state (folder selection step)
- * - Folder selection (choose_folder → scan → collection step)
+ * - Folder selection (chooseOverlayFolder → scan → collection step)
  * - Scanning/busy state
- * - Detected collection selection
+ * - Detected collection selection (by collection_id)
  * - Strict and case-sensitive defaults ON
  * - Success result display
  * - Missing/ambiguous result display
  * - Safe error display
  * - Action disabled while busy
+ * - chooseOverlayFolder takes no parameters
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -42,16 +43,16 @@ describe("ImportPage", () => {
       name: "OBS Overlay Import Utility",
       version: "2.0.0",
     });
-    // Default: chooseFolder succeeds.
-    mockElectronAPI.chooseFolder.mockResolvedValue({
+    // Default: chooseOverlayFolder succeeds (no parameters).
+    mockElectronAPI.chooseOverlayFolder.mockResolvedValue({
       selection_id: "sel-123",
       folder_label: "my-overlay",
     });
-    // Default: scanCollections returns one collection.
+    // Default: scanCollections returns one collection with collection_id.
     mockElectronAPI.scanCollections.mockResolvedValue({
       selection_id: "sel-123",
       folder_label: "my-overlay",
-      collections: [{ index: 0, label: "collection.json" }],
+      collections: [{ collection_id: "col-abc", label: "collection.json" }],
       count: 1,
     });
     // Default: chooseCollection succeeds.
@@ -96,7 +97,9 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(mockElectronAPI.chooseFolder).toHaveBeenCalledTimes(1);
+      expect(mockElectronAPI.chooseOverlayFolder).toHaveBeenCalledTimes(1);
+      // chooseOverlayFolder takes no parameters.
+      expect(mockElectronAPI.chooseOverlayFolder).toHaveBeenCalledWith();
     });
 
     await waitFor(() => {
@@ -107,7 +110,7 @@ describe("ImportPage", () => {
       expect(screen.getByTestId("collection-list")).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+    expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     expect(screen.getByText("collection.json")).toBeInTheDocument();
   });
 
@@ -134,13 +137,13 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
-      expect(mockElectronAPI.chooseCollection).toHaveBeenCalledWith("sel-123", 0);
+      expect(mockElectronAPI.chooseCollection).toHaveBeenCalledWith("sel-123", "col-abc");
     });
 
     await waitFor(() => {
@@ -158,10 +161,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("advanced-options")).toBeInTheDocument();
@@ -178,10 +181,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("advanced-options")).toBeInTheDocument();
@@ -198,10 +201,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -225,10 +228,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -255,10 +258,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -301,10 +304,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -343,10 +346,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -367,8 +370,8 @@ describe("ImportPage", () => {
 
   it("shows safe error when backend is unavailable", async () => {
     const user = userEvent.setup();
-    mockElectronAPI.chooseFolder.mockRejectedValue(
-      new Error("Backend communication failed")
+    mockElectronAPI.chooseOverlayFolder.mockRejectedValue(
+      new Error("The backend is unavailable. Restart the application and try again.")
     );
 
     renderImportPage();
@@ -386,8 +389,8 @@ describe("ImportPage", () => {
 
   it("disables actions while busy", async () => {
     const user = userEvent.setup();
-    // Make chooseFolder hang.
-    mockElectronAPI.chooseFolder.mockImplementation(
+    // Make chooseOverlayFolder hang.
+    mockElectronAPI.chooseOverlayFolder.mockImplementation(
       () => new Promise(() => {})
     );
 
@@ -404,7 +407,7 @@ describe("ImportPage", () => {
   it("shows safe error for unknown/expired selection ID", async () => {
     const user = userEvent.setup();
     mockElectronAPI.scanCollections.mockRejectedValue(
-      new Error("This selection is no longer valid. Choose a folder again.")
+      new Error("This selection has expired. Choose the folder again.")
     );
 
     renderImportPage();
@@ -416,7 +419,7 @@ describe("ImportPage", () => {
     });
 
     expect(
-      screen.getByText(/no longer valid/i)
+      screen.getByText(/has expired/i)
     ).toBeInTheDocument();
   });
 
@@ -427,10 +430,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
@@ -458,10 +461,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("advanced-options")).toBeInTheDocument();
@@ -478,10 +481,10 @@ describe("ImportPage", () => {
     await user.click(screen.getByTestId("choose-folder-button"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("collection-0")).toBeInTheDocument();
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("collection-0"));
+    await user.click(screen.getByTestId("collection-col-abc"));
 
     await waitFor(() => {
       expect(screen.getByTestId("fix-paths-button")).toBeInTheDocument();
