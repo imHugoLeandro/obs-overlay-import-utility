@@ -33,24 +33,30 @@ describe("Navigation", () => {
 
   it("renders all four navigation items", () => {
     renderNav();
-    expect(screen.getByText("Import")).toBeInTheDocument();
-    expect(screen.getByText("Export")).toBeInTheDocument();
-    expect(screen.getByText("Auto Resizer")).toBeInTheDocument();
-    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Auto Resizer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("marks the active page with aria-current", () => {
     renderNav("export");
-    const exportButton = screen.getByRole("menuitem", { name: "Export" });
+    const exportButton = screen.getByRole("button", { name: "Export" });
     expect(exportButton).toHaveAttribute("aria-current", "page");
     expect(exportButton).toHaveClass("active");
   });
 
   it("does not mark inactive pages with aria-current", () => {
     renderNav("import");
-    const exportButton = screen.getByRole("menuitem", { name: "Export" });
+    const exportButton = screen.getByRole("button", { name: "Export" });
     expect(exportButton).not.toHaveAttribute("aria-current");
     expect(exportButton).not.toHaveClass("active");
+  });
+
+  it("does not use aria-selected on navigation buttons", () => {
+    renderNav("import");
+    const importButton = screen.getByRole("button", { name: "Import" });
+    expect(importButton).not.toHaveAttribute("aria-selected");
   });
 
   it("calls onNavigate with the correct page when a nav item is clicked", async () => {
@@ -58,7 +64,7 @@ describe("Navigation", () => {
     const onNavigate = vi.fn();
     renderNav("import", onNavigate);
 
-    await user.click(screen.getByRole("menuitem", { name: "Export" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
     expect(onNavigate).toHaveBeenCalledWith("export");
   });
 
@@ -67,13 +73,13 @@ describe("Navigation", () => {
     const onNavigate = vi.fn();
     renderNav("import", onNavigate);
 
-    await user.click(screen.getByRole("menuitem", { name: "Import" }));
+    await user.click(screen.getByRole("button", { name: "Import" }));
     expect(onNavigate).toHaveBeenCalledWith("import");
 
-    await user.click(screen.getByRole("menuitem", { name: "Auto Resizer" }));
+    await user.click(screen.getByRole("button", { name: "Auto Resizer" }));
     expect(onNavigate).toHaveBeenCalledWith("resizer");
 
-    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(onNavigate).toHaveBeenCalledWith("settings");
   });
 
@@ -81,11 +87,11 @@ describe("Navigation", () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     firstButton.focus();
     await user.keyboard("{ArrowDown}");
 
-    const secondButton = screen.getByRole("menuitem", { name: "Export" });
+    const secondButton = screen.getByRole("button", { name: "Export" });
     expect(secondButton).toHaveFocus();
   });
 
@@ -93,11 +99,11 @@ describe("Navigation", () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const secondButton = screen.getByRole("menuitem", { name: "Export" });
+    const secondButton = screen.getByRole("button", { name: "Export" });
     secondButton.focus();
     await user.keyboard("{ArrowUp}");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     expect(firstButton).toHaveFocus();
   });
 
@@ -106,7 +112,7 @@ describe("Navigation", () => {
     const onNavigate = vi.fn();
     renderNav("import", onNavigate);
 
-    const exportButton = screen.getByRole("menuitem", { name: "Export" });
+    const exportButton = screen.getByRole("button", { name: "Export" });
     exportButton.focus();
     await user.keyboard("{Enter}");
 
@@ -118,7 +124,7 @@ describe("Navigation", () => {
     const onNavigate = vi.fn();
     renderNav("import", onNavigate);
 
-    const settingsButton = screen.getByRole("menuitem", { name: "Settings" });
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
     settingsButton.focus();
     await user.keyboard(" ");
 
@@ -129,11 +135,11 @@ describe("Navigation", () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const lastButton = screen.getByRole("menuitem", { name: "Settings" });
+    const lastButton = screen.getByRole("button", { name: "Settings" });
     lastButton.focus();
     await user.keyboard("{Home}");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     expect(firstButton).toHaveFocus();
 
     await user.keyboard("{End}");
@@ -144,19 +150,19 @@ describe("Navigation", () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     firstButton.focus();
     await user.keyboard("{ArrowDown}");
 
     // After ArrowDown, the second button should have the "focused" class.
-    const secondButton = screen.getByRole("menuitem", { name: "Export" });
+    const secondButton = screen.getByRole("button", { name: "Export" });
     expect(secondButton).toHaveClass("focused");
 
     // Escape should clear the focused state.
     await user.keyboard("{Escape}");
 
     // The focused class should be removed from all buttons.
-    const navButtons = screen.getAllByRole("menuitem");
+    const navButtons = screen.getAllByRole("button");
     navButtons.forEach((btn) => {
       expect(btn).not.toHaveClass("focused");
     });
@@ -167,15 +173,21 @@ describe("Navigation", () => {
     expect(screen.getByRole("navigation", { name: "Main navigation" })).toBeInTheDocument();
   });
 
+  it("does not use role=menubar or role=menuitem", () => {
+    renderNav();
+    expect(screen.queryByRole("menubar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+  });
+
   it("wraps around with ArrowDown on the last item", async () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const lastButton = screen.getByRole("menuitem", { name: "Settings" });
+    const lastButton = screen.getByRole("button", { name: "Settings" });
     lastButton.focus();
     await user.keyboard("{ArrowDown}");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     expect(firstButton).toHaveFocus();
   });
 
@@ -183,11 +195,11 @@ describe("Navigation", () => {
     const user = userEvent.setup();
     renderNav("import");
 
-    const firstButton = screen.getByRole("menuitem", { name: "Import" });
+    const firstButton = screen.getByRole("button", { name: "Import" });
     firstButton.focus();
     await user.keyboard("{ArrowUp}");
 
-    const lastButton = screen.getByRole("menuitem", { name: "Settings" });
+    const lastButton = screen.getByRole("button", { name: "Settings" });
     expect(lastButton).toHaveFocus();
   });
 });

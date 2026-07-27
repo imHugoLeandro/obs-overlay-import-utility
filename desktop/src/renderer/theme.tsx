@@ -5,6 +5,8 @@
  * (src/obs_overlay_import_utility/appearance.py).  Theme state lives
  * entirely in React for now; Python settings integration belongs to
  * a later Stage-2 milestone.
+ *
+ * ThemeProvider is the sole owner of document.documentElement.dataset.theme.
  */
 
 import {
@@ -92,17 +94,6 @@ export const DARK_PALETTE: Palette = {
 };
 
 /**
- * Resolve a theme mode to a concrete palette.
- * When mode is "system", uses the OS preference via matchMedia.
- */
-export function paletteFor(mode: ThemeMode): Palette {
-  if (mode === "system") {
-    return systemThemeMode() === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
-  }
-  return mode === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
-}
-
-/**
  * Detect the system color scheme.
  * Returns "dark" if the OS prefers dark, "light" otherwise.
  */
@@ -113,6 +104,19 @@ export function systemThemeMode(): "light" | "dark" {
       : "light";
   }
   return "light";
+}
+
+/**
+ * Resolve a theme mode to a concrete palette.
+ * When mode is "system", uses the current OS preference via matchMedia.
+ * This is a pure utility — the ThemeProvider derives palette from
+ * systemMode state for reactive updates.
+ */
+export function paletteFor(mode: ThemeMode): Palette {
+  if (mode === "system") {
+    return systemThemeMode() === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
+  }
+  return mode === "dark" ? DARK_PALETTE : LIGHT_PALETTE;
 }
 
 /** Theme labels matching the Python THEME_LABELS. */
@@ -151,42 +155,62 @@ interface ThemeProviderProps {
 }
 
 /**
- * Theme provider.  Keeps theme state in React only (no persistence).
- * Listens for system preference changes when "system" is selected.
- * Sets the data-theme attribute on documentElement for CSS variable switching.
+ * Theme provider — the sole owner of document.documentElement.dataset.theme.
+ *
+ * State:
+ * - theme: the user-selected mode (light, dark, or system)
+ * - systemMode: the current OS color-scheme preference (light or dark)
+ *
+ * When theme is "system", the palette and data-theme are derived from
+ * systemMode, which is kept in sync with matchMedia changes.
+ * When theme is explicitly "light" or "dark", OS preference changes
+ * do NOT alter the palette or data-theme.
  */
 export function ThemeProvider({
   children,
   initialTheme = "system",
 }: ThemeProviderProps): React.ReactElement {
   const [theme, setThemeState] = useState<ThemeMode>(initialTheme);
-  const [, forceUpdate] = useState(0);
+  const [systemMode, setSystemMode] = useState<"light" | "dark">(
+    systemThemeMode()
+  );
 
-  const palette = useMemo(() => paletteFor(theme), [theme, forceUpdate]);
+  // Derive the resolved mode: system preference or explicit choice.
+  const resolvedMode = theme === "system" ? systemMode : theme;
+
+  // Derive the palette from the resolved mode.
+  const palette = useMemo(
+    () => (resolvedMode === "dark" ? DARK_PALETTE : LIGHT_PALETTE),
+    [resolvedMode]
+  );
 
   const setTheme = (mode: ThemeMode): void => {
     setThemeState(mode);
   };
 
-  // Apply the resolved theme to the documentElement data-theme attribute.
-  useEffect(() => {
-    const resolvedMode = theme === "system" ? systemThemeMode() : theme;
-    document.documentElement.setAttribute("data-theme", resolvedMode);
-  }, [theme]);
-
-  // When theme is "system", listen for OS preference changes.
+  // Subscribe to OS color-scheme changes when theme is "system".
+  // When theme is explicitly light/dark, no listener is attached,
+  // so OS changes cannot override the user's choice.
   useEffect(() => {
     if (theme !== "system") return;
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (): void => {
-      // Force a re-render by incrementing a counter.
-      // This ensures paletteFor picks up the new system preference.
-      forceUpdate((n) => n + 1);
+
+    const handler = (event: MediaQueryListEvent): void => {
+      setSystemMode(event.matches ? "dark" : "light");
     };
+
     mediaQuery.addEventListener("change", handler);
-    return () => mediaQuery.removeEventListener("change", handler);
+    return () => {
+      mediaQuery.removeEventListener("change", handler);
+    };
   }, [theme]);
+
+  // Apply the resolved mode to documentElement as data-theme.
+  // ThemeProvider is the sole owner of this attribute.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", resolvedMode);
+  }, [resolvedMode]);
 
   const value = useMemo(
     () => ({ theme, palette, setTheme }),

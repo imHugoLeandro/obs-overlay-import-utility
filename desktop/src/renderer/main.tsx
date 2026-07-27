@@ -3,23 +3,9 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 
-// Detect system theme and set data-theme attribute on documentElement.
-// This allows CSS variables to switch between light and dark.
-function applySystemTheme(): void {
-  const root = document.documentElement;
-  if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-    root.setAttribute("data-theme", "dark");
-  } else {
-    root.setAttribute("data-theme", "light");
-  }
-}
-
-applySystemTheme();
-
-// Listen for system theme changes.
-window
-  .matchMedia("(prefers-color-scheme: dark)")
-  .addEventListener("change", applySystemTheme);
+// ThemeProvider is the sole owner of document.documentElement.dataset.theme.
+// Do not set it here — that would create a competing listener that could
+// overwrite an explicit user choice of Light or Dark.
 
 const container = document.getElementById("root");
 if (!container) {

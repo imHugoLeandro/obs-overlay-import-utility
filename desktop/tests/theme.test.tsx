@@ -7,12 +7,17 @@
  * - systemThemeMode detects the OS preference
  * - ThemeProvider provides theme, palette, and setTheme
  * - ThemeProvider sets data-theme attribute on documentElement
- * - ThemeProvider listens for system preference changes
+ * - ThemeProvider is the sole owner of data-theme (no duplicate listener in main.tsx)
+ * - System Light → OS changes to Dark: palette mode and data-theme become dark
+ * - System Dark → OS changes to Light: palette mode and data-theme become light
+ * - Explicit Light remains light after an OS Dark event
+ * - Explicit Dark remains dark after an OS Light event
+ * - Listener cleanup prevents stale updates after switching from System to explicit
  * - ThemeSelector renders and allows switching themes
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   LIGHT_PALETTE,
@@ -47,6 +52,35 @@ function renderWithTheme(initialTheme: "light" | "dark" | "system" = "system") {
       <ThemeProbe />
     </ThemeProvider>
   );
+}
+
+/**
+ * Create a mock MediaQueryList that tracks listeners and allows
+ * simulating preference changes.
+ */
+function createMediaQueryMock(initialMatches: boolean) {
+  const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+  let matches = initialMatches;
+  return {
+    matches: matches,
+    media: "(prefers-color-scheme: dark)",
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn((_event: string, listener: (e: MediaQueryListEvent) => void) => {
+      listeners.push(listener);
+    }),
+    removeEventListener: vi.fn((_event: string, listener: (e: MediaQueryListEvent) => void) => {
+      const idx = listeners.indexOf(listener);
+      if (idx >= 0) listeners.splice(idx, 1);
+    }),
+    dispatchEvent: vi.fn(),
+    // Method to simulate a preference change.
+    _triggerChange(newMatches: boolean) {
+      matches = newMatches;
+      listeners.forEach((l) => l({ matches: newMatches } as MediaQueryListEvent));
+    },
+  };
 }
 
 describe("Palette constants", () => {
@@ -87,7 +121,6 @@ describe("paletteFor", () => {
   });
 
   it("returns a palette based on system preference for 'system' mode", () => {
-    // Mock systemThemeMode to return "dark".
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query) => ({
       matches: query.includes("dark"),
@@ -98,7 +131,7 @@ describe("paletteFor", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    }));
+    })) as typeof window.matchMedia;
 
     const palette = paletteFor("system");
     expect(palette.mode).toBe("dark");
@@ -117,7 +150,7 @@ describe("paletteFor", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    }));
+    })) as typeof window.matchMedia;
 
     const palette = paletteFor("system");
     expect(palette.mode).toBe("light");
@@ -138,7 +171,7 @@ describe("systemThemeMode", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    }));
+    })) as typeof window.matchMedia;
 
     expect(systemThemeMode()).toBe("dark");
     window.matchMedia = originalMatchMedia;
@@ -155,7 +188,7 @@ describe("systemThemeMode", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    }));
+    })) as typeof window.matchMedia;
 
     expect(systemThemeMode()).toBe("light");
     window.matchMedia = originalMatchMedia;
@@ -163,7 +196,15 @@ describe("systemThemeMode", () => {
 });
 
 describe("ThemeProvider", () => {
+  let originalMatchMedia: typeof window.matchMedia;
+
   beforeEach(() => {
+    originalMatchMedia = window.matchMedia;
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
     document.documentElement.removeAttribute("data-theme");
   });
 
@@ -189,22 +230,11 @@ describe("ThemeProvider", () => {
   });
 
   it("sets data-theme based on system preference when theme is system", () => {
-    const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query) => ({
-      matches: query.includes("dark"),
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    const mock = createMediaQueryMock(false); // system prefers light
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
 
     renderWithTheme("system");
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-
-    window.matchMedia = originalMatchMedia;
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 
   it("allows switching theme via setTheme", async () => {
@@ -217,40 +247,105 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("re-renders palette when system preference changes", async () => {
-    // This test verifies that paletteFor picks up system preference changes
-    // when called multiple times with different matchMedia results.
-    const originalMatchMedia = window.matchMedia;
+  it("System Light → OS changes to Dark: palette mode and data-theme become dark", async () => {
+    const mock = createMediaQueryMock(false); // system prefers light
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
 
-    // First: system prefers light.
-    window.matchMedia = vi.fn().mockImplementation((query) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })) as typeof window.matchMedia;
+    renderWithTheme("system");
+    expect(screen.getByTestId("palette-mode").textContent).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
 
-    expect(paletteFor("system").mode).toBe("light");
+    // Simulate OS preference change to dark.
+    await act(async () => {
+      mock._triggerChange(true);
+    });
 
-    // Now: system prefers dark.
-    window.matchMedia = vi.fn().mockImplementation((query) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })) as typeof window.matchMedia;
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
 
-    expect(paletteFor("system").mode).toBe("dark");
+  it("System Dark → OS changes to Light: palette mode and data-theme become light", async () => {
+    const mock = createMediaQueryMock(true); // system prefers dark
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
 
-    window.matchMedia = originalMatchMedia;
+    renderWithTheme("system");
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+
+    // Simulate OS preference change to light.
+    await act(async () => {
+      mock._triggerChange(false);
+    });
+
+    expect(screen.getByTestId("palette-mode").textContent).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("Explicit Light remains light after an OS Dark event", async () => {
+    const mock = createMediaQueryMock(true); // OS prefers dark
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
+
+    renderWithTheme("light");
+    expect(screen.getByTestId("palette-mode").textContent).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    // Simulate OS preference change to dark.
+    mock._triggerChange(true);
+
+    // Should remain light — explicit choice is not overridden.
+    expect(screen.getByTestId("palette-mode").textContent).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("Explicit Dark remains dark after an OS Light event", async () => {
+    const mock = createMediaQueryMock(false); // OS prefers light
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
+
+    renderWithTheme("dark");
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+
+    // Simulate OS preference change to light.
+    mock._triggerChange(false);
+
+    // Should remain dark — explicit choice is not overridden.
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("Listener cleanup prevents stale updates after switching from System to explicit", async () => {
+    const mock = createMediaQueryMock(false); // system prefers light
+    window.matchMedia = vi.fn().mockReturnValue(mock) as typeof window.matchMedia;
+
+    renderWithTheme("system");
+    expect(screen.getByTestId("palette-mode").textContent).toBe("light");
+
+    // Switch to explicit dark.
+    const user = userEvent.setup();
+    await user.click(screen.getByText("set-dark"));
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+
+    // Simulate OS preference change — should NOT affect the palette
+    // because we switched away from System and the listener was cleaned up.
+    mock._triggerChange(true);
+
+    expect(screen.getByTestId("palette-mode").textContent).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+});
+
+describe("main.tsx does not own system theme", () => {
+  it("main.tsx has no matchMedia listener for system theme", () => {
+    // Verify that main.tsx does not contain matchMedia or applySystemTheme.
+    // ThemeProvider is the sole owner of document.documentElement.dataset.theme.
+    const fs = require("fs");
+    const path = require("path");
+    const mainPath = path.resolve(__dirname, "..", "src", "renderer", "main.tsx");
+    const source = fs.readFileSync(mainPath, "utf8");
+
+    expect(source).not.toContain("matchMedia");
+    expect(source).not.toContain("applySystemTheme");
+    expect(source).not.toContain("data-theme");
   });
 });
 
@@ -283,7 +378,7 @@ describe("ThemeSelector", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    }));
+    })) as typeof window.matchMedia;
 
     render(
       <ThemeProvider initialTheme="system">

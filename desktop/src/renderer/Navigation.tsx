@@ -56,6 +56,8 @@ interface NavigationProps {
  * - Keyboard-accessible (arrow keys, Enter, Home/End).
  * - Clear active state with accent color.
  * - Responsive: collapses to icon-only on narrow windows.
+ * - Uses native <nav> with buttons — no role="menubar"/"menuitem".
+ * - Active page uses aria-current="page" only (no aria-selected).
  */
 export function Navigation({
   activePage,
@@ -130,18 +132,16 @@ export function Navigation({
       <div className="nav-header">
         <span className="nav-caption">OVERLAY TOOLS</span>
       </div>
-      <ul className="nav-list" role="menubar">
+      <ul className="nav-list">
         {NAV_ITEMS.map((item, index) => {
           const isActive = activePage === item.id;
           const isFocused = focusedIndex === index;
           return (
-            <li key={item.id} role="none">
+            <li key={item.id}>
               <button
                 type="button"
-                role="menuitem"
                 data-nav-index={index}
                 aria-current={isActive ? "page" : undefined}
-                aria-selected={isActive}
                 className={`nav-button ${isActive ? "active" : ""} ${
                   isFocused ? "focused" : ""
                 }`}

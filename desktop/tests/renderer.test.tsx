@@ -34,10 +34,10 @@ describe("App component", () => {
 
   it("renders the navigation sidebar with all four items", () => {
     render(<App />);
-    expect(screen.getByRole("menuitem", { name: "Import" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Export" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Auto Resizer" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Auto Resizer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("shows the Import page content by default", () => {
@@ -51,7 +51,7 @@ describe("App component", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("menuitem", { name: "Export" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
 
     expect(screen.getByRole("heading", { name: "Export" })).toBeInTheDocument();
     expect(screen.getByText("Export workflows are coming next.")).toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("App component", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("menuitem", { name: "Auto Resizer" }));
+    await user.click(screen.getByRole("button", { name: "Auto Resizer" }));
 
     expect(screen.getByRole("heading", { name: "Auto Resizer" })).toBeInTheDocument();
     expect(screen.getByText("Auto Resizer workflows are coming next.")).toBeInTheDocument();
@@ -71,7 +71,7 @@ describe("App component", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByLabelText("Theme")).toBeInTheDocument();
@@ -156,11 +156,11 @@ describe("App component", () => {
 
     // Tab to the first nav button.
     await user.tab();
-    expect(screen.getByRole("menuitem", { name: "Import" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Import" })).toHaveFocus();
 
     // Arrow down to Export.
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("menuitem", { name: "Export" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Export" })).toHaveFocus();
 
     // Enter to navigate.
     await user.keyboard("{Enter}");
