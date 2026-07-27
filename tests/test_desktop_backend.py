@@ -6,15 +6,15 @@ Covers:
 * Unknown commands.
 * Malformed JSON, missing fields, wrong types.
 * Request-id echo semantics.
-* Import workflow: choose_folder, scan_collections, choose_collection,
+* Import workflow: scan_collections, convert_collection.
+* The backend receives concrete folder/collection paths from Electron main
+  (not opaque renderer IDs).
+* scan uses existing find_scene_collections; conversion uses existing
   convert_collection.
-* Selection ID validation: unknown, expired, mismatched, reused.
-* Collection not inside the selected folder.
-* Strict mode blocks output when references are missing.
-* Ambiguity blocks output.
-* Success creates a copy and never changes the original.
-* Malformed payload and unknown command.
-* Safe expected-error serialization.
+* Folder/collection containment and symlink escape rejection.
+* No raw selected folder path in renderer-facing backend result.
+* Expected UtilityError is structured and customer-safe.
+* Retry semantics: failed strict validation does not prevent retry.
 """
 
 from __future__ import annotations
@@ -154,12 +154,16 @@ class BackendUnknownCommandTests(unittest.TestCase):
             frozenset({
                 "health",
                 "app_info",
-                "choose_folder",
                 "scan_collections",
-                "choose_collection",
                 "convert_collection",
             }),
         )
+
+    def test_no_choose_folder_command(self) -> None:
+        """The backend no longer has a choose_folder command —
+        Electron main owns the folder selection."""
+        self.assertNotIn("choose_folder", ALLOWED_COMMANDS)
+        self.assertNotIn("choose_collection", ALLOWED_COMMANDS)
 
 
 class BackendSafetyTests(unittest.TestCase):
@@ -169,7 +173,8 @@ class BackendSafetyTests(unittest.TestCase):
         self.backend = Backend()
 
     def test_no_shell_command_endpoint(self) -> None:
-        for cmd in ("shell", "exec", "run", "subprocess", "system", "eval", "import"):
+        for cmd in ("shell", "exec", "run", "subprocess", "system", "eval", "import",
+                     "choose_folder", "choose_collection"):
             req = Request(request_id="s", command=cmd)
             resp = self.backend.handle(req)
             self.assertEqual(resp.type, "error", f"Command {cmd!r} should be rejected")
@@ -254,88 +259,15 @@ class BackendInternalErrorTests(unittest.TestCase):
 # Import workflow tests
 # ---------------------------------------------------------------------------
 
-class ChooseFolderTests(unittest.TestCase):
-    """Tests for the choose_folder command."""
-
-    def setUp(self) -> None:
-        self.backend = Backend()
-
-    def test_valid_folder_returns_selection_id_and_label(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            req = Request(
-                request_id="cf1",
-                command="choose_folder",
-                params={"folder_path": temp},
-            )
-            resp = self.backend.handle(req)
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            self.assertIn("selection_id", resp.data)
-            self.assertIn("folder_label", resp.data)
-            self.assertTrue(resp.data["selection_id"])
-            # Label should be the folder basename, not the full path.
-            self.assertEqual(resp.data["folder_label"], Path(temp).name)
-
-    def test_invalid_folder_returns_error(self) -> None:
-        req = Request(
-            request_id="cf2",
-            command="choose_folder",
-            params={"folder_path": "/nonexistent/path/12345"},
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_folder")
-
-    def test_missing_folder_path_returns_error(self) -> None:
-        req = Request(
-            request_id="cf3",
-            command="choose_folder",
-            params={},
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_params")
-
-    def test_non_string_folder_path_returns_error(self) -> None:
-        req = Request(
-            request_id="cf4",
-            command="choose_folder",
-            params={"folder_path": 12345},
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_params")
-
-    def test_selection_id_is_opaque(self) -> None:
-        """The selection ID should not contain the folder path."""
-        with tempfile.TemporaryDirectory() as temp:
-            req = Request(
-                request_id="cf5",
-                command="choose_folder",
-                params={"folder_path": temp},
-            )
-            resp = self.backend.handle(req)
-            assert resp.data is not None
-            self.assertNotIn(temp, resp.data["selection_id"])
-            self.assertNotIn(temp, resp.data["folder_label"])
-
-
 class ScanCollectionsTests(unittest.TestCase):
-    """Tests for the scan_collections command."""
+    """Tests for the scan_collections command.
+
+    The backend receives concrete folder paths from Electron main
+    (not opaque renderer IDs).
+    """
 
     def setUp(self) -> None:
         self.backend = Backend()
-
-    def _choose_folder(self, folder: str) -> str:
-        req = Request(
-            request_id="sc-setup",
-            command="choose_folder",
-            params={"folder_path": folder},
-        )
-        resp = self.backend.handle(req)
-        assert resp.type == "result"
-        assert resp.data is not None
-        return resp.data["selection_id"]
 
     def test_valid_folder_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -343,11 +275,10 @@ class ScanCollectionsTests(unittest.TestCase):
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
             )
-            selection_id = self._choose_folder(temp)
             req = Request(
                 request_id="sc1",
                 command="scan_collections",
-                params={"selection_id": selection_id},
+                params={"folder_path": temp},
             )
             resp = self.backend.handle(req)
             self.assertEqual(resp.type, "result")
@@ -358,17 +289,17 @@ class ScanCollectionsTests(unittest.TestCase):
             # No raw absolute paths in the response.
             self.assertNotIn(temp, json.dumps(resp.data))
 
-    def test_invalid_selection_id_returns_error(self) -> None:
+    def test_invalid_folder_returns_error(self) -> None:
         req = Request(
             request_id="sc2",
             command="scan_collections",
-            params={"selection_id": "nonexistent-id"},
+            params={"folder_path": "/nonexistent/path/12345"},
         )
         resp = self.backend.handle(req)
         self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "expired_or_unknown_selection")
+        self.assertEqual(resp.error["code"], "invalid_folder")
 
-    def test_missing_selection_id_returns_error(self) -> None:
+    def test_missing_folder_path_returns_error(self) -> None:
         req = Request(
             request_id="sc3",
             command="scan_collections",
@@ -378,113 +309,59 @@ class ScanCollectionsTests(unittest.TestCase):
         self.assertEqual(resp.type, "error")
         self.assertEqual(resp.error["code"], "invalid_params")
 
+    def test_non_string_folder_path_returns_error(self) -> None:
+        req = Request(
+            request_id="sc4",
+            command="scan_collections",
+            params={"folder_path": 12345},
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
     def test_empty_folder_returns_zero_collections(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            selection_id = self._choose_folder(temp)
             req = Request(
-                request_id="sc4",
+                request_id="sc5",
                 command="scan_collections",
-                params={"selection_id": selection_id},
+                params={"folder_path": temp},
             )
             resp = self.backend.handle(req)
             self.assertEqual(resp.type, "result")
             assert resp.data is not None
             self.assertEqual(resp.data["count"], 0)
 
-
-class ChooseCollectionTests(unittest.TestCase):
-    """Tests for the choose_collection command."""
-
-    def setUp(self) -> None:
-        self.backend = Backend()
-
-    def _setup(self, temp: str) -> str:
-        root = Path(temp)
-        (root / "collection.json").write_text(
-            json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
-        )
-        req = Request(
-            request_id="cc-setup",
-            command="choose_folder",
-            params={"folder_path": temp},
-        )
-        resp = self.backend.handle(req)
-        assert resp.type == "result"
-        assert resp.data is not None
-        sid = resp.data["selection_id"]
-        # Scan first.
-        scan_req = Request(
-            request_id="cc-scan",
-            command="scan_collections",
-            params={"selection_id": sid},
-        )
-        self.backend.handle(scan_req)
-        return sid
-
-    def test_valid_collection_choice(self) -> None:
+    def test_scan_uses_existing_find_scene_collections(self) -> None:
+        """The backend must use the existing core.find_scene_collections()
+        engine, not reimplement it."""
         with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup(temp)
+            root = Path(temp)
+            (root / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
+            )
+            (root / "collection_ImportReady.json").write_text(
+                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
+            )
+            (root / "metadata.json").write_text('{"name":"not OBS"}', encoding="utf-8")
             req = Request(
-                request_id="cc1",
-                command="choose_collection",
-                params={"selection_id": sid, "collection_index": 0},
+                request_id="sc6",
+                command="scan_collections",
+                params={"folder_path": temp},
             )
             resp = self.backend.handle(req)
             self.assertEqual(resp.type, "result")
             assert resp.data is not None
-            self.assertEqual(resp.data["collection_label"], "collection.json")
-
-    def test_invalid_selection_id_returns_error(self) -> None:
-        req = Request(
-            request_id="cc2",
-            command="choose_collection",
-            params={"selection_id": "nonexistent", "collection_index": 0},
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "expired_or_unknown_selection")
-
-    def test_out_of_range_index_returns_error(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup(temp)
-            req = Request(
-                request_id="cc3",
-                command="choose_collection",
-                params={"selection_id": sid, "collection_index": 99},
-            )
-            resp = self.backend.handle(req)
-            self.assertEqual(resp.type, "error")
-            self.assertEqual(resp.error["code"], "invalid_collection_index")
-
-    def test_non_integer_index_returns_error(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup(temp)
-            req = Request(
-                request_id="cc4",
-                command="choose_collection",
-                params={"selection_id": sid, "collection_index": "zero"},
-            )
-            resp = self.backend.handle(req)
-            self.assertEqual(resp.type, "error")
-            self.assertEqual(resp.error["code"], "invalid_params")
-
-    def test_collection_not_in_folder_returns_error(self) -> None:
-        """If the collection path resolves outside the folder, reject it."""
-        with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup(temp)
-            # Manually corrupt the selection to simulate a mismatch.
-            # We test this by choosing an index that doesn't exist.
-            req = Request(
-                request_id="cc5",
-                command="choose_collection",
-                params={"selection_id": sid, "collection_index": 0},
-            )
-            resp = self.backend.handle(req)
-            self.assertEqual(resp.type, "result")
+            # find_scene_collections filters out _ImportReady and non-OBS files.
+            self.assertEqual(resp.data["count"], 1)
+            self.assertEqual(resp.data["collections"][0]["label"], "collection.json")
 
 
 class ConvertCollectionTests(unittest.TestCase):
-    """Tests for the convert_collection command."""
+    """Tests for the convert_collection command.
+
+    The backend receives concrete folder_path and collection_path from
+    Electron main (not opaque renderer IDs).
+    """
 
     def setUp(self) -> None:
         self.backend = Backend()
@@ -497,32 +374,11 @@ class ConvertCollectionTests(unittest.TestCase):
         (root / collection_name).write_text(
             json.dumps(_scene_data(r"C:\old\media\image.png")), encoding="utf-8"
         )
-        req = Request(
-            request_id="cv-setup",
-            command="choose_folder",
-            params={"folder_path": temp},
-        )
-        resp = self.backend.handle(req)
-        assert resp.type == "result"
-        assert resp.data is not None
-        sid = resp.data["selection_id"]
-        scan_req = Request(
-            request_id="cv-scan",
-            command="scan_collections",
-            params={"selection_id": sid},
-        )
-        self.backend.handle(scan_req)
-        choose_req = Request(
-            request_id="cv-choose",
-            command="choose_collection",
-            params={"selection_id": sid, "collection_index": 0},
-        )
-        self.backend.handle(choose_req)
-        return sid
+        return str(root / collection_name)
 
     def test_success_creates_copy_and_never_changes_original(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup_full(temp)
+            collection_path = self._setup_full(temp)
             original = json.loads(
                 (Path(temp) / "collection.json").read_text(encoding="utf-8")
             )
@@ -530,7 +386,8 @@ class ConvertCollectionTests(unittest.TestCase):
                 request_id="cv1",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": True,
                 },
@@ -554,41 +411,16 @@ class ConvertCollectionTests(unittest.TestCase):
     def test_strict_mode_blocks_output_when_references_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            collection_path = str(root / "collection.json")
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\old\missing.png")), encoding="utf-8"
             )
-            # Choose folder.
-            req = Request(
-                request_id="cv-setup2",
-                command="choose_folder",
-                params={"folder_path": temp},
-            )
-            resp = self.backend.handle(req)
-            assert resp.type == "result"
-            assert resp.data is not None
-            sid = resp.data["selection_id"]
-            # Scan.
-            self.backend.handle(
-                Request(
-                    request_id="cv-scan2",
-                    command="scan_collections",
-                    params={"selection_id": sid},
-                )
-            )
-            # Choose collection.
-            self.backend.handle(
-                Request(
-                    request_id="cv-choose2",
-                    command="choose_collection",
-                    params={"selection_id": sid, "collection_index": 0},
-                )
-            )
-            # Convert with strict=True.
             req = Request(
                 request_id="cv2",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": True,
                 },
@@ -608,37 +440,16 @@ class ConvertCollectionTests(unittest.TestCase):
             (root / "two").mkdir()
             (root / "one" / "same.png").write_bytes(b"1")
             (root / "two" / "same.png").write_bytes(b"2")
+            collection_path = str(root / "collection.json")
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\old\same.png")), encoding="utf-8"
-            )
-            req = Request(
-                request_id="cv-setup3",
-                command="choose_folder",
-                params={"folder_path": temp},
-            )
-            resp = self.backend.handle(req)
-            assert resp.type == "result"
-            assert resp.data is not None
-            sid = resp.data["selection_id"]
-            self.backend.handle(
-                Request(
-                    request_id="cv-scan3",
-                    command="scan_collections",
-                    params={"selection_id": sid},
-                )
-            )
-            self.backend.handle(
-                Request(
-                    request_id="cv-choose3",
-                    command="choose_collection",
-                    params={"selection_id": sid, "collection_index": 0},
-                )
             )
             req = Request(
                 request_id="cv3",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": True,
                 },
@@ -654,52 +465,40 @@ class ConvertCollectionTests(unittest.TestCase):
             for c in candidates:
                 self.assertNotIn(temp, c)
 
-    def test_unknown_selection_id_returns_error(self) -> None:
-        req = Request(
-            request_id="cv4",
-            command="convert_collection",
-            params={
-                "selection_id": "nonexistent",
-                "strict": True,
-                "case_sensitive": True,
-            },
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "expired_or_unknown_selection")
-
-    def test_no_collection_selected_returns_error(self) -> None:
+    def test_collection_not_in_folder_returns_error(self) -> None:
+        """If the collection path is outside the folder, reject it."""
         with tempfile.TemporaryDirectory() as temp:
-            req = Request(
-                request_id="cv-setup5",
-                command="choose_folder",
-                params={"folder_path": temp},
+            root = Path(temp)
+            # Create collection outside the folder.
+            outside = root.parent / "outside_collection.json"
+            outside.write_text(
+                json.dumps(_scene_data(r"C:\old\image.png")), encoding="utf-8"
             )
-            resp = self.backend.handle(req)
-            assert resp.type == "result"
-            assert resp.data is not None
-            sid = resp.data["selection_id"]
             req = Request(
-                request_id="cv5",
+                request_id="cv4",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": str(outside),
                     "strict": True,
                     "case_sensitive": True,
                 },
             )
             resp = self.backend.handle(req)
             self.assertEqual(resp.type, "error")
-            self.assertEqual(resp.error["code"], "no_collection_selected")
+            self.assertEqual(resp.error["code"], "collection_not_in_folder")
+            # Clean up.
+            outside.unlink()
 
     def test_invalid_strict_option_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup_full(temp)
+            collection_path = self._setup_full(temp)
             req = Request(
-                request_id="cv6",
+                request_id="cv5",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": "yes",
                     "case_sensitive": True,
                 },
@@ -710,12 +509,13 @@ class ConvertCollectionTests(unittest.TestCase):
 
     def test_invalid_case_sensitive_option_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup_full(temp)
+            collection_path = self._setup_full(temp)
             req = Request(
-                request_id="cv7",
+                request_id="cv6",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": "yes",
                 },
@@ -724,15 +524,49 @@ class ConvertCollectionTests(unittest.TestCase):
             self.assertEqual(resp.type, "error")
             self.assertEqual(resp.error["code"], "invalid_params")
 
-    def test_selection_id_is_single_use(self) -> None:
-        """After convert_collection, the selection ID is consumed."""
+    def test_missing_folder_path_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            sid = self._setup_full(temp)
+            collection_path = self._setup_full(temp)
             req = Request(
-                request_id="cv8a",
+                request_id="cv7",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "collection_path": collection_path,
+                    "strict": True,
+                    "case_sensitive": True,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_missing_collection_path_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self._setup_full(temp)
+            req = Request(
+                request_id="cv8",
+                command="convert_collection",
+                params={
+                    "folder_path": temp,
+                    "strict": True,
+                    "case_sensitive": True,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_conversion_uses_existing_convert_collection(self) -> None:
+        """The backend must use the existing core.convert_collection()
+        engine, not reimplement it."""
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._setup_full(temp)
+            req = Request(
+                request_id="cv9",
+                command="convert_collection",
+                params={
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": True,
                 },
@@ -741,19 +575,73 @@ class ConvertCollectionTests(unittest.TestCase):
             self.assertEqual(resp.type, "result")
             assert resp.data is not None
             self.assertTrue(resp.data["success"])
-            # Reusing the same selection ID should fail.
-            req2 = Request(
-                request_id="cv8b",
+            # The output filename follows the existing naming convention.
+            self.assertEqual(resp.data["output_filename"], "collection_ImportReady.json")
+
+    def test_no_raw_selected_folder_path_in_result(self) -> None:
+        """The backend result must not contain raw absolute paths."""
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._setup_full(temp)
+            req = Request(
+                request_id="cv10",
                 command="convert_collection",
                 params={
-                    "selection_id": sid,
+                    "folder_path": temp,
+                    "collection_path": collection_path,
                     "strict": True,
                     "case_sensitive": True,
                 },
             )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            result_json = json.dumps(resp.data)
+            self.assertNotIn(temp, result_json)
+
+    def test_retry_after_failed_strict_validation(self) -> None:
+        """A failed strict validation must not prevent retry.
+
+        The backend is stateless (no selection store), so retry is
+        always possible by sending a new request with different options.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\old\missing.png")), encoding="utf-8"
+            )
+            collection_path = str(root / "collection.json")
+
+            # First attempt: strict=True — should fail.
+            req = Request(
+                request_id="cv11a",
+                command="convert_collection",
+                params={
+                    "folder_path": temp,
+                    "collection_path": collection_path,
+                    "strict": True,
+                    "case_sensitive": True,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertFalse(resp.data["success"])
+
+            # Second attempt: strict=False — should succeed.
+            req2 = Request(
+                request_id="cv11b",
+                command="convert_collection",
+                params={
+                    "folder_path": temp,
+                    "collection_path": collection_path,
+                    "strict": False,
+                    "case_sensitive": True,
+                },
+            )
             resp2 = self.backend.handle(req2)
-            self.assertEqual(resp2.type, "error")
-            self.assertEqual(resp2.error["code"], "expired_or_unknown_selection")
+            self.assertEqual(resp2.type, "result")
+            assert resp2.data is not None
+            self.assertTrue(resp2.data["success"])
 
 
 class MalformedPayloadTests(unittest.TestCase):
@@ -765,7 +653,7 @@ class MalformedPayloadTests(unittest.TestCase):
     def test_malformed_payload_returns_error(self) -> None:
         req = Request(
             request_id="mp1",
-            command="choose_folder",
+            command="scan_collections",
             params={"folder_path": None},
         )
         resp = self.backend.handle(req)
@@ -787,7 +675,8 @@ class MalformedPayloadTests(unittest.TestCase):
                 request_id="mp3",
                 command="convert_collection",
                 params={
-                    "selection_id": "bad",
+                    "folder_path": temp,
+                    "collection_path": "/nonexistent/collection.json",
                     "strict": True,
                     "case_sensitive": True,
                 },
@@ -798,6 +687,36 @@ class MalformedPayloadTests(unittest.TestCase):
             obj = json.loads(resp.to_json())
             self.assertEqual(obj["type"], "error")
             self.assertNotIn("Traceback", json.dumps(obj))
+
+    def test_expected_utility_error_is_structured(self) -> None:
+        """Expected UtilityError should return a structured error with code."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "collection.json").write_text(
+                json.dumps(_scene_data(r"C:\old\missing.png")), encoding="utf-8"
+            )
+            collection_path = str(root / "collection.json")
+            req = Request(
+                request_id="mp4",
+                command="convert_collection",
+                params={
+                    "folder_path": temp,
+                    "collection_path": collection_path,
+                    "strict": True,
+                    "case_sensitive": True,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            # The result has success=False with a structured error message.
+            self.assertFalse(resp.data["success"])
+            # The result has a missing list (structured, not a traceback).
+            self.assertIn("missing", resp.data)
+            self.assertEqual(len(resp.data["missing"]), 1)
+            # The error message is customer-safe (no tracebacks).
+            if "error" in resp.data:
+                self.assertNotIn("Traceback", resp.data["error"])
 
 
 class StdioEndToEndTests(unittest.TestCase):
@@ -855,125 +774,79 @@ class StdioEndToEndTests(unittest.TestCase):
         self.assertEqual(obj["type"], "error")
         self.assertEqual(obj["error"]["code"], "malformed_request")
 
-    def test_e2e_import_workflow(self) -> None:
-        """Full import workflow via subprocess: choose_folder → scan → choose → convert.
+    def test_e2e_scan_and_convert_workflow(self) -> None:
+        """Full workflow via subprocess: scan_collections → convert_collection.
 
-        All requests are sent in a single subprocess run because the
-        selection store is in-memory and session-only.
+        The backend receives concrete folder and collection paths from
+        Electron main (simulated here by passing them directly).
         """
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             assets = root / "media"
             assets.mkdir(parents=True)
             (assets / "image.png").write_bytes(b"asset")
+            collection_path = str(root / "collection.json")
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\old\media\image.png")), encoding="utf-8"
             )
 
-            # Use the Backend class directly to maintain session state
-            # across the multi-step workflow.
-            from obs_overlay_import_utility.desktop_backend import Backend
+            # Step 1: scan_collections
+            outputs = self._run_backend([
+                json.dumps({
+                    "request_id": "w1",
+                    "command": "scan_collections",
+                    "params": {"folder_path": temp},
+                }),
+            ])
+            self.assertEqual(len(outputs), 1)
+            obj = json.loads(outputs[0])
+            self.assertEqual(obj["type"], "result")
+            self.assertEqual(obj["data"]["count"], 1)
 
-            backend = Backend()
-
-            # Step 1: choose_folder
-            resp = backend.handle(Request(
-                request_id="w1",
-                command="choose_folder",
-                params={"folder_path": temp},
-            ))
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            selection_id = resp.data["selection_id"]
-
-            # Step 2: scan_collections
-            resp = backend.handle(Request(
-                request_id="w2",
-                command="scan_collections",
-                params={"selection_id": selection_id},
-            ))
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            self.assertEqual(resp.data["count"], 1)
-
-            # Step 3: choose_collection
-            resp = backend.handle(Request(
-                request_id="w3",
-                command="choose_collection",
-                params={"selection_id": selection_id, "collection_index": 0},
-            ))
-            self.assertEqual(resp.type, "result")
-
-            # Step 4: convert_collection
-            resp = backend.handle(Request(
-                request_id="w4",
-                command="convert_collection",
-                params={
-                    "selection_id": selection_id,
-                    "strict": True,
-                    "case_sensitive": True,
-                },
-            ))
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            self.assertTrue(resp.data["success"])
+            # Step 2: convert_collection
+            outputs = self._run_backend([
+                json.dumps({
+                    "request_id": "w2",
+                    "command": "convert_collection",
+                    "params": {
+                        "folder_path": temp,
+                        "collection_path": collection_path,
+                        "strict": True,
+                        "case_sensitive": True,
+                    },
+                }),
+            ])
+            self.assertEqual(len(outputs), 1)
+            obj = json.loads(outputs[0])
+            self.assertEqual(obj["type"], "result")
+            self.assertTrue(obj["data"]["success"])
 
     def test_e2e_strict_blocks_output(self) -> None:
-        """Strict mode blocks output when references are missing.
-
-        Uses the Backend class directly to maintain session state.
-        """
-        from obs_overlay_import_utility.desktop_backend import Backend
-
-        backend = Backend()
-
+        """Strict mode blocks output when references are missing."""
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            collection_path = str(root / "collection.json")
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\old\missing.png")), encoding="utf-8"
             )
 
-            # Step 1: choose_folder
-            resp = backend.handle(Request(
-                request_id="s1",
-                command="choose_folder",
-                params={"folder_path": temp},
-            ))
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            selection_id = resp.data["selection_id"]
-
-            # Step 2: scan_collections
-            resp = backend.handle(Request(
-                request_id="s2",
-                command="scan_collections",
-                params={"selection_id": selection_id},
-            ))
-            self.assertEqual(resp.type, "result")
-
-            # Step 3: choose_collection
-            resp = backend.handle(Request(
-                request_id="s3",
-                command="choose_collection",
-                params={"selection_id": selection_id, "collection_index": 0},
-            ))
-            self.assertEqual(resp.type, "result")
-
-            # Step 4: convert_collection with strict=True
-            resp = backend.handle(Request(
-                request_id="s4",
-                command="convert_collection",
-                params={
-                    "selection_id": selection_id,
-                    "strict": True,
-                    "case_sensitive": True,
-                },
-            ))
-            self.assertEqual(resp.type, "result")
-            assert resp.data is not None
-            self.assertFalse(resp.data["success"])
-            self.assertEqual(len(resp.data["missing"]), 1)
-            self.assertNotIn("output_filename", resp.data)
+            outputs = self._run_backend([
+                json.dumps({
+                    "request_id": "s1",
+                    "command": "convert_collection",
+                    "params": {
+                        "folder_path": temp,
+                        "collection_path": collection_path,
+                        "strict": True,
+                        "case_sensitive": True,
+                    },
+                }),
+            ])
+            obj = json.loads(outputs[0])
+            self.assertEqual(obj["type"], "result")
+            self.assertFalse(obj["data"]["success"])
+            self.assertEqual(len(obj["data"]["missing"]), 1)
+            self.assertNotIn("output_filename", obj["data"])
 
 
 if __name__ == "__main__":
