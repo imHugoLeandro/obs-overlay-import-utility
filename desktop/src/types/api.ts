@@ -22,8 +22,8 @@ export interface AppInfoData {
 
 /** A detected OBS scene collection with a safe relative label. */
 export interface DetectedCollection {
-  /** Zero-based index of the collection in the scan results. */
-  index: number;
+  /** Opaque collection ID — safe to send to the renderer. */
+  collection_id: string;
   /** Human-readable label relative to the selected folder. */
   label: string;
 }
@@ -34,19 +34,6 @@ export interface ScanCollectionsResult {
   folder_label: string;
   collections: DetectedCollection[];
   count: number;
-}
-
-/** Result of choosing a collection. */
-export interface ChooseCollectionResult {
-  selection_id: string;
-  collection_label: string;
-}
-
-/** An ambiguous match returned by the conversion. */
-export interface AmbiguousMatch {
-  source_name: string;
-  original_path: string;
-  candidates: string[];
 }
 
 /** The conversion result returned by `convert_collection`. */
@@ -66,38 +53,52 @@ export interface ConvertResult {
   error?: string;
 }
 
+/** An ambiguous match returned by the conversion. */
+export interface AmbiguousMatch {
+  source_name: string;
+  original_path: string;
+  candidates: string[];
+}
+
 /**
  * Typed API surface exposed to the renderer via `contextBridge`.
  *
  * Only the finite set of commands below is exposed.  There is no shell,
  * file-read, or generic function-call endpoint.
+ *
+ * The renderer never sends or receives raw absolute paths — only opaque
+ * selection IDs and collection IDs plus safe display labels.
  */
 export interface ElectronAPI {
   health: () => Promise<HealthData>;
   appInfo: () => Promise<AppInfoData>;
   /**
-   * Store an overlay folder path (resolved by the main process folder
-   * dialog) and return an opaque selection ID plus a safe label.
+   * Open a native folder dialog (no renderer arguments) and store the
+   * selected folder in the Electron main-process selection store.
+   * Returns an opaque selection ID plus a safe folder label.
    */
-  chooseFolder: (folderPath: string) => Promise<{
+  chooseOverlayFolder: () => Promise<{
     selection_id: string;
     folder_label: string;
   }>;
   /**
    * Scan the selected folder for OBS scene collections.
-   * Returns detected collections with safe relative labels.
+   * Returns detected collections with opaque collection IDs and safe
+   * relative labels only.
    */
   scanCollections: (selectionId: string) => Promise<ScanCollectionsResult>;
   /**
-   * Select one detected collection by its index.
+   * Select one detected collection by its opaque collection ID.
+   * Verifies that the collection ID belongs to the selection.
    */
   chooseCollection: (
     selectionId: string,
-    collectionIndex: number
-  ) => Promise<ChooseCollectionResult>;
+    collectionId: string
+  ) => Promise<{ selection_id: string; collection_label: string }>;
   /**
    * Run path-fix conversion on the selected collection.
    * The original collection is never modified.
+   * Returns a structured result with success/failure details.
    */
   convertCollection: (
     selectionId: string,

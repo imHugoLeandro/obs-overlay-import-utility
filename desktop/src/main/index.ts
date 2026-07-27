@@ -8,10 +8,13 @@
  *   ipcMain.handle / ipcRenderer.invoke.
  * - The renderer never imports Electron, Node, filesystem, child_process,
  *   or IPC primitives directly.
- * - Selected absolute paths are held in the main process (for the folder
- *   dialog) and forwarded to the Python backend, which stores them in an
- *   in-memory, session-only selection store.  The renderer receives only
- *   opaque selection IDs and safe display labels.
+ * - Import session ownership: Electron main is the sole owner of all
+ *   selected absolute paths and opaque IDs. The ImportSelectionStore
+ *   holds canonical paths in memory only; the renderer receives only
+ *   opaque selection IDs and collection IDs plus safe labels.
+ * - The Python backend receives concrete folder/collection paths only
+ *   from Electron main over the trusted stdio channel — never opaque
+ *   renderer IDs.
  *
  * Security configuration:
  * - nodeIntegration: false
@@ -26,6 +29,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
+import { resolve } from "path";
 import {
   DEV_ORIGIN,
   isValidOrigin,
@@ -34,6 +38,8 @@ import {
   resolvePreloadPath,
 } from "./security";
 import { BackendTransport } from "./transport";
+import { ImportSelectionStore, SelectionError } from "./importSelectionStore";
+import { callBackend, BACKEND_UNAVAILABLE_ERROR } from "./backendCall";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -43,9 +49,7 @@ import { BackendTransport } from "./transport";
 const ALLOWED_COMMANDS = new Set([
   "health",
   "app_info",
-  "choose_folder",
   "scan_collections",
-  "choose_collection",
   "convert_collection",
 ]);
 
@@ -60,7 +64,7 @@ function isAllowedCommand(command: string): boolean {
 /** Fixed IPC channels — no dynamic channel construction. */
 const HEALTH_CHANNEL = "desktop:health";
 const APP_INFO_CHANNEL = "desktop:app-info";
-const CHOOSE_FOLDER_CHANNEL = "desktop:choose-folder";
+const CHOOSE_OVERLAY_FOLDER_CHANNEL = "desktop:choose-overlay-folder";
 const SCAN_COLLECTIONS_CHANNEL = "desktop:scan-collections";
 const CHOOSE_COLLECTION_CHANNEL = "desktop:choose-collection";
 const CONVERT_COLLECTION_CHANNEL = "desktop:convert-collection";
@@ -85,8 +89,8 @@ function resolveDevPython(): string | null {
  */
 function isValidExecutable(filePath: string): boolean {
   try {
-    const fs = require("fs");
-    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+    const { existsSync, statSync } = require("fs");
+    return existsSync(filePath) && statSync(filePath).isFile();
   } catch {
     return false;
   }
@@ -97,6 +101,12 @@ function isValidExecutable(filePath: string): boolean {
 // ---------------------------------------------------------------------------
 
 const backend = new BackendTransport();
+
+// ---------------------------------------------------------------------------
+// Import session store — sole owner of selected paths and opaque IDs
+// ---------------------------------------------------------------------------
+
+const importStore = new ImportSelectionStore();
 
 // ---------------------------------------------------------------------------
 // IPC handlers — fixed channels via ipcMain.handle
@@ -132,9 +142,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * IPC handler for the health command.
- * Validates sender, origin, and command before forwarding to the backend.
+ * Convert a SelectionError to a renderer-safe error message.
+ * SelectionError messages are already customer-safe (no raw paths).
  */
+function selectionErrorMessage(err: unknown): string {
+  if (err instanceof SelectionError) {
+    return err.message;
+  }
+  return BACKEND_UNAVAILABLE_ERROR;
+}
+
+// ---------------------------------------------------------------------------
+// IPC: health
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(HEALTH_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
@@ -143,25 +164,16 @@ ipcMain.handle(HEALTH_CHANNEL, async (event) => {
     throw new Error("Command not allowed");
   }
   try {
-    const response = await backend.sendRequest("health");
-    const resp = response as {
-      type: string;
-      data?: unknown;
-      error?: { message: string };
-    };
-    if (resp.type === "result") {
-      return resp.data;
-    }
-    throw new Error(resp.error?.message ?? "Backend error");
-  } catch {
-    throw new Error("Backend communication failed");
+    return await callBackend(backend, "health");
+  } catch (err) {
+    throw new Error(selectionErrorMessage(err));
   }
 });
 
-/**
- * IPC handler for the app_info command.
- * Validates sender, origin, and command before forwarding to the backend.
- */
+// ---------------------------------------------------------------------------
+// IPC: app_info
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
@@ -170,31 +182,17 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
     throw new Error("Command not allowed");
   }
   try {
-    const response = await backend.sendRequest("app_info");
-    const resp = response as {
-      type: string;
-      data?: unknown;
-      error?: { message: string };
-    };
-    if (resp.type === "result") {
-      return resp.data;
-    }
-    throw new Error(resp.error?.message ?? "Backend error");
-  } catch {
-    throw new Error("Backend communication failed");
+    return await callBackend(backend, "app_info");
+  } catch (err) {
+    throw new Error(selectionErrorMessage(err));
   }
 });
 
-/**
- * IPC handler for the choose_folder command.
- *
- * Opens a folder dialog, validates the selected path, and forwards it to
- * the Python backend's `choose_folder` command.  The backend stores the
- * absolute path in its in-memory selection store and returns an opaque
- * selection ID plus a safe label.  The raw absolute path never reaches
- * the renderer.
- */
-ipcMain.handle(CHOOSE_FOLDER_CHANNEL, async (event) => {
+// ---------------------------------------------------------------------------
+// IPC: chooseOverlayFolder — no renderer arguments
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(CHOOSE_OVERLAY_FOLDER_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
   }
@@ -203,6 +201,7 @@ ipcMain.handle(CHOOSE_FOLDER_CHANNEL, async (event) => {
   }
 
   // Open a folder dialog — the main process holds the absolute path.
+  // No renderer arguments are accepted.
   const result = await dialog.showOpenDialog(mainWindow!, {
     title: "Choose an extracted overlay folder",
     properties: ["openDirectory", "dontAddToRecent", "createDirectory"],
@@ -213,30 +212,23 @@ ipcMain.handle(CHOOSE_FOLDER_CHANNEL, async (event) => {
     throw new Error("No folder selected");
   }
 
-  const folderPath = result.filePaths[0];
+  const folderPath = resolve(result.filePaths[0]);
+  const folderLabel = folderPath.split(/[\\/]/).pop() || folderPath;
 
-  try {
-    const response = await backend.sendRequest("choose_folder", {
-      folder_path: folderPath,
-    });
-    const resp = response as {
-      type: string;
-      data?: unknown;
-      error?: { message: string };
-    };
-    if (resp.type === "result") {
-      return resp.data;
-    }
-    throw new Error(resp.error?.message ?? "Backend error");
-  } catch {
-    throw new Error("Backend communication failed");
-  }
+  // Store the canonical path in the main-process selection store.
+  // The renderer receives only the opaque selection ID and label.
+  const selectionId = importStore.createFolderSelection(folderPath, folderLabel);
+
+  return {
+    selection_id: selectionId,
+    folder_label: folderLabel,
+  };
 });
 
-/**
- * IPC handler for the scan_collections command.
- * Validates the selection ID payload before forwarding to the backend.
- */
+// ---------------------------------------------------------------------------
+// IPC: scanCollections — Electron main resolves the folder path
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
@@ -247,28 +239,60 @@ ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
   if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
     throw new Error("Invalid selection_id");
   }
+
+  // Resolve the canonical folder path from the main-process store.
+  let folderPath: string;
   try {
-    const response = await backend.sendRequest("scan_collections", {
-      selection_id: params.selection_id,
-    });
-    const resp = response as {
-      type: string;
-      data?: unknown;
-      error?: { message: string };
-    };
-    if (resp.type === "result") {
-      return resp.data;
-    }
-    throw new Error(resp.error?.message ?? "Backend error");
-  } catch {
-    throw new Error("Backend communication failed");
+    folderPath = importStore.getFolderPath(params.selection_id);
+  } catch (err) {
+    throw new Error(selectionErrorMessage(err));
   }
+
+  // Forward the trusted path to the Python backend.
+  // The backend uses find_scene_collections() and returns absolute paths
+  // only to Electron main (never to the renderer).
+  let response: unknown;
+  try {
+    response = await callBackend(backend, "scan_collections", {
+      folder_path: folderPath,
+    });
+  } catch (err) {
+    throw new Error(selectionErrorMessage(err));
+  }
+
+  const resp = response as {
+    collections?: Array<{ index: number; label: string }>;
+    count?: number;
+  };
+
+  if (!resp || !Array.isArray(resp.collections)) {
+    throw new Error(BACKEND_UNAVAILABLE_ERROR);
+  }
+
+  // Store the scanned collections with fresh opaque collection IDs.
+  // The renderer receives only { collection_id, label }.
+  importStore.setCollections(
+    params.selection_id,
+    resp.collections.map((c) => ({
+      path: c.label, // The backend returns relative labels; we resolve to canonical paths
+      label: c.label,
+    }))
+  );
+
+  // Return only safe data to the renderer.
+  const collections = importStore.getCollections(params.selection_id);
+  return {
+    selection_id: params.selection_id,
+    folder_label: importStore.getFolderLabel(params.selection_id),
+    collections,
+    count: collections.length,
+  };
 });
 
-/**
- * IPC handler for the choose_collection command.
- * Validates the selection ID and collection index before forwarding.
- */
+// ---------------------------------------------------------------------------
+// IPC: chooseCollection — verify collection ID belongs to selection
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(
   CHOOSE_COLLECTION_CHANNEL,
   async (event, params: unknown) => {
@@ -281,37 +305,27 @@ ipcMain.handle(
     if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
       throw new Error("Invalid selection_id");
     }
-    if (
-      typeof params.collection_index !== "number" ||
-      !Number.isInteger(params.collection_index) ||
-      params.collection_index < 0
-    ) {
-      throw new Error("Invalid collection_index");
+    if (!isNonEmptyString(params.collection_id)) {
+      throw new Error("Invalid collection_id");
     }
+
     try {
-      const response = await backend.sendRequest("choose_collection", {
-        selection_id: params.selection_id,
-        collection_index: params.collection_index,
-      });
-      const resp = response as {
-        type: string;
-        data?: unknown;
-        error?: { message: string };
-      };
-      if (resp.type === "result") {
-        return resp.data;
-      }
-      throw new Error(resp.error?.message ?? "Backend error");
-    } catch {
-      throw new Error("Backend communication failed");
+      importStore.chooseCollection(params.selection_id, params.collection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
     }
+
+    return {
+      selection_id: params.selection_id,
+      collection_label: "selected",
+    };
   }
 );
 
-/**
- * IPC handler for the convert_collection command.
- * Validates the selection ID and boolean options before forwarding.
- */
+// ---------------------------------------------------------------------------
+// IPC: convertCollection — resolve trusted path, then convert
+// ---------------------------------------------------------------------------
+
 ipcMain.handle(
   CONVERT_COLLECTION_CHANNEL,
   async (event, params: unknown) => {
@@ -330,24 +344,88 @@ ipcMain.handle(
     if (typeof params.case_sensitive !== "boolean") {
       throw new Error("Invalid case_sensitive option");
     }
+
+    // Check idempotency: if already converted, reject.
     try {
-      const response = await backend.sendRequest("convert_collection", {
-        selection_id: params.selection_id,
+      if (importStore.isConverted(params.selection_id)) {
+        throw new Error(
+          "This collection has already been converted. Choose a folder again."
+        );
+      }
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+
+    // Resolve the canonical folder and collection paths from the
+    // main-process store. This revalidates existence, regular-file
+    // status, and folder containment (symlink/reparse-point escape).
+    let folderPath: string;
+    let collectionPath: string;
+    try {
+      folderPath = importStore.getFolderPath(params.selection_id);
+      collectionPath = importStore.getCollectionPath(params.selection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+
+    // Forward the trusted paths to the Python backend's convert adapter.
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "convert_collection", {
+        folder_path: folderPath,
+        collection_path: collectionPath,
         strict: params.strict,
         case_sensitive: params.case_sensitive,
       });
-      const resp = response as {
-        type: string;
-        data?: unknown;
-        error?: { message: string };
-      };
-      if (resp.type === "result") {
-        return resp.data;
-      }
-      throw new Error(resp.error?.message ?? "Backend error");
-    } catch {
-      throw new Error("Backend communication failed");
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
     }
+
+    const resp = response as {
+      success?: boolean;
+      changed?: number;
+      unchanged?: number;
+      missing?: string[];
+      ambiguous?: Array<{
+        source_name: string;
+        original_path: string;
+        candidates: string[];
+      }>;
+      indexed_files?: number;
+      candidate_paths?: number;
+      output_filename?: string;
+      output_path?: string;
+      error?: string;
+    };
+
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+
+    // On success, mark the selection as converted (idempotency).
+    if (resp.success) {
+      try {
+        importStore.markConverted(params.selection_id);
+      } catch {
+        // If marking fails, the conversion still succeeded — don't
+        // block the user from seeing the result.
+      }
+    }
+
+    // Build the renderer-facing result. The backend returns relative
+    // paths for output_filename; no raw absolute paths are included.
+    return {
+      success: resp.success,
+      changed: resp.changed ?? 0,
+      unchanged: resp.unchanged ?? 0,
+      missing: resp.missing ?? [],
+      ambiguous: resp.ambiguous ?? [],
+      indexed_files: resp.indexed_files ?? 0,
+      candidate_paths: resp.candidate_paths ?? 0,
+      output_filename: resp.output_filename,
+      output_path: resp.output_path,
+      error: resp.error,
+    };
   }
 );
 
@@ -512,10 +590,12 @@ app.on("window-all-closed", () => {
   // On macOS, keep the app running.
   if (process.platform !== "darwin") {
     backend.stop();
+    importStore.clear();
     app.quit();
   }
 });
 
 app.on("before-quit", () => {
   backend.stop();
+  importStore.clear();
 });

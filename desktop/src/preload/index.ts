@@ -8,13 +8,14 @@
  *   no raw IPC, no filesystem, no shell, no child_process access.
  * - No Node.js APIs are exposed to the renderer.
  * - The renderer never receives raw absolute paths — only opaque selection
- *   IDs and safe display labels.
+ *   IDs and collection IDs plus safe display labels.
+ * - `chooseOverlayFolder()` takes no parameters — the folder dialog is
+ *   opened entirely in the Electron main process.
  */
 
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppInfoData,
-  ChooseCollectionResult,
   ConvertResult,
   HealthData,
   ScanCollectionsResult,
@@ -44,20 +45,21 @@ const electronAPI = {
   appInfo: (): Promise<AppInfoData> => ipcRenderer.invoke("desktop:app-info"),
 
   /**
-   * Store an overlay folder path (resolved by the main process folder
-   * dialog) and return an opaque selection ID plus a safe label.
+   * Open a native folder dialog (no renderer arguments) and store the
+   * selected folder in the Electron main-process selection store.
    *
-   * The renderer never sees the raw absolute path — only the opaque
-   * selection ID and the folder basename label.
+   * The renderer never provides or receives a raw absolute path.
+   * Returns only an opaque selection ID and a safe folder label.
    */
-  chooseFolder: (folderPath: string): Promise<{
+  chooseOverlayFolder: (): Promise<{
     selection_id: string;
     folder_label: string;
-  }> => ipcRenderer.invoke("desktop:choose-folder", { folder_path: folderPath }),
+  }> => ipcRenderer.invoke("desktop:choose-overlay-folder"),
 
   /**
    * Scan the selected folder for OBS scene collections.
-   * Returns detected collections with safe relative labels only.
+   * Returns detected collections with opaque collection IDs and safe
+   * relative labels only.
    */
   scanCollections: (
     selectionId: string
@@ -65,16 +67,16 @@ const electronAPI = {
     ipcRenderer.invoke("desktop:scan-collections", { selection_id: selectionId }),
 
   /**
-   * Select one detected collection by its index.
-   * Returns a safe collection label.
+   * Select one detected collection by its opaque collection ID.
+   * Verifies that the collection ID belongs to the selection.
    */
   chooseCollection: (
     selectionId: string,
-    collectionIndex: number
-  ): Promise<ChooseCollectionResult> =>
+    collectionId: string
+  ): Promise<{ selection_id: string; collection_label: string }> =>
     ipcRenderer.invoke("desktop:choose-collection", {
       selection_id: selectionId,
-      collection_index: collectionIndex,
+      collection_id: collectionId,
     }),
 
   /**
