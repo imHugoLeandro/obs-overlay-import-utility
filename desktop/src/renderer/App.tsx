@@ -22,12 +22,13 @@ import { PlaceholderPage } from "./PlaceholderPages";
 import { ThemeSelector } from "./ThemeSelector";
 import { BackendStatus } from "./BackendStatus";
 import { ImportPage } from "./ImportPage";
+import { ExportPage } from "./ExportPage";
 import "./App.css";
 
 /**
  * Render the content for the active page.
- * Import is the functional Fix Scene Collection Paths workflow.
- * Export and Auto Resizer are placeholder pages.
+ * Import and Export are functional pages.
+ * Auto Resizer is a placeholder (Stage 3).
  * Settings exposes only the theme selector.
  */
 function PageContent({
@@ -39,6 +40,10 @@ function PageContent({
 
   if (activePage === "import") {
     return <ImportPage />;
+  }
+
+  if (activePage === "export") {
+    return <ExportPage />;
   }
 
   if (activePage === "settings") {
@@ -55,13 +60,6 @@ function PageContent({
         </p>
         <div className="settings-section">
           <ThemeSelector />
-        </div>
-        <div className="page-note">
-          <p>
-            This page is a foundation placeholder. Only the temporary
-            theme selector is available. Python settings integration
-            belongs to a later Stage-2 milestone.
-          </p>
         </div>
       </section>
     );
@@ -105,9 +103,9 @@ function AppContent(): React.ReactElement {
       </main>
       <footer className="app-footer">
         <p>
-          Foundation stage — the Fix Scene Collection Paths import workflow is
-          implemented. Export, Resizer, and Settings pages are not yet
-          implemented.
+          Stage 2 — Import (Fix Scene Collection Paths, Streamlabs, Automatic,
+          Device Setup, OBS Activation) and Export workflows are implemented.
+          Auto Resizer is coming in Stage 3.
         </p>
       </footer>
     </div>

@@ -115,9 +115,23 @@ describe("Compiled Electron output verification", () => {
       expect(mainContent).toContain("desktop:health");
       expect(mainContent).toContain("desktop:app-info");
       expect(mainContent).toContain("desktop:choose-overlay-folder");
+      expect(mainContent).toContain("desktop:choose-streamlabs-overlay");
+      expect(mainContent).toContain("desktop:choose-automatic-folder");
+      expect(mainContent).toContain("desktop:choose-export-destination");
       expect(mainContent).toContain("desktop:scan-collections");
       expect(mainContent).toContain("desktop:choose-collection");
       expect(mainContent).toContain("desktop:convert-collection");
+      expect(mainContent).toContain("desktop:import-streamlabs");
+      expect(mainContent).toContain("desktop:automatic-import");
+      expect(mainContent).toContain("desktop:device-requirements");
+      expect(mainContent).toContain("desktop:device-candidates");
+      expect(mainContent).toContain("desktop:apply-device-choices");
+      expect(mainContent).toContain("desktop:obs-running");
+      expect(mainContent).toContain("desktop:activate-collection");
+      expect(mainContent).toContain("desktop:list-export-collections");
+      expect(mainContent).toContain("desktop:build-export-plan");
+      expect(mainContent).toContain("desktop:export-inventory");
+      expect(mainContent).toContain("desktop:confirm-export");
     });
 
     it("does not contain eval() calls", () => {
@@ -152,13 +166,27 @@ describe("Compiled Electron output verification", () => {
       expect(preloadContent).not.toContain("ipcRenderer.once");
     });
 
-    it("exposes only health, appInfo, and import workflow channels", () => {
+    it("exposes only health, appInfo, and all workflow channels", () => {
       expect(preloadContent).toContain("desktop:health");
       expect(preloadContent).toContain("desktop:app-info");
       expect(preloadContent).toContain("desktop:choose-overlay-folder");
+      expect(preloadContent).toContain("desktop:choose-streamlabs-overlay");
+      expect(preloadContent).toContain("desktop:choose-automatic-folder");
+      expect(preloadContent).toContain("desktop:choose-export-destination");
       expect(preloadContent).toContain("desktop:scan-collections");
       expect(preloadContent).toContain("desktop:choose-collection");
       expect(preloadContent).toContain("desktop:convert-collection");
+      expect(preloadContent).toContain("desktop:import-streamlabs");
+      expect(preloadContent).toContain("desktop:automatic-import");
+      expect(preloadContent).toContain("desktop:device-requirements");
+      expect(preloadContent).toContain("desktop:device-candidates");
+      expect(preloadContent).toContain("desktop:apply-device-choices");
+      expect(preloadContent).toContain("desktop:obs-running");
+      expect(preloadContent).toContain("desktop:activate-collection");
+      expect(preloadContent).toContain("desktop:list-export-collections");
+      expect(preloadContent).toContain("desktop:build-export-plan");
+      expect(preloadContent).toContain("desktop:export-inventory");
+      expect(preloadContent).toContain("desktop:confirm-export");
     });
 
     it("does not contain eval() calls", () => {

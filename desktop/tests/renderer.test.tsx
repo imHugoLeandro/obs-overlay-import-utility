@@ -47,14 +47,14 @@ describe("App component", () => {
     expect(screen.getByTestId("choose-folder-button")).toBeInTheDocument();
   });
 
-  it("shows placeholder content for Export page", async () => {
+  it("shows the Export page content (functional)", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Export" }));
 
-    expect(screen.getByRole("heading", { name: "Export" })).toBeInTheDocument();
-    expect(screen.getByText("Export workflows are coming next.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Export Overlay" })).toBeInTheDocument();
+    expect(screen.getByTestId("select-destination-button")).toBeInTheDocument();
   });
 
   it("shows placeholder content for Auto Resizer page", async () => {
@@ -142,18 +142,18 @@ describe("App component", () => {
     expect(errorText).not.toContain("Connection refused");
   });
 
-  it("shows foundation disclaimer in footer mentioning Import is implemented", async () => {
+  it("shows Stage 2 footer mentioning Import and Export are implemented", async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Foundation stage/i)).toBeInTheDocument();
+      expect(screen.getByText(/Stage 2/i)).toBeInTheDocument();
     });
 
-    // The footer should mention that the Import workflow is implemented,
-    // not claim all pages are unimplemented.
-    const footer = screen.getByText(/Foundation stage/i).closest("footer");
+    // The footer should mention that Import and Export workflows are implemented.
+    const footer = screen.getByText(/Stage 2/i).closest("footer");
     expect(footer).not.toBeNull();
-    expect(footer!.textContent).toContain("Fix Scene Collection Paths");
+    expect(footer!.textContent).toContain("Import");
+    expect(footer!.textContent).toContain("Export");
     expect(footer!.textContent).toContain("implemented");
   });
 
@@ -173,7 +173,7 @@ describe("App component", () => {
     await user.keyboard("{Enter}");
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Export" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Export Overlay" })).toBeInTheDocument();
     });
   });
 
