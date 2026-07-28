@@ -34,6 +34,9 @@ export default defineConfig({
       // Compiled-output verification runs only via `npm run verify:compiled`
       // after `npm run build`.  It must not run as part of `npm test`.
       resolve(__dirname, "tests/compiled-output.test.ts"),
+      // Electron integration smoke test runs only via `npm run test:integration`
+      // which requires Xvfb and a display.  It must not run as part of `npm test`.
+      resolve(__dirname, "tests/integration.test.ts"),
     ],
     css: true,
   },
