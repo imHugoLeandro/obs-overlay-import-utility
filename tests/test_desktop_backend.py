@@ -282,7 +282,7 @@ class ScanCollectionsTests(unittest.TestCase):
 
     def test_valid_folder_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
             )
@@ -308,7 +308,7 @@ class ScanCollectionsTests(unittest.TestCase):
         """The backend must return the canonical absolute ``path`` (main-only)
         and a safe relative ``label`` for each detected collection."""
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             (root / "collection.json").write_text(
                 json.dumps(_scene_data(r"C:\\old\\image.png")), encoding="utf-8"
             )
@@ -331,7 +331,7 @@ class ScanCollectionsTests(unittest.TestCase):
         """A nested collection must return a canonical absolute path and a
         safe relative label that includes the subdirectory."""
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             (root / "subdir").mkdir()
             nested = root / "subdir" / "collection.json"
             nested.write_text(
