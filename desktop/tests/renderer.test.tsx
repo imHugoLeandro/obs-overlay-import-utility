@@ -58,7 +58,7 @@ describe("App component", () => {
     await user.click(screen.getByRole("button", { name: "Export" }));
 
     expect(screen.getByRole("heading", { name: "Export Overlay" })).toBeInTheDocument();
-    expect(screen.getByTestId("select-destination-button")).toBeInTheDocument();
+    expect(screen.getByTestId("refresh-collections-button")).toBeInTheDocument();
   });
 
   it("shows placeholder content for Auto Resizer page", async () => {
