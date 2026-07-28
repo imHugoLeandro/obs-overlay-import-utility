@@ -91,6 +91,7 @@ describe("Electron integration smoke test", () => {
       // Skip the entire test suite if system dependencies are missing.
       // This is an environment limitation, not a code defect.
       // In CI, install the dependencies via apt-get.
+      // eslint-disable-next-line no-console
       console.warn(
         "SKIP: libgtk-3.so.0 is not available. Install with: " +
         "apt-get install -y libgtk-3-0 libnss3 libnspr4 libatk1.0-0 " +
