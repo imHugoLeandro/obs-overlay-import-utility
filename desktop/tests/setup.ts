@@ -47,6 +47,14 @@ const mockElectronAPI = {
   buildExportPlan: vi.fn(),
   exportInventory: vi.fn(),
   confirmExport: vi.fn(),
+  scanResizeCollections: vi.fn(),
+  chooseResizeCollection: vi.fn(),
+  resizeSourceChoices: vi.fn(),
+  previewResize: vi.fn(),
+  applyResize: vi.fn(),
+  undoResize: vi.fn(),
+  applyLiveResize: vi.fn(),
+  undoLiveResize: vi.fn(),
 };
 
 Object.defineProperty(window, "electronAPI", {

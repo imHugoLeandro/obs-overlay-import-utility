@@ -30,6 +30,13 @@ import type {
   ExportDestinationInfo,
   ExportInventory,
   ExportResult,
+  ResizeScope,
+  ResizeMode,
+  ResizeSourceChoice,
+  ResizeResult,
+  ResizeCollectionInfo,
+  LiveResizeResult,
+  LiveResizeSnapshot,
 } from "../types/api";
 
 // ---------------------------------------------------------------------------
@@ -237,6 +244,135 @@ const electronAPI = {
   confirmExport: (planId: string): Promise<ExportResult> =>
     ipcRenderer.invoke("desktop:confirm-export", {
       plan_id: planId,
+    }),
+
+  /**
+   * Scan a folder for OBS collections with canvas info for resize.
+   * Returns opaque collection IDs and safe labels only.
+   */
+  scanResizeCollections: (selectionId: string): Promise<{
+    collections: ResizeCollectionInfo[];
+    count: number;
+  }> =>
+    ipcRenderer.invoke("desktop:scan-resize-collections", {
+      selection_id: selectionId,
+    }),
+
+  /**
+   * Choose a collection for resize by opaque collection ID.
+   */
+  chooseResizeCollection: (
+    selectionId: string,
+    collectionId: string
+  ): Promise<{ collection_id: string; label: string }> =>
+    ipcRenderer.invoke("desktop:choose-resize-collection", {
+      selection_id: selectionId,
+      collection_id: collectionId,
+    }),
+
+  /**
+   * List UUID-backed source choices for Source-scope resize.
+   */
+  resizeSourceChoices: (
+    selectionId: string
+  ): Promise<{ choices: ResizeSourceChoice[]; count: number }> =>
+    ipcRenderer.invoke("desktop:resize-source-choices", {
+      selection_id: selectionId,
+    }),
+
+  /**
+   * Preview an offline resize (validates inputs, returns what would change).
+   */
+  previewResize: (
+    selectionId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    selectedName?: string,
+    selectedUuid?: string
+  ): Promise<{ valid: boolean; error: string | null; source_width: number; source_height: number; changed_items: number }> =>
+    ipcRenderer.invoke("desktop:preview-resize", {
+      selection_id: selectionId,
+      scope,
+      mode,
+      target_width: targetWidth,
+      target_height: targetHeight,
+      selected_name: selectedName,
+      selected_uuid: selectedUuid,
+    }),
+
+  /**
+   * Execute an offline resize. Creates a backup before writing.
+   */
+  applyResize: (
+    selectionId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    selectedName?: string,
+    selectedUuid?: string
+  ): Promise<ResizeResult> =>
+    ipcRenderer.invoke("desktop:apply-resize", {
+      selection_id: selectionId,
+      scope,
+      mode,
+      target_width: targetWidth,
+      target_height: targetHeight,
+      selected_name: selectedName,
+      selected_uuid: selectedUuid,
+    }),
+
+  /**
+   * Undo a resize by restoring a backup.
+   */
+  undoResize: (
+    selectionId: string,
+    backupPath: string
+  ): Promise<{ success: boolean; error: string | null }> =>
+    ipcRenderer.invoke("desktop:undo-resize", {
+      selection_id: selectionId,
+      backup_path: backupPath,
+    }),
+
+  /**
+   * Execute a live OBS resize through WebSocket.
+   * Password is forwarded once, never persisted.
+   */
+  applyLiveResize: (
+    installationId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    password?: string,
+    selectedName?: string,
+    selectedUuid?: string
+  ): Promise<LiveResizeResult> =>
+    ipcRenderer.invoke("desktop:apply-live-resize", {
+      installation_id: installationId,
+      scope,
+      mode,
+      target_width: targetWidth,
+      target_height: targetHeight,
+      password,
+      selected_name: selectedName,
+      selected_uuid: selectedUuid,
+    }),
+
+  /**
+   * Undo a live OBS resize using a snapshot.
+   */
+  undoLiveResize: (
+    installationId: string,
+    snapshot: LiveResizeSnapshot,
+    password?: string
+  ): Promise<{ success: boolean; error: string | null }> =>
+    ipcRenderer.invoke("desktop:undo-live-resize", {
+      installation_id: installationId,
+      snapshot,
+      password,
     }),
 };
 

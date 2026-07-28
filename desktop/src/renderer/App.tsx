@@ -23,6 +23,7 @@ import { ThemeSelector } from "./ThemeSelector";
 import { BackendStatus } from "./BackendStatus";
 import { ImportPage } from "./ImportPage";
 import { ExportPage } from "./ExportPage";
+import { AutoResizerPage } from "./AutoResizerPage";
 import "./App.css";
 
 /**
@@ -44,6 +45,10 @@ function PageContent({
 
   if (activePage === "export") {
     return <ExportPage />;
+  }
+
+  if (activePage === "resizer") {
+    return <AutoResizerPage />;
   }
 
   if (activePage === "settings") {
@@ -104,8 +109,8 @@ function AppContent(): React.ReactElement {
       <footer className="app-footer">
         <p>
           Stage 2 — Import (Fix Scene Collection Paths, Streamlabs, Automatic,
-          Device Setup, OBS Activation) and Export workflows are implemented.
-          Auto Resizer is coming in Stage 3.
+          Device Setup, OBS Activation), Export, and Auto Resizer workflows are
+          implemented. Auto Resizer supports offline and live OBS resize.
         </p>
       </footer>
     </div>

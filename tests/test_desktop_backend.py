@@ -167,6 +167,13 @@ class BackendUnknownCommandTests(unittest.TestCase):
                 "build_export_plan",
                 "export_inventory",
                 "confirm_export",
+                "resize_collection",
+                "undo_resize",
+                "resize_active_collection",
+                "undo_live_resize",
+                "scan_resize_collections",
+                "resize_source_choices",
+                "preview_resize",
             }),
         )
 
@@ -964,6 +971,469 @@ class StdioEndToEndTests(unittest.TestCase):
             self.assertFalse(obj["data"]["success"])
             self.assertEqual(len(obj["data"]["missing"]), 1)
             self.assertNotIn("output_filename", obj["data"])
+
+
+# ---------------------------------------------------------------------------
+# Resize backend tests
+# ---------------------------------------------------------------------------
+
+
+def _resize_collection_data() -> dict:
+    """Build a minimal OBS scene collection for resize tests."""
+    return {
+        "name": "Resize Test",
+        "resolution": {"x": 100, "y": 100},
+        "current_scene": "Main",
+        "scene_order": [{"name": "Main"}],
+        "sources": [
+            {
+                "name": "Main",
+                "id": "scene",
+                "settings": {
+                    "items": [
+                        {
+                            "name": "Background",
+                            "source_uuid": "background-uuid",
+                            "bounds_type": 0,
+                            "pos": {"x": 10.0, "y": 20.0},
+                            "scale": {"x": 1.0, "y": 1.0},
+                            "bounds": {"x": 30.0, "y": 40.0},
+                            "scale_ref": {"x": 100.0, "y": 100.0},
+                        },
+                    ]
+                },
+            },
+            {
+                "name": "Background",
+                "uuid": "background-uuid",
+                "id": "image_source",
+                "settings": {},
+            },
+        ],
+    }
+
+
+class ResizeBackendTests(unittest.TestCase):
+    """Tests for the resize backend commands."""
+
+    def setUp(self) -> None:
+        self.backend = Backend()
+
+    def _write_collection(self, root: Path) -> str:
+        path = root / "Resize Test.json"
+        path.write_text(json.dumps(_resize_collection_data()), encoding="utf-8")
+        return str(path)
+
+    def test_resize_collection_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r1",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Stretch",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertTrue(resp.data["success"], resp.data.get("error"))
+            self.assertEqual(resp.data["changed_items"], 1)
+            self.assertTrue(resp.data["canvas_changed"])
+            self.assertIsNotNone(resp.data["backup_path"])
+
+    def test_resize_collection_invalid_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r2",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Invalid",
+                    "mode": "Stretch",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_resize_collection_invalid_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r3",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Invalid",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_resize_collection_missing_path(self) -> None:
+        req = Request(
+            request_id="r4",
+            command="resize_collection",
+            params={
+                "collection_path": "",
+                "scope": "Collection",
+                "mode": "Stretch",
+                "target_width": 200,
+                "target_height": 200,
+                "selected_name": None,
+                "selected_uuid": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_resize_collection_nonexistent_path(self) -> None:
+        req = Request(
+            request_id="r5",
+            command="resize_collection",
+            params={
+                "collection_path": "/nonexistent/path/collection.json",
+                "scope": "Collection",
+                "mode": "Stretch",
+                "target_width": 200,
+                "target_height": 200,
+                "selected_name": None,
+                "selected_uuid": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_collection")
+
+    def test_resize_collection_invalid_target_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r6",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Stretch",
+                    "target_width": 10,
+                    "target_height": 10,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertFalse(resp.data["success"])
+
+    def test_resize_collection_target_width_must_be_int(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r7",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Stretch",
+                    "target_width": "200",
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_undo_resize_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            original_data = json.loads(Path(collection_path).read_text(encoding="utf-8"))
+
+            # First resize to create a backup.
+            req = Request(
+                request_id="r8",
+                command="resize_collection",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Stretch",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            assert resp.data is not None
+            backup_path = resp.data["backup_path"]
+            self.assertIsNotNone(backup_path)
+
+            # Now undo.
+            undo_req = Request(
+                request_id="r9",
+                command="undo_resize",
+                params={
+                    "collection_path": collection_path,
+                    "backup_path": backup_path,
+                },
+            )
+            undo_resp = self.backend.handle(undo_req)
+            self.assertEqual(undo_resp.type, "result")
+            assert undo_resp.data is not None
+            self.assertTrue(undo_resp.data["success"])
+
+            # Verify the collection was restored.
+            restored = json.loads(Path(collection_path).read_text(encoding="utf-8"))
+            self.assertEqual(restored, original_data)
+
+    def test_undo_resize_missing_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r10",
+                command="undo_resize",
+                params={
+                    "collection_path": collection_path,
+                    "backup_path": "/nonexistent/backup.json",
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertFalse(resp.data["success"])
+
+    def test_undo_resize_missing_params(self) -> None:
+        req = Request(
+            request_id="r11",
+            command="undo_resize",
+            params={
+                "collection_path": "",
+                "backup_path": "",
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_scan_resize_collections_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self._write_collection(Path(temp))
+            req = Request(
+                request_id="r12",
+                command="scan_resize_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertEqual(resp.data["count"], 1)
+            col = resp.data["collections"][0]
+            self.assertEqual(col["label"], "Resize Test.json")
+            self.assertEqual(col["canvas_width"], 100)
+            self.assertEqual(col["canvas_height"], 100)
+            self.assertEqual(col["source_count"], 2)
+            self.assertEqual(col["scene_count"], 1)
+
+    def test_scan_resize_collections_missing_folder(self) -> None:
+        req = Request(
+            request_id="r13",
+            command="scan_resize_collections",
+            params={"folder_path": "/nonexistent/path/12345"},
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_folder")
+
+    def test_scan_resize_collections_empty_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            req = Request(
+                request_id="r14",
+                command="scan_resize_collections",
+                params={"folder_path": temp},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertEqual(resp.data["count"], 0)
+
+    def test_resize_source_choices_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r15",
+                command="resize_source_choices",
+                params={"collection_path": collection_path},
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertEqual(resp.data["count"], 1)
+            choice = resp.data["choices"][0]
+            self.assertEqual(choice["label"], "Background (background-uuid)")
+            self.assertEqual(choice["uuid"], "background-uuid")
+
+    def test_resize_source_choices_missing_path(self) -> None:
+        req = Request(
+            request_id="r16",
+            command="resize_source_choices",
+            params={"collection_path": ""},
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_resize_source_choices_nonexistent(self) -> None:
+        req = Request(
+            request_id="r17",
+            command="resize_source_choices",
+            params={"collection_path": "/nonexistent/collection.json"},
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_collection")
+
+    def test_preview_resize_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r18",
+                command="preview_resize",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Collection",
+                    "mode": "Stretch",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "result")
+            assert resp.data is not None
+            self.assertTrue(resp.data["valid"])
+            self.assertIsNone(resp.data["error"])
+            self.assertEqual(resp.data["source_width"], 100)
+            self.assertEqual(resp.data["source_height"], 100)
+            self.assertEqual(resp.data["changed_items"], 1)
+
+    def test_preview_resize_invalid_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            collection_path = self._write_collection(Path(temp))
+            req = Request(
+                request_id="r19",
+                command="preview_resize",
+                params={
+                    "collection_path": collection_path,
+                    "scope": "Invalid",
+                    "mode": "Stretch",
+                    "target_width": 200,
+                    "target_height": 200,
+                    "selected_name": None,
+                    "selected_uuid": None,
+                },
+            )
+            resp = self.backend.handle(req)
+            self.assertEqual(resp.type, "error")
+            self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_preview_resize_nonexistent_collection(self) -> None:
+        req = Request(
+            request_id="r20",
+            command="preview_resize",
+            params={
+                "collection_path": "/nonexistent/collection.json",
+                "scope": "Collection",
+                "mode": "Stretch",
+                "target_width": 200,
+                "target_height": 200,
+                "selected_name": None,
+                "selected_uuid": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "result")
+        assert resp.data is not None
+        self.assertFalse(resp.data["valid"])
+
+    def test_resize_active_collection_missing_collection_name(self) -> None:
+        req = Request(
+            request_id="r21",
+            command="resize_active_collection",
+            params={
+                "collection_name": "",
+                "scope": "Collection",
+                "mode": "Stretch",
+                "target_width": 200,
+                "target_height": 200,
+                "selected_name": None,
+                "selected_uuid": None,
+                "password": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_undo_live_resize_missing_snapshot(self) -> None:
+        req = Request(
+            request_id="r22",
+            command="undo_live_resize",
+            params={
+                "snapshot": None,
+                "password": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_undo_live_resize_invalid_snapshot(self) -> None:
+        req = Request(
+            request_id="r23",
+            command="undo_live_resize",
+            params={
+                "snapshot": "not-an-object",
+                "password": None,
+            },
+        )
+        resp = self.backend.handle(req)
+        self.assertEqual(resp.type, "error")
+        self.assertEqual(resp.error["code"], "invalid_params")
+
+    def test_resize_commands_in_allowed_set(self) -> None:
+        """All resize commands must be in the allowed set."""
+        for cmd in (
+            "resize_collection",
+            "undo_resize",
+            "resize_active_collection",
+            "undo_live_resize",
+            "scan_resize_collections",
+            "resize_source_choices",
+            "preview_resize",
+        ):
+            self.assertIn(cmd, ALLOWED_COMMANDS, f"{cmd} must be allowed")
 
 
 if __name__ == "__main__":

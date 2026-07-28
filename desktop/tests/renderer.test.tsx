@@ -61,14 +61,14 @@ describe("App component", () => {
     expect(screen.getByTestId("refresh-collections-button")).toBeInTheDocument();
   });
 
-  it("shows placeholder content for Auto Resizer page", async () => {
+  it("shows the Auto Resizer page with functional workflow", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Auto Resizer" }));
 
     expect(screen.getByRole("heading", { name: "Auto Resizer" })).toBeInTheDocument();
-    expect(screen.getByText("Auto Resizer workflows are coming next.")).toBeInTheDocument();
+    expect(screen.getByTestId("choose-folder-button")).toBeInTheDocument();
   });
 
   it("shows Settings page with theme selector", async () => {

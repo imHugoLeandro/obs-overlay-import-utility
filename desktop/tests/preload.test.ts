@@ -43,12 +43,15 @@ describe("Preload script", () => {
       "activateCollection",
       "appInfo",
       "applyDeviceChoices",
+      "applyLiveResize",
+      "applyResize",
       "automaticImport",
       "buildExportPlan",
       "chooseAutomaticFolder",
       "chooseCollection",
       "chooseExportDestination",
       "chooseOverlayFolder",
+      "chooseResizeCollection",
       "chooseStreamlabsOverlay",
       "confirmExport",
       "convertCollection",
@@ -59,7 +62,12 @@ describe("Preload script", () => {
       "importStreamlabs",
       "listExportCollections",
       "obsRunning",
+      "previewResize",
+      "resizeSourceChoices",
       "scanCollections",
+      "scanResizeCollections",
+      "undoLiveResize",
+      "undoResize",
     ]);
   });
 

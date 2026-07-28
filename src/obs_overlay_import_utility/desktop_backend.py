@@ -27,6 +27,12 @@ set of commands:
 * ``build_export_plan`` — build a frozen, backend-held export plan.
 * ``export_inventory``  — return a sanitized inventory view of a plan.
 * ``confirm_export``    — execute a frozen export plan by opaque ID.
+* ``resize_collection``  — offline resize of a collection (path from
+                          Electron main, uses resizer.py).
+* ``undo_resize``        — restore a resize backup (paths from Electron main).
+* ``resize_active_collection`` — live OBS resize via WebSocket (uses
+                          live_resize.py, password forwarded once only).
+* ``undo_live_resize``   — undo a live OBS resize (snapshot from Electron main).
 
 Security design:
 
@@ -82,6 +88,21 @@ from .obs_live import (
     is_obs_running,
     ObsWebSocketClient,
 )
+from .resizer import (
+    MODE_SCALE_RATIO,
+    MODE_STRETCH,
+    SCOPE_COLLECTION,
+    SCOPE_SCENE,
+    SCOPE_SOURCE,
+    resize_collection as _resize_collection,
+    source_choices,
+    undo_resize as _undo_resize,
+)
+from .resizer import (
+    _canvas as _resize_canvas,
+    _scene_sources as _resize_scene_sources,
+)
+from .core import is_obs_scene_collection_data
 from .streamlabs import import_streamlabs_overlay
 
 __all__ = ["Backend", "run"]
@@ -235,6 +256,13 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "build_export_plan",
     "export_inventory",
     "confirm_export",
+    "resize_collection",
+    "undo_resize",
+    "resize_active_collection",
+    "undo_live_resize",
+    "scan_resize_collections",
+    "resize_source_choices",
+    "preview_resize",
 })
 
 
@@ -1378,10 +1406,659 @@ class Backend:
             data=data,
         )
 
+    # -- resize_collection ------------------------------------------------
+
+    def _cmd_resize_collection(self, request: Request) -> Response:
+        """Run an offline resize on a collection using resizer.py.
+
+        The collection path is provided by Electron main (not the renderer).
+        Uses the existing ``resize_collection()`` engine.  Creates a backup
+        before writing.  The original collection is never modified without
+        a backup.
+        """
+        params = request.params
+        validated = _validate_resize_params(request, params)
+        if isinstance(validated, Response):
+            return validated
+
+        collection_path, scope, selected_name, selected_uuid, target_width, target_height = validated
+        mode = params["mode"]
+
+        if not Path(collection_path).is_file():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_collection", "The selected collection is no longer available."),
+            )
+
+        try:
+            result = _resize_collection(
+                Path(collection_path),
+                scope=scope,
+                selected_name=selected_name,
+                selected_uuid=selected_uuid,
+                mode=mode,
+                target_width=target_width,
+                target_height=target_height,
+            )
+        except UtilityError as exc:
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={
+                    "success": False,
+                    "error": str(exc),
+                    "changed_items": 0,
+                    "backup_path": None,
+                },
+            )
+
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={
+                "success": result.success,
+                "error": result.error,
+                "changed_items": result.changed_items,
+                "source_width": result.source_width,
+                "source_height": result.source_height,
+                "target_width": result.target_width,
+                "target_height": result.target_height,
+                "canvas_changed": result.canvas_changed,
+                "backup_path": str(result.backup_path) if result.backup_path else None,
+            },
+        )
+
+    # -- undo_resize ------------------------------------------------------
+
+    def _cmd_undo_resize(self, request: Request) -> Response:
+        """Restore a resize backup using resizer.py.
+
+        The collection path and backup path are provided by Electron main.
+        The backup is removed only after a successful restore.
+        """
+        params = request.params
+
+        collection_path = params.get("collection_path")
+        if not isinstance(collection_path, str) or not collection_path.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "collection_path must be a non-empty string."),
+            )
+
+        backup_path = params.get("backup_path")
+        if not isinstance(backup_path, str) or not backup_path.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "backup_path must be a non-empty string."),
+            )
+
+        try:
+            collection = Path(collection_path).expanduser().resolve()
+            backup = Path(backup_path).expanduser().resolve()
+        except (OSError, ValueError):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_path", "The selected path is not valid."),
+            )
+
+        try:
+            error = _undo_resize(collection, backup)
+        except UtilityError as exc:
+            error = str(exc)
+
+        if error:
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={"success": False, "error": error},
+            )
+
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={"success": True, "error": None},
+        )
+
+    # -- resize_active_collection (live OBS) ------------------------------
+
+    def _cmd_resize_active_collection(self, request: Request) -> Response:
+        """Resize the active OBS collection through obs-websocket.
+
+        Uses the existing ``live_resize.py`` engine.  The password is
+        accepted only for this one request, forwarded once, and never
+        persisted.  The collection name is provided by Electron main.
+        """
+        from .live_resize import resize_active_collection as _resize_active
+
+        params = request.params
+
+        collection_name = params.get("collection_name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "collection_name must be a non-empty string."),
+            )
+
+        validated = _validate_resize_params(request, params)
+        if isinstance(validated, Response):
+            return validated
+
+        _, scope, selected_name, selected_uuid, target_width, target_height = validated
+        mode = params["mode"]
+        password = params.get("password")
+        if password is not None and not isinstance(password, str):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "password must be a string or null."),
+            )
+
+        try:
+            outcome = _resize_active(
+                password=password if password else None,
+                collection_name=collection_name,
+                scope=scope,
+                selected_name=selected_name,
+                selected_uuid=selected_uuid,
+                mode=mode,
+                target_width=target_width,
+                target_height=target_height,
+            )
+        except (UtilityError, ObsNotRunningError, ObsAuthenticationRequired, ObsRequestError) as exc:
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={
+                    "success": False,
+                    "error": str(exc),
+                    "changed_items": 0,
+                    "snapshot": None,
+                },
+            )
+
+        snapshot = None
+        if outcome.snapshot:
+            snapshot = {
+                "collection_name": outcome.snapshot.collection_name,
+                "transforms": [
+                    {
+                        "scene_name": t.scene_name,
+                        "scene_item_id": t.scene_item_id,
+                        "transform": t.transform,
+                    }
+                    for t in outcome.snapshot.transforms
+                ],
+                "video_settings": outcome.snapshot.video_settings,
+            }
+
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={
+                "success": outcome.result.success,
+                "error": outcome.result.error,
+                "changed_items": outcome.result.changed_items,
+                "source_width": outcome.result.source_width,
+                "source_height": outcome.result.source_height,
+                "target_width": outcome.result.target_width,
+                "target_height": outcome.result.target_height,
+                "canvas_changed": outcome.result.canvas_changed,
+                "snapshot": snapshot,
+            },
+        )
+
+    # -- undo_live_resize (live OBS) --------------------------------------
+
+    def _cmd_undo_live_resize(self, request: Request) -> Response:
+        """Undo a live resize using live_resize.py.
+
+        The password is accepted only for this one request, forwarded once,
+        and never persisted.  The snapshot data is provided by Electron main
+        (it was returned by the resize_active_collection command).
+        """
+        from .live_resize import LiveResizeSnapshot, undo_live_resize as _undo_live
+
+        params = request.params
+
+        password = params.get("password")
+        if password is not None and not isinstance(password, str):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "password must be a string or null."),
+            )
+
+        snapshot_data = params.get("snapshot")
+        if not isinstance(snapshot_data, dict):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "snapshot must be an object."),
+            )
+
+        collection_name = snapshot_data.get("collection_name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "snapshot.collection_name must be a non-empty string."),
+            )
+
+        transforms_raw = snapshot_data.get("transforms")
+        if not isinstance(transforms_raw, list):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "snapshot.transforms must be a list."),
+            )
+
+        from .live_resize import LiveTransformBackup
+
+        transforms: list[LiveTransformBackup] = []
+        for item in transforms_raw:
+            if not isinstance(item, dict):
+                return Response(
+                    request_id=request.request_id,
+                    type="error",
+                    error=_err("invalid_params", "each transform must be an object."),
+                )
+            scene_name = item.get("scene_name")
+            scene_item_id = item.get("scene_item_id")
+            transform = item.get("transform")
+            if not isinstance(scene_name, str) or not isinstance(scene_item_id, int) or not isinstance(transform, dict):
+                return Response(
+                    request_id=request.request_id,
+                    type="error",
+                    error=_err("invalid_params", "each transform must have scene_name, scene_item_id, and transform."),
+                )
+            transforms.append(LiveTransformBackup(scene_name, scene_item_id, transform))
+
+        video_settings = snapshot_data.get("video_settings")
+        if video_settings is not None and not isinstance(video_settings, dict):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "snapshot.video_settings must be an object or null."),
+            )
+
+        snapshot = LiveResizeSnapshot(collection_name, tuple(transforms), video_settings)
+
+        try:
+            error = _undo_live(password if password else None, snapshot)
+        except (UtilityError, ObsNotRunningError, ObsAuthenticationRequired, ObsRequestError) as exc:
+            error = str(exc)
+
+        if error:
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={"success": False, "error": error},
+            )
+
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={"success": True, "error": None},
+        )
+
+    # -- scan_resize_collections ------------------------------------------
+
+    def _cmd_scan_resize_collections(self, request: Request) -> Response:
+        """Scan a folder for OBS collections with canvas info for resize.
+
+        Uses the existing ``find_scene_collections()`` engine and
+        ``load_json()`` to read canvas dimensions and source/scene counts.
+        Returns safe relative labels and canvas info only — no raw paths
+        are returned to the renderer (Electron main stores the canonical
+        path and returns opaque collection IDs).
+        """
+        params = request.params
+        folder_path = params.get("folder_path")
+        if not isinstance(folder_path, str) or not folder_path.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "folder_path must be a non-empty string."),
+            )
+
+        try:
+            folder = Path(folder_path).expanduser().resolve()
+        except (OSError, ValueError):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_folder", "The selected path is not valid."),
+            )
+
+        if not folder.is_dir():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_folder", "Choose a valid overlay folder first."),
+            )
+
+        try:
+            collections = find_scene_collections(folder)
+        except UtilityError as exc:
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("scan_failed", str(exc)),
+            )
+
+        detected: list[dict[str, Any]] = []
+        for collection_path in collections:
+            try:
+                rel = collection_path.relative_to(folder)
+                label = str(rel)
+            except ValueError:
+                label = collection_path.name
+            canvas_width: int | None = None
+            canvas_height: int | None = None
+            source_count = 0
+            scene_count = 0
+            try:
+                from .core import load_json
+                data = load_json(collection_path)
+                resolution = data.get("resolution")
+                if isinstance(resolution, dict):
+                    w = resolution.get("x")
+                    h = resolution.get("y")
+                    if isinstance(w, (int, float)) and isinstance(h, (int, float)):
+                        canvas_width = int(w)
+                        canvas_height = int(h)
+                sources = data.get("sources")
+                if isinstance(sources, list):
+                    source_count = len(sources)
+                    scene_count = sum(
+                        1 for s in sources
+                        if isinstance(s, dict) and s.get("id") == "scene"
+                    )
+            except (OSError, UtilityError):
+                pass
+            detected.append({
+                "path": str(collection_path),
+                "label": label,
+                "canvas_width": canvas_width,
+                "canvas_height": canvas_height,
+                "source_count": source_count,
+                "scene_count": scene_count,
+            })
+
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={
+                "collections": detected,
+                "count": len(detected),
+            },
+        )
+
+    # -- resize_source_choices -------------------------------------------
+
+    def _cmd_resize_source_choices(self, request: Request) -> Response:
+        """List UUID-backed source choices for Source-scope resize.
+
+        Uses the existing ``source_choices()`` engine from resizer.py.
+        Returns safe labels only — no raw paths.
+        """
+        params = request.params
+        collection_path = params.get("collection_path")
+        if not isinstance(collection_path, str) or not collection_path.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "collection_path must be a non-empty string."),
+            )
+
+        try:
+            collection = Path(collection_path).expanduser().resolve()
+        except (OSError, ValueError):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_path", "The selected path is not valid."),
+            )
+
+        if not collection.is_file():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_collection", "The selected collection is no longer available."),
+            )
+
+        try:
+            from .core import load_json
+            data = load_json(collection)
+        except (OSError, UtilityError) as exc:
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("scan_failed", str(exc)),
+            )
+
+        choices = source_choices(data)
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={
+                "choices": [
+                    {"label": c.label, "name": c.name, "uuid": c.uuid}
+                    for c in choices
+                ],
+                "count": len(choices),
+            },
+        )
+
+    # -- preview_resize --------------------------------------------------
+
+    def _cmd_preview_resize(self, request: Request) -> Response:
+        """Validate resize inputs and return what would change.
+
+        Does NOT write anything.  Uses the same validation as
+        ``resize_collection()`` but stops before any file writes.
+        """
+        params = request.params
+        validated = _validate_resize_params(request, params)
+        if isinstance(validated, Response):
+            return validated
+
+        collection_path, scope, selected_name, selected_uuid, target_width, target_height = validated
+        mode = params["mode"]
+
+        if not Path(collection_path).is_file():
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={
+                    "valid": False,
+                    "error": "The selected collection is no longer available.",
+                    "source_width": 0,
+                    "source_height": 0,
+                    "changed_items": 0,
+                },
+            )
+
+        try:
+            from .core import load_json
+            original = load_json(Path(collection_path))
+            if not is_obs_scene_collection_data(original):
+                return Response(
+                    request_id=request.request_id,
+                    type="result",
+                    data={
+                        "valid": False,
+                        "error": "The selected JSON is not a recognized OBS scene collection.",
+                        "source_width": 0,
+                        "source_height": 0,
+                        "changed_items": 0,
+                    },
+                )
+            source_width, source_height = _resize_canvas(original)
+            # Count items that would be changed (without actually changing them).
+            import copy as _copy
+            converted = _copy.deepcopy(original)
+            factor_x = target_width / source_width
+            factor_y = target_height / source_height
+            if mode == MODE_SCALE_RATIO:
+                factor_x = factor_y = min(factor_x, factor_y)
+
+            selected_scene = selected_name if scope == SCOPE_SCENE else None
+            scenes = _resize_scene_sources(converted, selected_scene)
+            changed = 0
+            for scene in scenes:
+                settings = scene.get("settings")
+                items = settings.get("items") if isinstance(settings, dict) else None
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if scope == SCOPE_SOURCE and item.get("source_uuid") != selected_uuid:
+                        continue
+                    changed += 1
+
+            if scope == SCOPE_SOURCE and changed == 0:
+                return Response(
+                    request_id=request.request_id,
+                    type="result",
+                    data={
+                        "valid": False,
+                        "error": "The selected source is not used by any scene in this collection.",
+                        "source_width": source_width,
+                        "source_height": source_height,
+                        "changed_items": 0,
+                    },
+                )
+            if scope == SCOPE_SCENE and changed == 0:
+                return Response(
+                    request_id=request.request_id,
+                    type="result",
+                    data={
+                        "valid": False,
+                        "error": "The selected scene has no resizable source items.",
+                        "source_width": source_width,
+                        "source_height": source_height,
+                        "changed_items": 0,
+                    },
+                )
+
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={
+                    "valid": True,
+                    "error": None,
+                    "source_width": source_width,
+                    "source_height": source_height,
+                    "changed_items": changed,
+                },
+            )
+        except UtilityError as exc:
+            return Response(
+                request_id=request.request_id,
+                type="result",
+                data={
+                    "valid": False,
+                    "error": str(exc),
+                    "source_width": 0,
+                    "source_height": 0,
+                    "changed_items": 0,
+                },
+            )
+
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Resize parameter validation
 # ---------------------------------------------------------------------------
+
+def _validate_resize_params(
+    request: Request, params: dict[str, Any]
+) -> tuple[str, str, str | None, str | None, int, int] | Response:
+    """Validate common resize parameters.
+
+    Returns either a tuple of (collection_path, scope, selected_name,
+    selected_uuid, target_width, target_height) or an error Response.
+    """
+    collection_path = params.get("collection_path")
+    if not isinstance(collection_path, str) or not collection_path.strip():
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "collection_path must be a non-empty string."),
+        )
+
+    scope = params.get("scope")
+    if scope not in {SCOPE_COLLECTION, SCOPE_SCENE, SCOPE_SOURCE}:
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "scope must be Collection, Scene, or Source."),
+        )
+
+    selected_name = params.get("selected_name")
+    if selected_name is not None and not isinstance(selected_name, str):
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "selected_name must be a string or null."),
+        )
+
+    selected_uuid = params.get("selected_uuid")
+    if selected_uuid is not None and not isinstance(selected_uuid, str):
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "selected_uuid must be a string or null."),
+        )
+
+    mode = params.get("mode")
+    if mode not in {MODE_STRETCH, MODE_SCALE_RATIO}:
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "mode must be Stretch or Scale Ratio."),
+        )
+
+    target_width = params.get("target_width")
+    if not isinstance(target_width, int) or isinstance(target_width, bool):
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "target_width must be an integer."),
+        )
+
+    target_height = params.get("target_height")
+    if not isinstance(target_height, int) or isinstance(target_height, bool):
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_params", "target_height must be an integer."),
+        )
+
+    try:
+        resolved = Path(collection_path).expanduser().resolve()
+    except (OSError, ValueError):
+        return Response(
+            request_id=request.request_id,
+            type="error",
+            error=_err("invalid_path", "The selected path is not valid."),
+        )
+
+    return (
+        str(resolved),
+        scope,
+        selected_name,
+        selected_uuid,
+        target_width,
+        target_height,
+    )
+
 
 def run() -> None:
     """Read requests from stdin, write responses to stdout.

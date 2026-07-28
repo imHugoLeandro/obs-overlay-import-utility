@@ -194,6 +194,70 @@ export interface ExportResult {
   error: string | null;
 }
 
+/** Resize scope: Collection, Scene, or Source. */
+export type ResizeScope = "Collection" | "Scene" | "Source";
+
+/** Resize mode: Stretch or Scale Ratio. */
+export type ResizeMode = "Stretch" | "Scale Ratio";
+
+/** A UUID-backed source choice for Source-scope resize. */
+export interface ResizeSourceChoice {
+  label: string;
+  name: string;
+  uuid: string;
+}
+
+/** Result of an offline resize operation. */
+export interface ResizeResult {
+  success: boolean;
+  error: string | null;
+  changed_items: number;
+  source_width: number;
+  source_height: number;
+  target_width: number;
+  target_height: number;
+  canvas_changed: boolean;
+  /** Relative backup path (safe for renderer). */
+  backup_path: string | null;
+}
+
+/** A live transform backup entry. */
+export interface LiveTransformBackup {
+  scene_name: string;
+  scene_item_id: number;
+  transform: Record<string, unknown>;
+}
+
+/** A live resize snapshot for undo. */
+export interface LiveResizeSnapshot {
+  collection_name: string;
+  transforms: LiveTransformBackup[];
+  video_settings: Record<string, unknown> | null;
+}
+
+/** Result of a live (OBS WebSocket) resize operation. */
+export interface LiveResizeResult {
+  success: boolean;
+  error: string | null;
+  changed_items: number;
+  source_width: number;
+  source_height: number;
+  target_width: number;
+  target_height: number;
+  canvas_changed: boolean;
+  snapshot: LiveResizeSnapshot | null;
+}
+
+/** A detected scene collection with canvas info for resize. */
+export interface ResizeCollectionInfo {
+  collection_id: string;
+  label: string;
+  canvas_width: number | null;
+  canvas_height: number | null;
+  source_count: number;
+  scene_count: number;
+}
+
 /**
  * Typed API surface exposed to the renderer via `contextBridge`.
  *
@@ -329,6 +393,81 @@ export interface ElectronAPI {
    * Execute a frozen export plan by opaque plan_id.
    */
   confirmExport: (planId: string) => Promise<ExportResult>;
+  /**
+   * Scan a folder for OBS collections with canvas info for resize.
+   * Returns opaque collection IDs and safe labels only.
+   */
+  scanResizeCollections: (selectionId: string) => Promise<{
+    collections: ResizeCollectionInfo[];
+    count: number;
+  }>;
+  /**
+   * Choose a collection for resize by opaque collection ID.
+   */
+  chooseResizeCollection: (
+    selectionId: string,
+    collectionId: string
+  ) => Promise<{ collection_id: string; label: string }>;
+  /**
+   * List UUID-backed source choices for Source-scope resize.
+   */
+  resizeSourceChoices: (
+    selectionId: string
+  ) => Promise<{ choices: ResizeSourceChoice[]; count: number }>;
+  /**
+   * Preview an offline resize (validates inputs, returns what would change).
+   */
+  previewResize: (
+    selectionId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    selectedName?: string,
+    selectedUuid?: string
+  ) => Promise<{ valid: boolean; error: string | null; source_width: number; source_height: number; changed_items: number }>;
+  /**
+   * Execute an offline resize. Creates a backup before writing.
+   * Requires explicit confirmation (caller must have called previewResize first).
+   */
+  applyResize: (
+    selectionId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    selectedName?: string,
+    selectedUuid?: string
+  ) => Promise<ResizeResult>;
+  /**
+   * Undo a resize by restoring a backup.
+   */
+  undoResize: (
+    selectionId: string,
+    backupPath: string
+  ) => Promise<{ success: boolean; error: string | null }>;
+  /**
+   * Execute a live OBS resize through WebSocket.
+   * Password is forwarded once, never persisted.
+   */
+  applyLiveResize: (
+    installationId: string,
+    scope: ResizeScope,
+    mode: ResizeMode,
+    targetWidth: number,
+    targetHeight: number,
+    password?: string,
+    selectedName?: string,
+    selectedUuid?: string
+  ) => Promise<LiveResizeResult>;
+  /**
+   * Undo a live OBS resize using a snapshot.
+   */
+  undoLiveResize: (
+    installationId: string,
+    snapshot: LiveResizeSnapshot,
+    password?: string
+  ) => Promise<{ success: boolean; error: string | null }>;
 }
 
 /** Augment the global `Window` type so the renderer can use `window.electronAPI`. */
