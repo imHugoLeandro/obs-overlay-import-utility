@@ -169,8 +169,6 @@ class BackendUnknownCommandTests(unittest.TestCase):
                 "confirm_export",
                 "resize_collection",
                 "undo_resize",
-                "resize_active_collection",
-                "undo_live_resize",
                 "scan_resize_collections",
                 "resize_source_choices",
                 "resize_scene_choices",
@@ -1378,58 +1376,11 @@ class ResizeBackendTests(unittest.TestCase):
         assert resp.data is not None
         self.assertFalse(resp.data["valid"])
 
-    def test_resize_active_collection_missing_collection_name(self) -> None:
-        req = Request(
-            request_id="r21",
-            command="resize_active_collection",
-            params={
-                "collection_name": "",
-                "scope": "Collection",
-                "mode": "Stretch",
-                "target_width": 200,
-                "target_height": 200,
-                "selected_name": None,
-                "selected_uuid": None,
-                "password": None,
-            },
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_params")
-
-    def test_undo_live_resize_missing_snapshot(self) -> None:
-        req = Request(
-            request_id="r22",
-            command="undo_live_resize",
-            params={
-                "snapshot": None,
-                "password": None,
-            },
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_params")
-
-    def test_undo_live_resize_invalid_snapshot(self) -> None:
-        req = Request(
-            request_id="r23",
-            command="undo_live_resize",
-            params={
-                "snapshot": "not-an-object",
-                "password": None,
-            },
-        )
-        resp = self.backend.handle(req)
-        self.assertEqual(resp.type, "error")
-        self.assertEqual(resp.error["code"], "invalid_params")
-
     def test_resize_commands_in_allowed_set(self) -> None:
         """All resize commands must be in the allowed set."""
         for cmd in (
             "resize_collection",
             "undo_resize",
-            "resize_active_collection",
-            "undo_live_resize",
             "scan_resize_collections",
             "resize_source_choices",
             "preview_resize",

@@ -18,6 +18,9 @@
  * - Each undoId is bound to the selectionId it was created under.
  * - Unknown, expired, or mismatched IDs are rejected.
  * - A backup can only be undone once (one-shot).
+ * - In-flight state prevents concurrent/replay requests; on backend
+ *   failure the token is released so the same valid token can be
+ *   retried until its TTL expires.
  */
 
 import { randomUUID } from "crypto";
@@ -38,6 +41,10 @@ const UNDO_TTL_MS = 15 * 60 * 1000;
 export const EXPIRED_UNDO_ERROR =
   "This undo operation is no longer available. Resize the collection again to create a new backup.";
 
+/** Customer-safe error message for in-flight undo. */
+export const IN_FLIGHT_UNDO_ERROR =
+  "This undo operation is already in progress. Please wait for it to complete.";
+
 /** A single undo record — owns the concrete backup path. */
 interface UndoRecord {
   /** Opaque undo ID — safe to send to the renderer. */
@@ -52,12 +59,14 @@ interface UndoRecord {
   createdAt: number;
   /** Whether this undo has already been consumed (one-shot). */
   consumed: boolean;
+  /** Whether an undo is currently in-flight (being processed by the backend). */
+  inFlight: boolean;
 }
 
 /**
- * Error thrown when an undo ID is unknown, expired, mismatched, or
- * already consumed.  The message is customer-safe and never contains
- * raw paths.
+ * Error thrown when an undo ID is unknown, expired, mismatched, already
+ * consumed, or currently in-flight.  The message is customer-safe and
+ * never contains raw paths.
  */
 export class UndoError extends Error {
   constructor(message: string) {
@@ -103,6 +112,7 @@ export class ResizeUndoStore {
       backupPath,
       createdAt: this._clock.now(),
       consumed: false,
+      inFlight: false,
     });
     return undoId;
   }
@@ -114,15 +124,19 @@ export class ResizeUndoStore {
    * - The undo ID exists and has not expired.
    * - The undo ID was bound to the given selectionId.
    * - The undo has not already been consumed (one-shot).
+   * - The undo is not currently in-flight (concurrent/replay rejection).
    *
-   * On success, marks the undo as consumed so it cannot be replayed.
+   * On success, marks the undo as **in-flight** so concurrent or replay
+   * requests are rejected.  The token is NOT consumed yet — it must be
+   * explicitly consumed via `consumeUndo()` after the backend restore
+   * succeeds, or released via `releaseUndo()` on failure.
    *
    * @param undoId The opaque undo ID from the renderer.
    * @param selectionId The opaque selection ID to match against.
    * @returns { backupPath, collectionPath } — concrete paths for the
    *   Python backend.
    * @throws {UndoError} if the undo ID is unknown, expired, mismatched,
-   *   or already consumed.
+   *   already consumed, or currently in-flight.
    */
   resolveUndo(undoId: string, selectionId: string): {
     backupPath: string;
@@ -130,19 +144,24 @@ export class ResizeUndoStore {
   } {
     const record = this._getValid(undoId, selectionId);
 
-    // Mark as consumed so it cannot be replayed.
-    record.consumed = true;
+    // Mark as in-flight so concurrent/replay requests are rejected.
+    // The token is NOT consumed yet — it must be explicitly consumed
+    // after the backend restore succeeds, or released on failure.
+    record.inFlight = true;
 
     // Revalidate the backup file still exists before returning the path.
     if (!existsSync(record.backupPath)) {
+      record.inFlight = false;
       throw new UndoError(EXPIRED_UNDO_ERROR);
     }
     try {
       const stat = statSync(record.backupPath);
       if (!stat.isFile()) {
+        record.inFlight = false;
         throw new UndoError(EXPIRED_UNDO_ERROR);
       }
     } catch {
+      record.inFlight = false;
       throw new UndoError(EXPIRED_UNDO_ERROR);
     }
 
@@ -150,6 +169,48 @@ export class ResizeUndoStore {
       backupPath: record.backupPath,
       collectionPath: record.collectionPath,
     };
+  }
+
+  /**
+   * Permanently consume an undo token after a successful restore.
+   *
+   * Called by Electron main only after the Python backend's
+   * `undo_resize` operation has succeeded.  This makes the undo
+   * one-shot: the token can never be replayed.
+   *
+   * @param undoId The opaque undo ID.
+   * @param selectionId The opaque selection ID to match against.
+   * @throws {UndoError} if the undo ID is unknown, expired, mismatched,
+   *   or not currently in-flight.
+   */
+  consumeUndo(undoId: string, selectionId: string): void {
+    const record = this._getValidForTransition(undoId, selectionId);
+    if (!record.inFlight) {
+      throw new UndoError(IN_FLIGHT_UNDO_ERROR);
+    }
+    record.inFlight = false;
+    record.consumed = true;
+    this._store.delete(undoId);
+  }
+
+  /**
+   * Release the in-flight state of an undo token after a failed restore.
+   *
+   * Called by Electron main when the Python backend's `undo_resize`
+   * operation fails or throws.  This clears the in-flight flag so the
+   * same valid token can be retried until its TTL expires.
+   *
+   * @param undoId The opaque undo ID.
+   * @param selectionId The opaque selection ID to match against.
+   * @throws {UndoError} if the undo ID is unknown, expired, mismatched,
+   *   or not currently in-flight.
+   */
+  releaseUndo(undoId: string, selectionId: string): void {
+    const record = this._getValidForTransition(undoId, selectionId);
+    if (!record.inFlight) {
+      throw new UndoError(IN_FLIGHT_UNDO_ERROR);
+    }
+    record.inFlight = false;
   }
 
   /**
@@ -169,7 +230,54 @@ export class ResizeUndoStore {
   }
 
   /**
-   * Internal: get a valid (non-expired, non-consumed, matching) undo record.
+   * Internal: get a valid (non-expired, non-consumed, non-in-flight,
+   * matching) undo record.
+   *
+   * @param undoId The opaque undo ID.
+   * @param selectionId The opaque selection ID to match against.
+   * @returns The UndoRecord.
+   * @throws {UndoError} if the undo ID is unknown, expired, mismatched,
+   *   already consumed, or currently in-flight.
+   */
+  private _getValid(undoId: string, selectionId: string): UndoRecord {
+    const record = this._store.get(undoId);
+    if (!record) {
+      throw new UndoError(EXPIRED_UNDO_ERROR);
+    }
+
+    // Check TTL.
+    const age = this._clock.now() - record.createdAt;
+    if (age > UNDO_TTL_MS) {
+      this._store.delete(undoId);
+      throw new UndoError(EXPIRED_UNDO_ERROR);
+    }
+
+    // Check one-shot consumption.
+    if (record.consumed) {
+      throw new UndoError(EXPIRED_UNDO_ERROR);
+    }
+
+    // Check in-flight state (concurrent/replay rejection).
+    if (record.inFlight) {
+      throw new UndoError(IN_FLIGHT_UNDO_ERROR);
+    }
+
+    // Check selection binding.
+    if (record.selectionId !== selectionId) {
+      throw new UndoError(
+        "This undo operation does not match the current selection."
+      );
+    }
+
+    return record;
+  }
+
+  /**
+   * Internal: get a valid record for consume/release transitions.
+   *
+   * Same as `_getValid` but does NOT reject in-flight tokens — these
+   * transitions are precisely the operations that act on in-flight
+   * tokens.  The caller checks the in-flight state itself.
    *
    * @param undoId The opaque undo ID.
    * @param selectionId The opaque selection ID to match against.
@@ -177,7 +285,10 @@ export class ResizeUndoStore {
    * @throws {UndoError} if the undo ID is unknown, expired, mismatched,
    *   or already consumed.
    */
-  private _getValid(undoId: string, selectionId: string): UndoRecord {
+  private _getValidForTransition(
+    undoId: string,
+    selectionId: string
+  ): UndoRecord {
     const record = this._store.get(undoId);
     if (!record) {
       throw new UndoError(EXPIRED_UNDO_ERROR);

@@ -1377,7 +1377,10 @@ ipcMain.handle(
     }
 
     // Resolve the concrete backup path from the opaque undo ID.
-    // This validates ownership, TTL, and one-shot consumption.
+    // This validates ownership, TTL, selection binding, and marks the
+    // token as in-flight so concurrent/replay requests are rejected.
+    // The token is NOT consumed yet — it must be explicitly consumed
+    // after the backend restore succeeds, or released on failure.
     let resolved: { backupPath: string; collectionPath: string };
     try {
       resolved = resizeUndoStore.resolveUndo(
@@ -1395,11 +1398,39 @@ ipcMain.handle(
         backup_path: resolved.backupPath,
       });
     } catch (err) {
+      // Backend transport failure — release the in-flight state so the
+      // same valid token can be retried until its TTL expires.
+      try {
+        resizeUndoStore.releaseUndo(params.undo_id, params.selection_id);
+      } catch {
+        // Ignore release errors — the token may have been cleaned up.
+      }
       throw new Error(selectionErrorMessage(err));
     }
     const resp = response as Record<string, unknown>;
     if (!resp || typeof resp.success !== "boolean") {
+      // Malformed response — release the in-flight state for retry.
+      try {
+        resizeUndoStore.releaseUndo(params.undo_id, params.selection_id);
+      } catch {
+        // Ignore release errors.
+      }
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    if (resp.success) {
+      // Successful restore — permanently consume the token (one-shot).
+      try {
+        resizeUndoStore.consumeUndo(params.undo_id, params.selection_id);
+      } catch {
+        // Ignore consume errors — the undo succeeded at the backend level.
+      }
+    } else {
+      // Backend reported failure — release the in-flight state for retry.
+      try {
+        resizeUndoStore.releaseUndo(params.undo_id, params.selection_id);
+      } catch {
+        // Ignore release errors.
+      }
     }
     return { success: resp.success, error: resp.error ?? null };
   }

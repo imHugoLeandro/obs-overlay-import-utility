@@ -30,11 +30,8 @@ set of commands:
 * ``resize_collection``  — offline resize of a collection (path from
                           Electron main, uses resizer.py).
 * ``undo_resize``        — restore a resize backup (paths from Electron main).
-* ``resize_active_collection`` — live OBS resize via WebSocket (uses
-                          live_resize.py, password forwarded once only).
-* ``undo_live_resize``   — undo a live OBS resize (snapshot from Electron main).
-
-Security design:
+|
+|Security design:
 
 * There is **no** shell-command endpoint, **no** arbitrary file-read
   endpoint, and **no** generic function-call endpoint.
@@ -258,8 +255,6 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "confirm_export",
     "resize_collection",
     "undo_resize",
-    "resize_active_collection",
-    "undo_live_resize",
     "scan_resize_collections",
     "resize_source_choices",
     "resize_scene_choices",
@@ -1509,189 +1504,6 @@ class Backend:
         try:
             error = _undo_resize(collection, backup)
         except UtilityError as exc:
-            error = str(exc)
-
-        if error:
-            return Response(
-                request_id=request.request_id,
-                type="result",
-                data={"success": False, "error": error},
-            )
-
-        return Response(
-            request_id=request.request_id,
-            type="result",
-            data={"success": True, "error": None},
-        )
-
-    # -- resize_active_collection (live OBS) ------------------------------
-
-    def _cmd_resize_active_collection(self, request: Request) -> Response:
-        """Resize the active OBS collection through obs-websocket.
-
-        Uses the existing ``live_resize.py`` engine.  The password is
-        accepted only for this one request, forwarded once, and never
-        persisted.  The collection name is provided by Electron main.
-        """
-        from .live_resize import resize_active_collection as _resize_active
-
-        params = request.params
-
-        collection_name = params.get("collection_name")
-        if not isinstance(collection_name, str) or not collection_name.strip():
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "collection_name must be a non-empty string."),
-            )
-
-        validated = _validate_resize_params(request, params)
-        if isinstance(validated, Response):
-            return validated
-
-        _, scope, selected_name, selected_uuid, target_width, target_height = validated
-        mode = params["mode"]
-        password = params.get("password")
-        if password is not None and not isinstance(password, str):
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "password must be a string or null."),
-            )
-
-        try:
-            outcome = _resize_active(
-                password=password if password else None,
-                collection_name=collection_name,
-                scope=scope,
-                selected_name=selected_name,
-                selected_uuid=selected_uuid,
-                mode=mode,
-                target_width=target_width,
-                target_height=target_height,
-            )
-        except (UtilityError, ObsNotRunningError, ObsAuthenticationRequired, ObsRequestError) as exc:
-            return Response(
-                request_id=request.request_id,
-                type="result",
-                data={
-                    "success": False,
-                    "error": str(exc),
-                    "changed_items": 0,
-                    "snapshot": None,
-                },
-            )
-
-        snapshot = None
-        if outcome.snapshot:
-            snapshot = {
-                "collection_name": outcome.snapshot.collection_name,
-                "transforms": [
-                    {
-                        "scene_name": t.scene_name,
-                        "scene_item_id": t.scene_item_id,
-                        "transform": t.transform,
-                    }
-                    for t in outcome.snapshot.transforms
-                ],
-                "video_settings": outcome.snapshot.video_settings,
-            }
-
-        return Response(
-            request_id=request.request_id,
-            type="result",
-            data={
-                "success": outcome.result.success,
-                "error": outcome.result.error,
-                "changed_items": outcome.result.changed_items,
-                "source_width": outcome.result.source_width,
-                "source_height": outcome.result.source_height,
-                "target_width": outcome.result.target_width,
-                "target_height": outcome.result.target_height,
-                "canvas_changed": outcome.result.canvas_changed,
-                "snapshot": snapshot,
-            },
-        )
-
-    # -- undo_live_resize (live OBS) --------------------------------------
-
-    def _cmd_undo_live_resize(self, request: Request) -> Response:
-        """Undo a live resize using live_resize.py.
-
-        The password is accepted only for this one request, forwarded once,
-        and never persisted.  The snapshot data is provided by Electron main
-        (it was returned by the resize_active_collection command).
-        """
-        from .live_resize import LiveResizeSnapshot, undo_live_resize as _undo_live
-
-        params = request.params
-
-        password = params.get("password")
-        if password is not None and not isinstance(password, str):
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "password must be a string or null."),
-            )
-
-        snapshot_data = params.get("snapshot")
-        if not isinstance(snapshot_data, dict):
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "snapshot must be an object."),
-            )
-
-        collection_name = snapshot_data.get("collection_name")
-        if not isinstance(collection_name, str) or not collection_name.strip():
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "snapshot.collection_name must be a non-empty string."),
-            )
-
-        transforms_raw = snapshot_data.get("transforms")
-        if not isinstance(transforms_raw, list):
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "snapshot.transforms must be a list."),
-            )
-
-        from .live_resize import LiveTransformBackup
-
-        transforms: list[LiveTransformBackup] = []
-        for item in transforms_raw:
-            if not isinstance(item, dict):
-                return Response(
-                    request_id=request.request_id,
-                    type="error",
-                    error=_err("invalid_params", "each transform must be an object."),
-                )
-            scene_name = item.get("scene_name")
-            scene_item_id = item.get("scene_item_id")
-            transform = item.get("transform")
-            if not isinstance(scene_name, str) or not isinstance(scene_item_id, int) or not isinstance(transform, dict):
-                return Response(
-                    request_id=request.request_id,
-                    type="error",
-                    error=_err("invalid_params", "each transform must have scene_name, scene_item_id, and transform."),
-                )
-            transforms.append(LiveTransformBackup(scene_name, scene_item_id, transform))
-
-        video_settings = snapshot_data.get("video_settings")
-        if video_settings is not None and not isinstance(video_settings, dict):
-            return Response(
-                request_id=request.request_id,
-                type="error",
-                error=_err("invalid_params", "snapshot.video_settings must be an object or null."),
-            )
-
-        snapshot = LiveResizeSnapshot(collection_name, tuple(transforms), video_settings)
-
-        try:
-            error = _undo_live(password if password else None, snapshot)
-        except (UtilityError, ObsNotRunningError, ObsAuthenticationRequired, ObsRequestError) as exc:
             error = str(exc)
 
         if error:
