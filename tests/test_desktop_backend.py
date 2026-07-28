@@ -156,6 +156,17 @@ class BackendUnknownCommandTests(unittest.TestCase):
                 "app_info",
                 "scan_collections",
                 "convert_collection",
+                "import_streamlabs",
+                "automatic_import",
+                "device_requirements",
+                "device_candidates",
+                "apply_device_choices",
+                "obs_running",
+                "activate_collection",
+                "list_export_collections",
+                "build_export_plan",
+                "export_inventory",
+                "confirm_export",
             }),
         )
 
