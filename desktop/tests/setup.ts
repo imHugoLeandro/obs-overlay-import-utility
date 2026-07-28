@@ -3,16 +3,12 @@
  *
  * Provides a mock `window.electronAPI` so the renderer tests can run
  * in a jsdom environment without a real Electron process.
- *
- * Also polyfills `window.matchMedia` for jsdom, which does not
- * implement it natively.
  */
 
 import { vi } from "vitest";
 import "@testing-library/jest-dom";
 
 // Polyfill window.matchMedia for jsdom.
-// jsdom does not implement matchMedia, so we provide a minimal mock.
 const matchMediaMock = vi.fn().mockImplementation((query: string) => ({
   matches: false,
   media: query,
@@ -29,7 +25,7 @@ Object.defineProperty(window, "matchMedia", {
   value: matchMediaMock,
 });
 
-// Mock the electronAPI that the preload script exposes via contextBridge.
+// Mock the electronAPI with all methods.
 const mockElectronAPI = {
   health: vi.fn(),
   appInfo: vi.fn(),
@@ -53,12 +49,10 @@ const mockElectronAPI = {
   confirmExport: vi.fn(),
 };
 
-// Assign to window so the renderer can access it.
 Object.defineProperty(window, "electronAPI", {
   value: mockElectronAPI,
   writable: true,
   configurable: true,
 });
 
-// Export for use in individual tests.
 export { mockElectronAPI };

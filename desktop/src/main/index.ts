@@ -39,6 +39,8 @@ import {
 } from "./security";
 import { BackendTransport } from "./transport";
 import { ImportSelectionStore, SelectionError } from "./importSelectionStore";
+import { ImportInstallationStore, InstallationError } from "./importInstallationStore";
+import { ExportStore, ExportError } from "./exportStore";
 import { callBackend, BACKEND_UNAVAILABLE_ERROR, ExpectedBackendError } from "./backendCall";
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,16 @@ const backend = new BackendTransport();
 // ---------------------------------------------------------------------------
 
 const importStore = new ImportSelectionStore();
+const installationStore = new ImportInstallationStore();
+const exportStore = new ExportStore();
+
+// ---------------------------------------------------------------------------
+// Resolve OBS scenes directory from environment or settings
+// ---------------------------------------------------------------------------
+
+function resolveObsScenesDir(): string {
+  return process.env.OBS_SCENES_DIR || "";
+}
 
 // ---------------------------------------------------------------------------
 // IPC handlers — fixed channels via ipcMain.handle
@@ -174,6 +186,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 function selectionErrorMessage(err: unknown): string {
   if (err instanceof SelectionError) {
+    return err.message;
+  }
+  if (err instanceof InstallationError) {
+    return err.message;
+  }
+  if (err instanceof ExportError) {
     return err.message;
   }
   if (err instanceof ExpectedBackendError) {
@@ -561,7 +579,7 @@ ipcMain.handle(
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
     }
-    const obsScenesDir = process.env.OBS_SCENES_DIR || "";
+    const obsScenesDir = resolveObsScenesDir();
     if (!obsScenesDir) {
       throw new Error("OBS scenes directory is not configured.");
     }
@@ -578,8 +596,21 @@ ipcMain.handle(
     if (!resp || typeof resp.success !== "boolean") {
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
     }
+
+    // On success, create an opaque installation_id.
+    let installationId: string | null = null;
+    if (resp.success) {
+      const collectionName = (resp.collection_name as string) || "";
+      installationId = installationStore.createInstallation(
+        "", // collection path unknown at this level
+        obsScenesDir,
+        collectionName
+      );
+    }
+
     return {
       success: resp.success,
+      installation_id: installationId,
       collection_name: resp.collection_name ?? "",
       canvas_width: resp.canvas_width ?? 2560,
       canvas_height: resp.canvas_height ?? 1440,
@@ -616,7 +647,7 @@ ipcMain.handle(
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
     }
-    const obsScenesDir = process.env.OBS_SCENES_DIR || "";
+    const obsScenesDir = resolveObsScenesDir();
     if (!obsScenesDir) {
       throw new Error("OBS scenes directory is not configured.");
     }
@@ -635,8 +666,21 @@ ipcMain.handle(
     if (!resp || typeof resp.success !== "boolean") {
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
     }
+
+    // On success, create an opaque installation_id.
+    let installationId: string | null = null;
+    if (resp.success) {
+      const collectionName = (resp.collection_name as string) || "";
+      installationId = installationStore.createInstallation(
+        "", // collection path not available at this level
+        obsScenesDir,
+        collectionName
+      );
+    }
+
     return {
       success: resp.success,
+      installation_id: installationId,
       kind: resp.kind ?? "",
       collection_name: resp.collection_name ?? "",
       canvas_width: resp.canvas_width ?? null,
@@ -649,7 +693,7 @@ ipcMain.handle(
 );
 
 // ---------------------------------------------------------------------------
-// IPC: deviceRequirements — resolve trusted path, list device sources
+// IPC: deviceRequirements — resolve installationId, list device sources
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -658,13 +702,19 @@ ipcMain.handle(
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
-      throw new Error("Invalid collection_path");
+    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
+      throw new Error("Invalid installation_id");
+    }
+    let collectionPath: string;
+    try {
+      collectionPath = installationStore.getCollectionPath(params.installation_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
     }
     let response: unknown;
     try {
       response = await callBackend(backend, "device_requirements", {
-        collection_path: params.collection_path,
+        collection_path: collectionPath,
       });
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
@@ -681,7 +731,7 @@ ipcMain.handle(
 );
 
 // ---------------------------------------------------------------------------
-// IPC: deviceCandidates — list reusable local device settings
+// IPC: deviceCandidates — resolve installationId, list reusable device settings
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -690,18 +740,22 @@ ipcMain.handle(
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.obs_scenes_directory)) {
-      throw new Error("Invalid obs_scenes_directory");
+    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
+      throw new Error("Invalid installation_id");
     }
-    const obsScenesDir = params.obs_scenes_directory;
-    const excludeCollection = isNonEmptyString(params.exclude_collection)
-      ? params.exclude_collection
-      : undefined;
+    let obsScenesDir: string;
+    let collectionPath: string;
+    try {
+      obsScenesDir = installationStore.getObsScenesDirectory(params.installation_id);
+      collectionPath = installationStore.getCollectionPath(params.installation_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
     let response: unknown;
     try {
       response = await callBackend(backend, "device_candidates", {
         obs_scenes_directory: obsScenesDir,
-        exclude_collection: excludeCollection,
+        exclude_collection: collectionPath,
       });
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
@@ -718,7 +772,7 @@ ipcMain.handle(
 );
 
 // ---------------------------------------------------------------------------
-// IPC: applyDeviceChoices — apply selected device settings
+// IPC: applyDeviceChoices — resolve installationId, apply device settings
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -727,16 +781,22 @@ ipcMain.handle(
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
-      throw new Error("Invalid collection_path");
+    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
+      throw new Error("Invalid installation_id");
     }
     if (!isPlainObject(params.choices)) {
       throw new Error("Invalid choices");
     }
+    let collectionPath: string;
+    try {
+      collectionPath = installationStore.getCollectionPath(params.installation_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
     let response: unknown;
     try {
       response = await callBackend(backend, "apply_device_choices", {
-        collection_path: params.collection_path,
+        collection_path: collectionPath,
         choices: params.choices,
       });
     } catch (err) {
@@ -772,7 +832,7 @@ ipcMain.handle(OBS_RUNNING_CHANNEL, async (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC: activateCollection — optional OBS activation
+// IPC: activateCollection — resolve installationId, optional OBS activation
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -781,14 +841,20 @@ ipcMain.handle(
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.collection_name)) {
-      throw new Error("Invalid collection_name");
+    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
+      throw new Error("Invalid installation_id");
+    }
+    let collectionName: string;
+    try {
+      collectionName = installationStore.getCollectionName(params.installation_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
     }
     const password = isNonEmptyString(params.password) ? params.password : undefined;
     let response: unknown;
     try {
       response = await callBackend(backend, "activate_collection", {
-        collection_name: params.collection_name,
+        collection_name: collectionName,
         password: password,
       });
     } catch (err) {
@@ -803,22 +869,21 @@ ipcMain.handle(
 );
 
 // ---------------------------------------------------------------------------
-// IPC: listExportCollections — list OBS collections for export
+// IPC: listExportCollections — no path from renderer, use OBS_SCENES_DIR
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
   LIST_EXPORT_COLLECTIONS_CHANNEL,
-  async (event, params: unknown) => {
-    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
-      throw new Error("Unauthorized sender");
+  async (_event) => {
+    const obsScenesDir = resolveObsScenesDir();
+    if (!obsScenesDir) {
+      throw new Error("OBS scenes directory is not configured.");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.obs_scenes_directory)) {
-      throw new Error("Invalid obs_scenes_directory");
-    }
+    exportStore.setObsScenesDirectory(obsScenesDir);
     let response: unknown;
     try {
       response = await callBackend(backend, "list_export_collections", {
-        obs_scenes_directory: params.obs_scenes_directory,
+        obs_scenes_directory: obsScenesDir,
       });
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
@@ -827,15 +892,20 @@ ipcMain.handle(
     if (!resp || !Array.isArray(resp.collections)) {
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
     }
+
+    // Store collections in export store and return opaque IDs.
+    const rawCollections = resp.collections as Array<{ label: string; path: string }>;
+    const collections = exportStore.setCollections(rawCollections);
+
     return {
-      collections: resp.collections,
-      count: resp.count ?? resp.collections.length,
+      collections,
+      count: collections.length,
     };
   }
 );
 
 // ---------------------------------------------------------------------------
-// IPC: chooseExportDestination — folder dialog for export
+// IPC: chooseExportDestination — folder dialog, return opaque destination_id
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(CHOOSE_EXPORT_DESTINATION_CHANNEL, async (event) => {
@@ -856,12 +926,13 @@ ipcMain.handle(CHOOSE_EXPORT_DESTINATION_CHANNEL, async (event) => {
   } catch {
     throw new Error("The selected path is not valid.");
   }
-  const destLabel = destPath.split(/[\\\\/]/).pop() || destPath;
-  return { destination_path: destPath, destination_label: destLabel };
+  // Store in export store, return opaque ID and safe label.
+  const { destinationId, destinationLabel } = exportStore.createDestination(destPath);
+  return { destination_id: destinationId, destination_label: destinationLabel };
 });
 
 // ---------------------------------------------------------------------------
-// IPC: buildExportPlan — create frozen backend-held plan
+// IPC: buildExportPlan — resolve opaque IDs, create frozen backend-held plan
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -870,20 +941,28 @@ ipcMain.handle(
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
     }
-    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
-      throw new Error("Invalid collection_path");
+    if (!isPlainObject(params) || !isNonEmptyString(params.collection_id)) {
+      throw new Error("Invalid collection_id");
     }
-    if (!isNonEmptyString(params.destination)) {
-      throw new Error("Invalid destination");
+    if (!isNonEmptyString(params.destination_id)) {
+      throw new Error("Invalid destination_id");
     }
     if (typeof params.compressed !== "boolean") {
       throw new Error("Invalid compressed option");
     }
+    let collectionPath: string;
+    let destinationPath: string;
+    try {
+      collectionPath = exportStore.getCollectionPath(params.collection_id);
+      destinationPath = exportStore.getDestinationPath(params.destination_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
     let response: unknown;
     try {
       response = await callBackend(backend, "build_export_plan", {
-        collection_path: params.collection_path,
-        destination: params.destination,
+        collection_path: collectionPath,
+        destination: destinationPath,
         compressed: params.compressed,
       });
     } catch (err) {

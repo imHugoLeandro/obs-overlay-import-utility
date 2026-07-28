@@ -67,6 +67,7 @@ export interface AmbiguousMatch {
 /** Result of importing a Streamlabs .overlay archive. */
 export interface StreamlabsImportResult {
   success: boolean;
+  installation_id: string | null;
   collection_name: string;
   canvas_width: number;
   canvas_height: number;
@@ -79,6 +80,7 @@ export interface StreamlabsImportResult {
 /** Result of an automatic import (portable/OBS/Streamlabs). */
 export interface AutomaticImportResult {
   success: boolean;
+  installation_id: string | null;
   kind: string;
   collection_name: string;
   canvas_width: number | null;
@@ -123,13 +125,13 @@ export interface ActivateResult {
 
 /** An OBS scene collection available for export. */
 export interface ExportCollectionInfo {
+  collectionId: string;
   label: string;
-  path: string;
 }
 
 /** Result of choosing an export destination folder. */
 export interface ExportDestinationInfo {
-  destination_path: string;
+  destination_id: string;
   destination_label: string;
 }
 
@@ -232,13 +234,10 @@ export interface ElectronAPI {
   }>;
   /**
    * Scan the selected folder for OBS scene collections.
-   * Returns detected collections with opaque collection IDs and safe
-   * relative labels only.
    */
   scanCollections: (selectionId: string) => Promise<ScanCollectionsResult>;
   /**
    * Select one detected collection by its opaque collection ID.
-   * Verifies that the collection ID belongs to the selection.
    */
   chooseCollection: (
     selectionId: string,
@@ -246,8 +245,6 @@ export interface ElectronAPI {
   ) => Promise<{ selection_id: string; collection_label: string }>;
   /**
    * Run path-fix conversion on the selected collection.
-   * The original collection is never modified.
-   * Returns a structured result with success/failure details.
    */
   convertCollection: (
     selectionId: string,
@@ -256,12 +253,12 @@ export interface ElectronAPI {
   ) => Promise<ConvertResult>;
   /**
    * Import a Streamlabs .overlay archive.
-   * The archive path is resolved from the selection ID by Electron main.
+   * Takes only an opaque selection_id — Electron main resolves paths.
    */
   importStreamlabs: (selectionId: string) => Promise<StreamlabsImportResult>;
   /**
-   * Detect and import one supported package (portable/OBS/Streamlabs).
-   * The folder path is resolved from the selection ID by Electron main.
+   * Detect and import one supported package.
+   * Takes only an opaque selection_id — Electron main resolves paths.
    */
   automaticImport: (
     selectionId: string,
@@ -270,27 +267,24 @@ export interface ElectronAPI {
   ) => Promise<AutomaticImportResult>;
   /**
    * List configurable device sources for an installed collection.
-   * Returns requirement IDs, names, kinds, and source IDs — never raw
-   * paths or arbitrary settings objects.
+   * Takes only an opaque installation_id — never a raw path.
    */
   deviceRequirements: (
-    collectionPath: string
+    installationId: string
   ) => Promise<{ requirements: DeviceRequirement[]; count: number }>;
   /**
-   * List reusable local device settings.
-   * Returns safe candidate labels and opaque candidate IDs — never raw
-   * paths or arbitrary settings objects.
+   * List reusable local device settings for a given installation.
+   * Takes only an opaque installation_id — never a raw path.
    */
   deviceCandidates: (
-    obsScenesDirectory: string,
-    excludeCollection?: string
+    installationId: string
   ) => Promise<{ candidates: DeviceCandidate[]; count: number }>;
   /**
-   * Apply selected device settings to an imported collection.
-   * Choices are opaque candidate IDs or "disable".
+   * Apply selected device settings to an installed collection.
+   * Takes only an opaque installation_id — never a raw path.
    */
   applyDeviceChoices: (
-    collectionPath: string,
+    installationId: string,
     choices: Record<string, unknown>
   ) => Promise<DeviceApplyResult>;
   /**
@@ -299,45 +293,40 @@ export interface ElectronAPI {
   obsRunning: () => Promise<ObsRunningResult>;
   /**
    * Activate a collection in OBS via WebSocket (optional, explicit action).
-   * The password is accepted only for this one request, forwarded once,
-   * and never persisted.
+   * Takes only an opaque installation_id — never a raw collection name or path.
    */
   activateCollection: (
-    collectionName: string,
+    installationId: string,
     password?: string
   ) => Promise<ActivateResult>;
   /**
    * List OBS scene collections available for export.
-   * Returns safe collection labels — never raw paths to the renderer.
+   * Takes no renderer path — Electron main resolves the OBS scenes directory.
    */
-  listExportCollections: (
-    obsScenesDirectory: string
-  ) => Promise<{ collections: ExportCollectionInfo[]; count: number }>;
+  listExportCollections: () => Promise<{
+    collections: ExportCollectionInfo[];
+    count: number;
+  }>;
   /**
    * Open a native folder dialog for the export destination.
-   * Returns the destination path (to Electron main only) and a safe label.
+   * Returns an opaque destination_id and a safe label — never a raw path.
    */
   chooseExportDestination: () => Promise<ExportDestinationInfo>;
   /**
    * Build a frozen, backend-held export plan.
-   * Returns a sanitized inventory view with an opaque plan ID.
-   * The renderer cannot reconstruct, modify, or submit a replacement plan.
+   * Takes only opaque collection_id and destination_id — never raw paths.
    */
   buildExportPlan: (
-    collectionPath: string,
-    destination: string,
+    collectionId: string,
+    destinationId: string,
     compressed: boolean
   ) => Promise<ExportInventory>;
   /**
    * Return a sanitized inventory view for an existing plan.
-   * Expired or unknown plan IDs fail safely.
    */
   exportInventory: (planId: string) => Promise<ExportInventory>;
   /**
-   * Execute a frozen export plan by opaque ID.
-   * The backend revalidates and executes the exact frozen plan.
-   * Unknown, expired, already-executed, or altered plans fail safely.
-   * Successful plans become idempotent.
+   * Execute a frozen export plan by opaque plan_id.
    */
   confirmExport: (planId: string) => Promise<ExportResult>;
 }

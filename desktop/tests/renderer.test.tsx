@@ -49,6 +49,10 @@ describe("App component", () => {
 
   it("shows the Export page content (functional)", async () => {
     const user = userEvent.setup();
+    mockElectronAPI.listExportCollections.mockResolvedValue({
+      collections: [{ collectionId: "col-1", label: "Current" }],
+      count: 1,
+    });
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Export" }));
