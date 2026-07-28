@@ -82,14 +82,25 @@ class SidebarRuntimeTests(unittest.TestCase):
         self.assertNotIn("mdi_family", source)
 
     def test_clean_module_imports(self) -> None:
+        # ui.py imports tkinter at module level; skip the ui module when
+        # tkinter is unavailable (e.g. Linux CI without python3-tk) rather
+        # than failing the entire test run.  The Tk-dependent layout tests
+        # in SidebarLayoutTests already skip when tkinter is missing.
+        try:
+            import tkinter  # noqa: F401
+            tk_available = True
+        except ImportError:
+            tk_available = False
+
         modules = [
-            "obs_overlay_import_utility.ui",
             "obs_overlay_import_utility.appearance",
             "obs_overlay_import_utility.constants",
             "obs_overlay_import_utility.core",
             "obs_overlay_import_utility.paths",
             "obs_overlay_import_utility.models",
         ]
+        if tk_available:
+            modules.append("obs_overlay_import_utility.ui")
         for mod in modules:
             try:
                 __import__(mod)
@@ -120,14 +131,17 @@ class SidebarMetricsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from obs_overlay_import_utility.ui import (
-            compute_sidebar_metrics,
-            subsample_ratio,
-            COLLAPSED_SIDEBAR_BASE_WIDTH,
-            COLLAPSED_LOGO_BASE_WIDTH,
-            COLLAPSED_ICON_BASE_SIZE,
-            SIDEBAR_HORIZONTAL_PADDING,
-        )
+        try:
+            from obs_overlay_import_utility.ui import (
+                compute_sidebar_metrics,
+                subsample_ratio,
+                COLLAPSED_SIDEBAR_BASE_WIDTH,
+                COLLAPSED_LOGO_BASE_WIDTH,
+                COLLAPSED_ICON_BASE_SIZE,
+                SIDEBAR_HORIZONTAL_PADDING,
+            )
+        except ImportError:
+            raise unittest.SkipTest("tkinter is not available on this platform")
         cls.compute_sidebar_metrics = staticmethod(compute_sidebar_metrics)
         cls.subsample_ratio = staticmethod(subsample_ratio)
         cls.COLLAPSED_SIDEBAR_BASE_WIDTH = COLLAPSED_SIDEBAR_BASE_WIDTH
@@ -300,7 +314,10 @@ class SidebarLayoutTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        import tkinter as tk
+        try:
+            import tkinter as tk
+        except ImportError:
+            raise unittest.SkipTest("tkinter is not available on this platform")
         cls._root = tk.Tk()
         cls._root.withdraw()
         from obs_overlay_import_utility.ui import ImportUtilityApp
