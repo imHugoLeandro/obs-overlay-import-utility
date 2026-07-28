@@ -41,6 +41,7 @@ import { BackendTransport } from "./transport";
 import { ImportSelectionStore, SelectionError } from "./importSelectionStore";
 import { ImportInstallationStore, InstallationError } from "./importInstallationStore";
 import { ExportStore, ExportError } from "./exportStore";
+import { ResizeUndoStore, UndoError } from "./resizeUndoStore";
 import { callBackend, BACKEND_UNAVAILABLE_ERROR, ExpectedBackendError } from "./backendCall";
 
 // ---------------------------------------------------------------------------
@@ -98,11 +99,10 @@ const CONFIRM_EXPORT_CHANNEL = "desktop:confirm-export";
 const SCAN_RESIZE_COLLECTIONS_CHANNEL = "desktop:scan-resize-collections";
 const CHOOSE_RESIZE_COLLECTION_CHANNEL = "desktop:choose-resize-collection";
 const RESIZE_SOURCE_CHOICES_CHANNEL = "desktop:resize-source-choices";
+const RESIZE_SCENE_CHOICES_CHANNEL = "desktop:resize-scene-choices";
 const PREVIEW_RESIZE_CHANNEL = "desktop:preview-resize";
 const APPLY_RESIZE_CHANNEL = "desktop:apply-resize";
 const UNDO_RESIZE_CHANNEL = "desktop:undo-resize";
-const APPLY_LIVE_RESIZE_CHANNEL = "desktop:apply-live-resize";
-const UNDO_LIVE_RESIZE_CHANNEL = "desktop:undo-live-resize";
 
 /**
  * Resolve the Python executable for development.
@@ -144,6 +144,7 @@ const backend = new BackendTransport();
 const importStore = new ImportSelectionStore();
 const installationStore = new ImportInstallationStore();
 const exportStore = new ExportStore();
+const resizeUndoStore = new ResizeUndoStore();
 
 // ---------------------------------------------------------------------------
 // Resolve OBS scenes directory from environment or settings
@@ -199,6 +200,9 @@ function selectionErrorMessage(err: unknown): string {
     return err.message;
   }
   if (err instanceof ExportError) {
+    return err.message;
+  }
+  if (err instanceof UndoError) {
     return err.message;
   }
   if (err instanceof ExpectedBackendError) {
@@ -1082,7 +1086,43 @@ ipcMain.handle(
     if (!resp || !Array.isArray(resp.collections)) {
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
     }
-    return resp;
+
+    // Store the scanned collections with opaque collection IDs in the
+    // main-process selection store.  The renderer receives only
+    // { collection_id, label, canvas_width, ... } — never raw paths.
+    const selectionId = params.selection_id as string;
+    importStore.setCollections(
+      selectionId,
+      (resp.collections as Array<{ path: string; label: string }>).map(
+        (c) => ({ path: c.path, label: c.label })
+      )
+    );
+
+    // Build safe display data: merge opaque collection IDs with the
+    // canvas/source/scene info from the backend response.
+    const safeCollections = (resp.collections as Array<{
+      path: string;
+      label: string;
+      canvas_width: number | null;
+      canvas_height: number | null;
+      source_count: number;
+      scene_count: number;
+    }>).map((c, idx) => {
+      const stored = importStore.getCollections(selectionId)[idx];
+      return {
+        collection_id: stored.collectionId,
+        label: c.label,
+        canvas_width: c.canvas_width ?? null,
+        canvas_height: c.canvas_height ?? null,
+        source_count: c.source_count ?? 0,
+        scene_count: c.scene_count ?? 0,
+      };
+    });
+
+    return {
+      collections: safeCollections,
+      count: safeCollections.length,
+    };
   }
 );
 
@@ -1154,6 +1194,44 @@ ipcMain.handle(
     return {
       choices: resp.choices,
       count: resp.count ?? resp.choices.length,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: resizeSceneChoices — list scene names for Scene-scope resize
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  RESIZE_SCENE_CHOICES_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+      throw new Error("Invalid selection_id");
+    }
+    let collectionPath: string;
+    try {
+      collectionPath = importStore.getCollectionPath(params.selection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "resize_scene_choices", {
+        collection_path: collectionPath,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !Array.isArray(resp.scenes)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      scenes: resp.scenes,
+      count: resp.count ?? resp.scenes.length,
     };
   }
 );
@@ -1254,6 +1332,19 @@ ipcMain.handle(
     if (!resp || typeof resp.success !== "boolean") {
       throw new Error(BACKEND_UNAVAILABLE_ERROR);
     }
+
+    // Register the backup path in the session-only undo store and
+    // return only an opaque undo_id to the renderer.  The concrete
+    // backup_path never reaches the renderer.
+    let undoId: string | null = null;
+    if (resp.success && resp.backup_path) {
+      undoId = resizeUndoStore.registerUndo(
+        params.selection_id,
+        collectionPath,
+        resp.backup_path as string
+      );
+    }
+
     return {
       success: resp.success,
       error: resp.error ?? null,
@@ -1263,13 +1354,13 @@ ipcMain.handle(
       target_width: resp.target_width ?? 0,
       target_height: resp.target_height ?? 0,
       canvas_changed: resp.canvas_changed ?? false,
-      backup_path: resp.backup_path ?? null,
+      undo_id: undoId,
     };
   }
 );
 
 // ---------------------------------------------------------------------------
-// IPC: undoResize — restore a resize backup
+// IPC: undoResize — restore a resize backup using an opaque undo ID
 // ---------------------------------------------------------------------------
 
 ipcMain.handle(
@@ -1281,115 +1372,27 @@ ipcMain.handle(
     if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
       throw new Error("Invalid selection_id");
     }
-    if (!isNonEmptyString(params.backup_path)) {
-      throw new Error("Invalid backup_path");
+    if (!isNonEmptyString(params.undo_id)) {
+      throw new Error("Invalid undo_id");
     }
-    let collectionPath: string;
+
+    // Resolve the concrete backup path from the opaque undo ID.
+    // This validates ownership, TTL, and one-shot consumption.
+    let resolved: { backupPath: string; collectionPath: string };
     try {
-      collectionPath = importStore.getCollectionPath(params.selection_id);
+      resolved = resizeUndoStore.resolveUndo(
+        params.undo_id,
+        params.selection_id
+      );
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
     }
+
     let response: unknown;
     try {
       response = await callBackend(backend, "undo_resize", {
-        collection_path: collectionPath,
-        backup_path: params.backup_path,
-      });
-    } catch (err) {
-      throw new Error(selectionErrorMessage(err));
-    }
-    const resp = response as Record<string, unknown>;
-    if (!resp || typeof resp.success !== "boolean") {
-      throw new Error(BACKEND_UNAVAILABLE_ERROR);
-    }
-    return { success: resp.success, error: resp.error ?? null };
-  }
-);
-
-// ---------------------------------------------------------------------------
-// IPC: applyLiveResize — execute live OBS resize via WebSocket
-// ---------------------------------------------------------------------------
-
-ipcMain.handle(
-  APPLY_LIVE_RESIZE_CHANNEL,
-  async (event, params: unknown) => {
-    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
-      throw new Error("Unauthorized sender");
-    }
-    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
-      throw new Error("Invalid installation_id");
-    }
-    if (!isNonEmptyString(params.scope)) {
-      throw new Error("Invalid scope");
-    }
-    if (!isNonEmptyString(params.mode)) {
-      throw new Error("Invalid mode");
-    }
-    if (typeof params.target_width !== "number" || typeof params.target_height !== "number") {
-      throw new Error("Invalid target dimensions");
-    }
-    let collectionName: string;
-    try {
-      collectionName = installationStore.getCollectionName(params.installation_id);
-    } catch (err) {
-      throw new Error(selectionErrorMessage(err));
-    }
-    const password = isNonEmptyString(params.password) ? params.password : undefined;
-    let response: unknown;
-    try {
-      response = await callBackend(backend, "resize_active_collection", {
-        collection_name: collectionName,
-        scope: params.scope,
-        mode: params.mode,
-        target_width: params.target_width,
-        target_height: params.target_height,
-        selected_name: params.selected_name ?? null,
-        selected_uuid: params.selected_uuid ?? null,
-        password: password ?? null,
-      });
-    } catch (err) {
-      throw new Error(selectionErrorMessage(err));
-    }
-    const resp = response as Record<string, unknown>;
-    if (!resp || typeof resp.success !== "boolean") {
-      throw new Error(BACKEND_UNAVAILABLE_ERROR);
-    }
-    return {
-      success: resp.success,
-      error: resp.error ?? null,
-      changed_items: resp.changed_items ?? 0,
-      source_width: resp.source_width ?? 0,
-      source_height: resp.source_height ?? 0,
-      target_width: resp.target_width ?? 0,
-      target_height: resp.target_height ?? 0,
-      canvas_changed: resp.canvas_changed ?? false,
-      snapshot: resp.snapshot ?? null,
-    };
-  }
-);
-
-// ---------------------------------------------------------------------------
-// IPC: undoLiveResize — undo a live OBS resize using a snapshot
-// ---------------------------------------------------------------------------
-
-ipcMain.handle(
-  UNDO_LIVE_RESIZE_CHANNEL,
-  async (event, params: unknown) => {
-    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
-      throw new Error("Unauthorized sender");
-    }
-    if (!isPlainObject(params) || !isNonEmptyString(params.installation_id)) {
-      throw new Error("Invalid installation_id");
-    }
-    if (!isPlainObject(params.snapshot)) {
-      throw new Error("Invalid snapshot");
-    }
-    let response: unknown;
-    try {
-      response = await callBackend(backend, "undo_live_resize", {
-        snapshot: params.snapshot,
-        password: isNonEmptyString(params.password) ? params.password : null,
+        collection_path: resolved.collectionPath,
+        backup_path: resolved.backupPath,
       });
     } catch (err) {
       throw new Error(selectionErrorMessage(err));
@@ -1571,4 +1574,5 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   backend.stop();
   importStore.clear();
+  resizeUndoStore.clear();
 });

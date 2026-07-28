@@ -217,35 +217,9 @@ export interface ResizeResult {
   target_width: number;
   target_height: number;
   canvas_changed: boolean;
-  /** Relative backup path (safe for renderer). */
-  backup_path: string | null;
-}
-
-/** A live transform backup entry. */
-export interface LiveTransformBackup {
-  scene_name: string;
-  scene_item_id: number;
-  transform: Record<string, unknown>;
-}
-
-/** A live resize snapshot for undo. */
-export interface LiveResizeSnapshot {
-  collection_name: string;
-  transforms: LiveTransformBackup[];
-  video_settings: Record<string, unknown> | null;
-}
-
-/** Result of a live (OBS WebSocket) resize operation. */
-export interface LiveResizeResult {
-  success: boolean;
-  error: string | null;
-  changed_items: number;
-  source_width: number;
-  source_height: number;
-  target_width: number;
-  target_height: number;
-  canvas_changed: boolean;
-  snapshot: LiveResizeSnapshot | null;
+  /** Opaque undo ID — the renderer uses this to undo the resize.
+   *  The concrete backup path stays in Electron main only. */
+  undo_id: string | null;
 }
 
 /** A detected scene collection with canvas info for resize. */
@@ -415,6 +389,12 @@ export interface ElectronAPI {
     selectionId: string
   ) => Promise<{ choices: ResizeSourceChoice[]; count: number }>;
   /**
+   * List scene names for Scene-scope resize.
+   */
+  resizeSceneChoices: (
+    selectionId: string
+  ) => Promise<{ scenes: string[]; count: number }>;
+  /**
    * Preview an offline resize (validates inputs, returns what would change).
    */
   previewResize: (
@@ -441,32 +421,11 @@ export interface ElectronAPI {
   ) => Promise<ResizeResult>;
   /**
    * Undo a resize by restoring a backup.
+   * Takes only opaque IDs — never a raw backup path.
    */
   undoResize: (
     selectionId: string,
-    backupPath: string
-  ) => Promise<{ success: boolean; error: string | null }>;
-  /**
-   * Execute a live OBS resize through WebSocket.
-   * Password is forwarded once, never persisted.
-   */
-  applyLiveResize: (
-    installationId: string,
-    scope: ResizeScope,
-    mode: ResizeMode,
-    targetWidth: number,
-    targetHeight: number,
-    password?: string,
-    selectedName?: string,
-    selectedUuid?: string
-  ) => Promise<LiveResizeResult>;
-  /**
-   * Undo a live OBS resize using a snapshot.
-   */
-  undoLiveResize: (
-    installationId: string,
-    snapshot: LiveResizeSnapshot,
-    password?: string
+    undoId: string
   ) => Promise<{ success: boolean; error: string | null }>;
 }
 

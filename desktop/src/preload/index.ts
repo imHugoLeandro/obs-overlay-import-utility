@@ -35,8 +35,6 @@ import type {
   ResizeSourceChoice,
   ResizeResult,
   ResizeCollectionInfo,
-  LiveResizeResult,
-  LiveResizeSnapshot,
 } from "../types/api";
 
 // ---------------------------------------------------------------------------
@@ -281,6 +279,16 @@ const electronAPI = {
     }),
 
   /**
+   * List scene names for Scene-scope resize.
+   */
+  resizeSceneChoices: (
+    selectionId: string
+  ): Promise<{ scenes: string[]; count: number }> =>
+    ipcRenderer.invoke("desktop:resize-scene-choices", {
+      selection_id: selectionId,
+    }),
+
+  /**
    * Preview an offline resize (validates inputs, returns what would change).
    */
   previewResize: (
@@ -326,53 +334,15 @@ const electronAPI = {
 
   /**
    * Undo a resize by restoring a backup.
+   * Takes only opaque IDs — never a raw backup path.
    */
   undoResize: (
     selectionId: string,
-    backupPath: string
+    undoId: string
   ): Promise<{ success: boolean; error: string | null }> =>
     ipcRenderer.invoke("desktop:undo-resize", {
       selection_id: selectionId,
-      backup_path: backupPath,
-    }),
-
-  /**
-   * Execute a live OBS resize through WebSocket.
-   * Password is forwarded once, never persisted.
-   */
-  applyLiveResize: (
-    installationId: string,
-    scope: ResizeScope,
-    mode: ResizeMode,
-    targetWidth: number,
-    targetHeight: number,
-    password?: string,
-    selectedName?: string,
-    selectedUuid?: string
-  ): Promise<LiveResizeResult> =>
-    ipcRenderer.invoke("desktop:apply-live-resize", {
-      installation_id: installationId,
-      scope,
-      mode,
-      target_width: targetWidth,
-      target_height: targetHeight,
-      password,
-      selected_name: selectedName,
-      selected_uuid: selectedUuid,
-    }),
-
-  /**
-   * Undo a live OBS resize using a snapshot.
-   */
-  undoLiveResize: (
-    installationId: string,
-    snapshot: LiveResizeSnapshot,
-    password?: string
-  ): Promise<{ success: boolean; error: string | null }> =>
-    ipcRenderer.invoke("desktop:undo-live-resize", {
-      installation_id: installationId,
-      snapshot,
-      password,
+      undo_id: undoId,
     }),
 };
 

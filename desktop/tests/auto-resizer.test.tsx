@@ -6,13 +6,15 @@
  * - Folder selection triggers scan and shows collections
  * - Collection selection shows scope step
  * - Scope selection (Collection, Scene, Source)
+ * - Scene scope loads scene choices from a safe list (no manual text field)
  * - Preview shows valid/invalid state
  * - Apply resize calls backend with correct params
- * - Success result display with backup path
- * - Undo resize
- * - Live OBS unavailable state
+ * - Success result display with opaque undo ID (no raw backup path)
+ * - Undo resize using opaque IDs only
+ * - Live OBS unavailable state (note shown, no live buttons)
  * - Safe error display
  * - Actions disabled while busy
+ * - No raw backup_path in renderer state or IPC args
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -76,6 +78,11 @@ describe("AutoResizerPage", () => {
       ],
       count: 2,
     });
+    // Default: resizeSceneChoices returns two scenes.
+    mockElectronAPI.resizeSceneChoices.mockResolvedValue({
+      scenes: ["Scene One", "Scene Two"],
+      count: 2,
+    });
     // Default: previewResize is valid.
     mockElectronAPI.previewResize.mockResolvedValue({
       valid: true,
@@ -84,7 +91,7 @@ describe("AutoResizerPage", () => {
       source_height: 1080,
       changed_items: 3,
     });
-    // Default: applyResize succeeds.
+    // Default: applyResize succeeds with opaque undo ID (no backup_path).
     mockElectronAPI.applyResize.mockResolvedValue({
       success: true,
       error: null,
@@ -94,10 +101,13 @@ describe("AutoResizerPage", () => {
       target_width: 1280,
       target_height: 720,
       canvas_changed: true,
-      backup_path: ".obs-overlay-resizer-backups/collection-20250101.json",
+      undo_id: "undo-abc-123",
     });
-    // Default: OBS is not running.
-    mockElectronAPI.obsRunning.mockResolvedValue({ running: false });
+    // Default: undoResize succeeds.
+    mockElectronAPI.undoResize.mockResolvedValue({
+      success: true,
+      error: null,
+    });
   });
 
   it("renders the initial folder selection state", () => {
@@ -286,7 +296,7 @@ describe("AutoResizerPage", () => {
     });
   });
 
-  it("shows success result with backup path", async () => {
+  it("shows success result with opaque undo ID (no raw backup path)", async () => {
     const user = userEvent.setup();
     renderAutoResizerPage();
 
@@ -316,9 +326,86 @@ describe("AutoResizerPage", () => {
 
     expect(screen.getByTestId("result-success")).toHaveTextContent("3");
     expect(screen.getByTestId("undo-resize-button")).toBeInTheDocument();
+    expect(screen.getByTestId("undo-available")).toBeInTheDocument();
   });
 
-  it("shows live OBS unavailable state when OBS is not running", async () => {
+  it("does not expose raw backup_path in the result", async () => {
+    const user = userEvent.setup();
+    renderAutoResizerPage();
+
+    await user.click(screen.getByTestId("choose-folder-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("collection-col-abc"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("resize-scope")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("next-to-preview"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("preview-valid")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("apply-resize-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("result-success")).toBeInTheDocument();
+    });
+
+    // The result page should not contain any raw path-like backup_path.
+    const resultText = screen.getByTestId("result-success").textContent;
+    expect(resultText).not.toContain("backup_path");
+    expect(resultText).not.toContain(".obs-overlay-resizer-backups");
+  });
+
+  it("undo resize uses only opaque IDs", async () => {
+    const user = userEvent.setup();
+    renderAutoResizerPage();
+
+    await user.click(screen.getByTestId("choose-folder-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("collection-col-abc"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("resize-scope")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("next-to-preview"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("preview-valid")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("apply-resize-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("result-success")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("undo-resize-button"));
+
+    await waitFor(() => {
+      expect(mockElectronAPI.undoResize).toHaveBeenCalledWith(
+        "sel-123",
+        "undo-abc-123"
+      );
+    });
+
+    // Verify undoResize was NOT called with a backup_path.
+    const undoCall = mockElectronAPI.undoResize.mock.calls[0];
+    expect(undoCall[1]).not.toMatch(/backup_path|\.json|\.obs-overlay/);
+  });
+
+  it("shows live OBS unavailable state with honest note", async () => {
     const user = userEvent.setup();
     renderAutoResizerPage();
 
@@ -347,42 +434,17 @@ describe("AutoResizerPage", () => {
     });
 
     expect(screen.getByTestId("live-section")).toBeInTheDocument();
-    expect(screen.getByText(/OBS is not running/i)).toBeInTheDocument();
+    expect(screen.getByText(/Live OBS resizing is not available/i)).toBeInTheDocument();
+    // No live resize or undo buttons should be present.
     expect(screen.queryByTestId("live-resize-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("live-undo-button")).not.toBeInTheDocument();
   });
 
-  it("shows live resize button when OBS is running", async () => {
-    const user = userEvent.setup();
-    mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
-
+  it("does not expose applyLiveResize or undoLiveResize on the API", async () => {
     renderAutoResizerPage();
-
-    await user.click(screen.getByTestId("choose-folder-button"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId("collection-col-abc"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("resize-scope")).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId("next-to-preview"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("preview-valid")).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId("apply-resize-button"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("result-success")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText(/OBS is running/i)).toBeInTheDocument();
-    expect(screen.getByTestId("live-resize-button")).toBeInTheDocument();
+    // The mock API should not have these methods.
+    expect((window.electronAPI as unknown as Record<string, unknown>).applyLiveResize).toBeUndefined();
+    expect((window.electronAPI as unknown as Record<string, unknown>).undoLiveResize).toBeUndefined();
   });
 
   it("shows safe error when backend is unavailable", async () => {
@@ -485,7 +547,7 @@ describe("AutoResizerPage", () => {
     expect(options.length).toBe(3); // 1 placeholder + 2 sources
   });
 
-  it("Scene scope shows scene name input", async () => {
+  it("Scene scope loads scene choices from a safe selectable list (no manual text field)", async () => {
     const user = userEvent.setup();
     renderAutoResizerPage();
 
@@ -504,8 +566,54 @@ describe("AutoResizerPage", () => {
     await user.click(screen.getByTestId("scope-scene"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("scene-name-input")).toBeInTheDocument();
+      expect(mockElectronAPI.resizeSceneChoices).toHaveBeenCalledWith("sel-123");
     });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("scene-select")).toBeInTheDocument();
+    });
+
+    // Scene scope should use a <select>, not a manual text input.
+    expect(screen.queryByTestId("scene-name-input")).not.toBeInTheDocument();
+
+    const options = screen.getAllByRole("option");
+    expect(options.length).toBe(3); // 1 placeholder + 2 scenes
+    expect(screen.getByText("Scene One")).toBeInTheDocument();
+    expect(screen.getByText("Scene Two")).toBeInTheDocument();
+  });
+
+  it("Scene scope requires selecting a scene before preview", async () => {
+    const user = userEvent.setup();
+    renderAutoResizerPage();
+
+    await user.click(screen.getByTestId("choose-folder-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("collection-col-abc")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("collection-col-abc"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("resize-scope")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId("scope-scene"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("scene-select")).toBeInTheDocument();
+    });
+
+    // Click "Preview Resize" without selecting a scene.
+    await user.click(screen.getByTestId("next-to-preview"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("resize-error")).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId("resize-error").textContent).toContain(
+      "Choose a scene"
+    );
   });
 
   it("preview shows invalid state when preview fails", async () => {

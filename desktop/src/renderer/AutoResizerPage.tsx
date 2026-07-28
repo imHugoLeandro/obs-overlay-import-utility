@@ -1,33 +1,30 @@
 /**
- * Auto Resizer page — offline and live OBS resize.
+ * Auto Resizer page — offline resize only.
  *
- * Uses the existing Python engines:
- * - `resizer.py` for normal/offline resize behavior;
- * - `live_resize.py` only for supported live OBS behavior.
+ * Uses the existing Python engine `resizer.py` for offline resize behavior.
  *
  * Workflow:
  * 1. User chooses an overlay folder (main-process folder dialog).
  * 2. Backend scans the folder for OBS collections with canvas info.
- * 3. User selects a collection.
- * 4. User chooses resize scope (Collection, Scene, Source).
- * 5. For Source scope, user selects a UUID-backed source.
- * 6. User enters target resolution and chooses mode (Stretch / Scale Ratio).
- * 7. Preview shows what would change (item count, canvas change).
- * 8. User confirms with "Apply Resize" — backend creates a backup,
+ * 3. User selects a collection (opaque collection ID).
+ * 4. User chooses resize scope (Collection, Scene, or Source).
+ *    - Scene scope: user selects from a safe list of real scene names.
+ *    - Source scope: user selects from a safe list of UUID-backed sources.
+ * 5. User enters target resolution and chooses mode (Stretch / Scale Ratio).
+ * 6. Preview shows what would change (item count, canvas change).
+ * 7. User confirms with "Apply Resize" — backend creates a backup,
  *    then writes the resized collection.
- * 9. Undo is available if a backup exists.
- *
- * Live OBS section:
- * - Shows whether OBS is running.
- * - If OBS is running, allows live resize via WebSocket.
- * - Password is forwarded once, never persisted.
- * - Undo restores the live snapshot.
+ * 8. Undo is available using an opaque undo ID (one-shot, TTL-bound).
  *
  * Security:
  * - The renderer never receives raw absolute paths — only opaque selection
- *   IDs and safe display labels.
+ *   IDs, collection IDs, source UUIDs, and safe display labels.
+ * - Undo uses only an opaque undo_id — the concrete backup path stays
+ *   in Electron main only.
  * - Conflicting actions are disabled while busy.
  * - The original collection is never modified without a backup.
+ *
+ * Live OBS resizing is not available in this Electron version yet.
  */
 
 import React from "react";
@@ -37,7 +34,6 @@ import type {
   ResizeSourceChoice,
   ResizeResult,
   ResizeCollectionInfo,
-  LiveResizeResult,
 } from "../types/api";
 import { useTheme } from "./theme";
 
@@ -61,8 +57,8 @@ const PRESETS: Array<{ label: string; width: number; height: number }> = [
 /**
  * Auto Resizer page component.
  *
- * Manages the full resize workflow state and renders the appropriate
- * step content.
+ * Manages the full offline resize workflow state and renders the
+ * appropriate step content.
  */
 export function AutoResizerPage(): React.ReactElement {
   const { palette } = useTheme();
@@ -75,12 +71,21 @@ export function AutoResizerPage(): React.ReactElement {
   const [folderLabel, setFolderLabel] = React.useState<string>("");
 
   // Scan state.
-  const [collections, setCollections] = React.useState<ResizeCollectionInfo[]>([]);
+  const [collections, setCollections] = React.useState<ResizeCollectionInfo[]>(
+    []
+  );
 
   // Collection selection state.
   const [collectionLabel, setCollectionLabel] = React.useState<string>("");
-  const [collectionCanvasWidth, setCollectionCanvasWidth] = React.useState<number | null>(null);
-  const [collectionCanvasHeight, setCollectionCanvasHeight] = React.useState<number | null>(null);
+  const [collectionCanvasWidth, setCollectionCanvasWidth] = React.useState<
+    number | null
+  >(null);
+  const [collectionCanvasHeight, setCollectionCanvasHeight] = React.useState<
+    number | null
+  >(null);
+
+  // Scene choices for Scene scope (loaded from backend).
+  const [sceneChoices, setSceneChoices] = React.useState<string[]>([]);
 
   // Resize options.
   const [scope, setScope] = React.useState<ResizeScope>("Collection");
@@ -89,21 +94,22 @@ export function AutoResizerPage(): React.ReactElement {
   const [targetHeight, setTargetHeight] = React.useState<number>(1080);
   const [selectedName, setSelectedName] = React.useState<string>("");
   const [selectedUuid, setSelectedUuid] = React.useState<string>("");
-  const [sourceChoices, setSourceChoices] = React.useState<ResizeSourceChoice[]>([]);
+  const [sourceChoices, setSourceChoices] = React.useState<
+    ResizeSourceChoice[]
+  >([]);
 
   // Preview state.
   const [previewValid, setPreviewValid] = React.useState<boolean>(false);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
-  const [previewChangedItems, setPreviewChangedItems] = React.useState<number>(0);
+  const [previewChangedItems, setPreviewChangedItems] = React.useState<number>(
+    0
+  );
 
-  // Result state.
-  const [resizeResult, setResizeResult] = React.useState<ResizeResult | null>(null);
-  const [backupPath, setBackupPath] = React.useState<string | null>(null);
-
-  // Live OBS state.
-  const [obsRunning, setObsRunning] = React.useState<boolean>(false);
-  const [liveResult, setLiveResult] = React.useState<LiveResizeResult | null>(null);
-  const [liveSnapshot, setLiveSnapshot] = React.useState<LiveResizeResult["snapshot"] | null>(null);
+  // Result state — holds the opaque undo ID only.
+  const [resizeResult, setResizeResult] = React.useState<ResizeResult | null>(
+    null
+  );
+  const [undoId, setUndoId] = React.useState<string | null>(null);
 
   /** Clear error and set busy state. */
   function startBusy(): void {
@@ -225,13 +231,17 @@ export function AutoResizerPage(): React.ReactElement {
   // Step 4: Choose scope and source
   // -----------------------------------------------------------------------
 
-  async function handleScopeNext(): Promise<void> {
+  function handleScopeNext(): void {
     if (!selectionId) {
       handleError("No folder selected.");
       return;
     }
     if (scope === "Source" && !selectedUuid) {
       handleError("Choose a source to resize.");
+      return;
+    }
+    if (scope === "Scene" && !selectedName) {
+      handleError("Choose a scene to resize.");
       return;
     }
     setStep("preview");
@@ -262,6 +272,34 @@ export function AutoResizerPage(): React.ReactElement {
   React.useEffect(() => {
     if (scope === "Source" && sourceChoices.length === 0) {
       handleLoadSourceChoices();
+    }
+  }, [scope]);
+
+  async function handleLoadSceneChoices(): Promise<void> {
+    if (!selectionId) return;
+    startBusy();
+    try {
+      const api = window.electronAPI;
+      if (!api) {
+        handleError("Backend is not available.");
+        return;
+      }
+      const data = await api.resizeSceneChoices(selectionId);
+      setSceneChoices(data.scenes);
+      stopBusy();
+    } catch (err) {
+      handleError(
+        err instanceof Error
+          ? err.message
+          : "Could not load scene choices. Please try again."
+      );
+    }
+  }
+
+  // Load scene choices when scope changes to Scene.
+  React.useEffect(() => {
+    if (scope === "Scene" && sceneChoices.length === 0) {
+      handleLoadSceneChoices();
     }
   }, [scope]);
 
@@ -340,7 +378,7 @@ export function AutoResizerPage(): React.ReactElement {
         scope === "Source" ? selectedUuid : undefined
       );
       setResizeResult(data);
-      setBackupPath(data.backup_path);
+      setUndoId(data.undo_id);
       setStep("result");
       stopBusy();
     } catch (err) {
@@ -357,8 +395,8 @@ export function AutoResizerPage(): React.ReactElement {
   // -----------------------------------------------------------------------
 
   async function handleUndoResize(): Promise<void> {
-    if (!selectionId || !backupPath) {
-      handleError("No backup available to undo.");
+    if (!selectionId || !undoId) {
+      handleError("No undo operation is available.");
       return;
     }
     startBusy();
@@ -368,9 +406,9 @@ export function AutoResizerPage(): React.ReactElement {
         handleError("Backend is not available.");
         return;
       }
-      const data = await api.undoResize(selectionId, backupPath);
+      const data = await api.undoResize(selectionId, undoId);
       if (data.success) {
-        setBackupPath(null);
+        setUndoId(null);
         setResizeResult(null);
         setStep("folder");
       } else {
@@ -387,92 +425,6 @@ export function AutoResizerPage(): React.ReactElement {
   }
 
   // -----------------------------------------------------------------------
-  // Live OBS
-  // -----------------------------------------------------------------------
-
-  async function checkObsRunning(): Promise<void> {
-    try {
-      const api = window.electronAPI;
-      if (!api) return;
-      const data = await api.obsRunning();
-      setObsRunning(data.running);
-    } catch {
-      setObsRunning(false);
-    }
-  }
-
-  // Check OBS running on mount and when step changes to result.
-  React.useEffect(() => {
-    checkObsRunning();
-  }, [step]);
-
-  async function handleLiveResize(): Promise<void> {
-    if (!selectionId) {
-      handleError("No collection selected.");
-      return;
-    }
-    startBusy();
-    try {
-      const api = window.electronAPI;
-      if (!api) {
-        handleError("Backend is not available.");
-        return;
-      }
-      // For live resize, we need an installation_id. Since we're using
-      // the Fix Scene Collection Paths workflow, we use the selection_id
-      // as the installation_id (the backend resolves it).
-      const data = await api.applyLiveResize(
-        selectionId,
-        scope,
-        mode,
-        targetWidth,
-        targetHeight,
-        undefined, // password — would be collected via a dialog in production
-        scope === "Scene" ? selectedName : undefined,
-        scope === "Source" ? selectedUuid : undefined
-      );
-      setLiveResult(data);
-      setLiveSnapshot(data.snapshot);
-      stopBusy();
-    } catch (err) {
-      handleError(
-        err instanceof Error
-          ? err.message
-          : "Could not apply the live resize. Please try again."
-      );
-    }
-  }
-
-  async function handleUndoLiveResize(): Promise<void> {
-    if (!selectionId || !liveSnapshot) {
-      handleError("No live snapshot available to undo.");
-      return;
-    }
-    startBusy();
-    try {
-      const api = window.electronAPI;
-      if (!api) {
-        handleError("Backend is not available.");
-        return;
-      }
-      const data = await api.undoLiveResize(selectionId, liveSnapshot, undefined);
-      if (data.success) {
-        setLiveSnapshot(null);
-        setLiveResult(null);
-      } else {
-        handleError(data.error || "Could not undo the live resize.");
-      }
-      stopBusy();
-    } catch (err) {
-      handleError(
-        err instanceof Error
-          ? err.message
-          : "Could not undo the live resize. Please try again."
-      );
-    }
-  }
-
-  // -----------------------------------------------------------------------
   // Reset
   // -----------------------------------------------------------------------
 
@@ -484,6 +436,7 @@ export function AutoResizerPage(): React.ReactElement {
     setCollectionLabel("");
     setCollectionCanvasWidth(null);
     setCollectionCanvasHeight(null);
+    setSceneChoices([]);
     setScope("Collection");
     setMode("Scale Ratio");
     setTargetWidth(1920);
@@ -495,9 +448,7 @@ export function AutoResizerPage(): React.ReactElement {
     setPreviewError(null);
     setPreviewChangedItems(0);
     setResizeResult(null);
-    setBackupPath(null);
-    setLiveResult(null);
-    setLiveSnapshot(null);
+    setUndoId(null);
     setError(null);
     setIsBusy(false);
   }
@@ -707,12 +658,16 @@ export function AutoResizerPage(): React.ReactElement {
               </p>
               {collectionCanvasWidth && collectionCanvasHeight && (
                 <p>
-                  <strong>Current canvas:</strong> {collectionCanvasWidth}×{collectionCanvasHeight}
+                  <strong>Current canvas:</strong>{" "}
+                  {collectionCanvasWidth}×{collectionCanvasHeight}
                 </p>
               )}
             </div>
 
-            <fieldset className="options-fieldset" data-testid="resize-scope">
+            <fieldset
+              className="options-fieldset"
+              data-testid="resize-scope"
+            >
               <legend className="options-legend">Resize Scope</legend>
               <label className="option-row">
                 <input
@@ -725,7 +680,9 @@ export function AutoResizerPage(): React.ReactElement {
                   disabled={isBusy}
                   data-testid="scope-collection"
                 />
-                <span className="option-label">Collection (resize entire canvas)</span>
+                <span className="option-label">
+                  Collection (resize entire canvas)
+                </span>
               </label>
               <label className="option-row">
                 <input
@@ -738,7 +695,9 @@ export function AutoResizerPage(): React.ReactElement {
                   disabled={isBusy}
                   data-testid="scope-scene"
                 />
-                <span className="option-label">Scene (resize one scene)</span>
+                <span className="option-label">
+                  Scene (resize one scene)
+                </span>
               </label>
               <label className="option-row">
                 <input
@@ -751,23 +710,30 @@ export function AutoResizerPage(): React.ReactElement {
                   disabled={isBusy}
                   data-testid="scope-source"
                 />
-                <span className="option-label">Source (resize one UUID-backed source)</span>
+                <span className="option-label">
+                  Source (resize one UUID-backed source)
+                </span>
               </label>
             </fieldset>
 
-            {scope === "Scene" && (
-              <div className="scene-input">
-                <label htmlFor="scene-name">Scene name:</label>
-                <input
-                  type="text"
-                  id="scene-name"
-                  className="text-input"
+            {scope === "Scene" && sceneChoices.length > 0 && (
+              <div className="scene-select">
+                <label htmlFor="scene-select">Select a scene:</label>
+                <select
+                  id="scene-select"
+                  className="select-input"
                   value={selectedName}
                   onChange={(e) => setSelectedName(e.target.value)}
                   disabled={isBusy}
-                  data-testid="scene-name-input"
-                  placeholder="Enter the scene name"
-                />
+                  data-testid="scene-select"
+                >
+                  <option value="">— Choose a scene —</option>
+                  {sceneChoices.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
 
@@ -798,7 +764,10 @@ export function AutoResizerPage(): React.ReactElement {
               </div>
             )}
 
-            <fieldset className="options-fieldset" data-testid="resize-mode">
+            <fieldset
+              className="options-fieldset"
+              data-testid="resize-mode"
+            >
               <legend className="options-legend">Resize Mode</legend>
               <label className="option-row">
                 <input
@@ -824,7 +793,9 @@ export function AutoResizerPage(): React.ReactElement {
                   disabled={isBusy}
                   data-testid="mode-scale-ratio"
                 />
-                <span className="option-label">Scale Ratio (preserve aspect)</span>
+                <span className="option-label">
+                  Scale Ratio (preserve aspect)
+                </span>
               </label>
             </fieldset>
 
@@ -854,7 +825,9 @@ export function AutoResizerPage(): React.ReactElement {
                   min={16}
                   max={32768}
                   value={targetWidth}
-                  onChange={(e) => setTargetWidth(parseInt(e.target.value, 10) || 0)}
+                  onChange={(e) =>
+                    setTargetWidth(parseInt(e.target.value, 10) || 0)
+                  }
                   disabled={isBusy}
                   data-testid="target-width"
                 />
@@ -865,7 +838,9 @@ export function AutoResizerPage(): React.ReactElement {
                   min={16}
                   max={32768}
                   value={targetHeight}
-                  onChange={(e) => setTargetHeight(parseInt(e.target.value, 10) || 0)}
+                  onChange={(e) =>
+                    setTargetHeight(parseInt(e.target.value, 10) || 0)
+                  }
                   disabled={isBusy}
                   data-testid="target-height"
                 />
@@ -922,7 +897,8 @@ export function AutoResizerPage(): React.ReactElement {
               </p>
               {collectionCanvasWidth && collectionCanvasHeight && (
                 <p>
-                  <strong>Current canvas:</strong> {collectionCanvasWidth}×{collectionCanvasHeight}
+                  <strong>Current canvas:</strong>{" "}
+                  {collectionCanvasWidth}×{collectionCanvasHeight}
                 </p>
               )}
             </div>
@@ -998,21 +974,41 @@ export function AutoResizerPage(): React.ReactElement {
                 <div className="result-details">
                   <p>
                     <strong>{resizeResult.changed_items}</strong> item(s)
-                    resized.
-                  </p>
-                  <p>
-                    Canvas: {resizeResult.source_width}×{resizeResult.source_height} →{" "}
-                    {resizeResult.target_width}×{resizeResult.target_height}
+                    were resized.
                   </p>
                   {resizeResult.canvas_changed && (
-                    <p>Collection canvas was updated.</p>
-                  )}
-                  {backupPath && (
                     <p>
-                      <strong>Backup created:</strong> {backupPath}
+                      Canvas changed to {resizeResult.target_width}×
+                      {resizeResult.target_height}.
+                    </p>
+                  )}
+                  {undoId && (
+                    <p data-testid="undo-available">
+                      An undo backup is available. You can undo this operation
+                      once.
                     </p>
                   )}
                 </div>
+                {undoId && (
+                  <button
+                    type="button"
+                    className="import-button-secondary"
+                    onClick={handleUndoResize}
+                    disabled={isBusy}
+                    data-testid="undo-resize-button"
+                  >
+                    Undo Resize
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="import-button-secondary"
+                  onClick={handleReset}
+                  disabled={isBusy}
+                  data-testid="start-over-button"
+                >
+                  Start Over
+                </button>
               </div>
             ) : (
               <div
@@ -1024,88 +1020,41 @@ export function AutoResizerPage(): React.ReactElement {
                   ⚠
                 </span>
                 <h2>Resize Failed</h2>
-                <p>{resizeResult.error}</p>
-              </div>
-            )}
-
-            {/* Live OBS section */}
-            <div className="live-section" data-testid="live-section">
-              <h3>Live OBS Resize</h3>
-              {obsRunning ? (
-                <p>
-                  <span className="obs-status" aria-hidden="true">
-                    ●
-                  </span>{" "}
-                  OBS is running. You can apply this resize live.
-                </p>
-              ) : (
-                <p>
-                  <span className="obs-status" aria-hidden="true">
-                    ○
-                  </span>{" "}
-                  OBS is not running. Live resize is unavailable.
-                </p>
-              )}
-              {obsRunning && resizeResult.success && !liveResult && (
-                <button
-                  type="button"
-                  className="import-button-primary"
-                  onClick={handleLiveResize}
-                  disabled={isBusy}
-                  data-testid="live-resize-button"
-                >
-                  Apply Live Resize
-                </button>
-              )}
-              {liveResult && (
-                <div className="live-result">
-                  {liveResult.success ? (
-                    <p>Live resize applied to {liveResult.changed_items} item(s).</p>
-                  ) : (
-                    <p>Live resize failed: {liveResult.error}</p>
-                  )}
-                  {liveResult.snapshot && (
-                    <button
-                      type="button"
-                      className="import-button-secondary"
-                      onClick={handleUndoLiveResize}
-                      disabled={isBusy}
-                      data-testid="undo-live-button"
-                    >
-                      Undo Live Resize
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="result-actions">
-              {backupPath && resizeResult.success && (
+                <p>{resizeResult.error || "The resize could not be completed."}</p>
                 <button
                   type="button"
                   className="import-button-secondary"
-                  onClick={handleUndoResize}
+                  onClick={handleReset}
                   disabled={isBusy}
-                  data-testid="undo-resize-button"
+                  data-testid="start-over-button"
                 >
-                  Undo Offline Resize
+                  Start Over
                 </button>
-              )}
-              <button
-                type="button"
-                className="import-button-secondary"
-                onClick={handleReset}
-                disabled={isBusy}
-                data-testid="start-over-button"
-              >
-                Start Over
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {renderBusyOverlay()}
+
+      {/* Live OBS resizing is not available in this Electron version yet. */}
+      <aside
+        className="live-unavailable-note"
+        data-testid="live-section"
+        style={
+          {
+            "--note-bg": palette.surfaceAlt,
+            "--note-border": palette.border,
+            "--note-fg": palette.muted,
+          } as React.CSSProperties
+        }
+      >
+        <span aria-hidden="true">ℹ</span>
+        <span>
+          Live OBS resizing is not available in this Electron version yet.
+        </span>
+      </aside>
     </section>
   );
 }

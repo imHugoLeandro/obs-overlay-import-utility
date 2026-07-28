@@ -43,7 +43,6 @@ describe("Preload script", () => {
       "activateCollection",
       "appInfo",
       "applyDeviceChoices",
-      "applyLiveResize",
       "applyResize",
       "automaticImport",
       "buildExportPlan",
@@ -63,10 +62,10 @@ describe("Preload script", () => {
       "listExportCollections",
       "obsRunning",
       "previewResize",
+      "resizeSceneChoices",
       "resizeSourceChoices",
       "scanCollections",
       "scanResizeCollections",
-      "undoLiveResize",
       "undoResize",
     ]);
   });
@@ -156,6 +155,36 @@ describe("Preload script", () => {
       destination_id: "dest-123",
       compressed: false,
     });
+  });
+
+  it("undoResize takes only opaque IDs (no raw backup path)", () => {
+    ipcRenderer.invoke.mockResolvedValue({ success: true, error: null });
+    api.undoResize("sel-123", "undo-abc");
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:undo-resize", {
+      selection_id: "sel-123",
+      undo_id: "undo-abc",
+    });
+  });
+
+  it("undoResize does not send backup_path", () => {
+    ipcRenderer.invoke.mockResolvedValue({ success: true, error: null });
+    api.undoResize("sel-123", "undo-abc");
+    const callArgs = ipcRenderer.invoke.mock.calls[0];
+    expect(callArgs[1]).not.toHaveProperty("backup_path");
+    expect(callArgs[1]).toHaveProperty("undo_id");
+  });
+
+  it("resizeSceneChoices takes only selectionId", () => {
+    ipcRenderer.invoke.mockResolvedValue({ scenes: ["Scene 1", "Scene 2"], count: 2 });
+    api.resizeSceneChoices("sel-123");
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:resize-scene-choices", {
+      selection_id: "sel-123",
+    });
+  });
+
+  it("does not expose applyLiveResize or undoLiveResize", () => {
+    expect(api.applyLiveResize).toBeUndefined();
+    expect(api.undoLiveResize).toBeUndefined();
   });
 
   it("does not expose chooseFolder (renamed to chooseOverlayFolder)", () => {

@@ -132,6 +132,18 @@ describe("Compiled Electron output verification", () => {
       expect(mainContent).toContain("desktop:build-export-plan");
       expect(mainContent).toContain("desktop:export-inventory");
       expect(mainContent).toContain("desktop:confirm-export");
+      expect(mainContent).toContain("desktop:scan-resize-collections");
+      expect(mainContent).toContain("desktop:choose-resize-collection");
+      expect(mainContent).toContain("desktop:resize-source-choices");
+      expect(mainContent).toContain("desktop:resize-scene-choices");
+      expect(mainContent).toContain("desktop:preview-resize");
+      expect(mainContent).toContain("desktop:apply-resize");
+      expect(mainContent).toContain("desktop:undo-resize");
+    });
+
+    it("does not contain live resize channels", () => {
+      expect(mainContent).not.toContain("desktop:apply-live-resize");
+      expect(mainContent).not.toContain("desktop:undo-live-resize");
     });
 
     it("does not contain eval() calls", () => {
@@ -187,6 +199,18 @@ describe("Compiled Electron output verification", () => {
       expect(preloadContent).toContain("desktop:build-export-plan");
       expect(preloadContent).toContain("desktop:export-inventory");
       expect(preloadContent).toContain("desktop:confirm-export");
+      expect(preloadContent).toContain("desktop:scan-resize-collections");
+      expect(preloadContent).toContain("desktop:choose-resize-collection");
+      expect(preloadContent).toContain("desktop:resize-source-choices");
+      expect(preloadContent).toContain("desktop:resize-scene-choices");
+      expect(preloadContent).toContain("desktop:preview-resize");
+      expect(preloadContent).toContain("desktop:apply-resize");
+      expect(preloadContent).toContain("desktop:undo-resize");
+    });
+
+    it("does not contain live resize channels", () => {
+      expect(preloadContent).not.toContain("desktop:apply-live-resize");
+      expect(preloadContent).not.toContain("desktop:undo-live-resize");
     });
 
     it("does not contain eval() calls", () => {

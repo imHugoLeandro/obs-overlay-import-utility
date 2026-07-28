@@ -50,11 +50,10 @@ const mockElectronAPI = {
   scanResizeCollections: vi.fn(),
   chooseResizeCollection: vi.fn(),
   resizeSourceChoices: vi.fn(),
+  resizeSceneChoices: vi.fn(),
   previewResize: vi.fn(),
   applyResize: vi.fn(),
   undoResize: vi.fn(),
-  applyLiveResize: vi.fn(),
-  undoLiveResize: vi.fn(),
 };
 
 Object.defineProperty(window, "electronAPI", {

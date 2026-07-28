@@ -23,3 +23,6 @@ desktop/dist-electron/
 desktop/*.exe
 desktop/*.dll
 desktop/.env*
+
+# uv lock file — intentionally untracked
+uv.lock

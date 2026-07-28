@@ -262,6 +262,7 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "undo_live_resize",
     "scan_resize_collections",
     "resize_source_choices",
+    "resize_scene_choices",
     "preview_resize",
 })
 
@@ -1852,6 +1853,60 @@ class Backend:
                     for c in choices
                 ],
                 "count": len(choices),
+            },
+        )
+
+    # -- resize_scene_choices -------------------------------------------
+
+    def _cmd_resize_scene_choices(self, request: Request) -> Response:
+        """List scene names for Scene-scope resize.
+
+        Uses the existing ``scene_names()`` engine from resizer.py.
+        Returns safe scene names only — no raw paths.
+        """
+        params = request.params
+        collection_path = params.get("collection_path")
+        if not isinstance(collection_path, str) or not collection_path.strip():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_params", "collection_path must be a non-empty string."),
+            )
+
+        try:
+            collection = Path(collection_path).expanduser().resolve()
+        except (OSError, ValueError):
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_path", "The selected path is not valid."),
+            )
+
+        if not collection.is_file():
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("invalid_collection", "The selected collection is no longer available."),
+            )
+
+        try:
+            from .core import load_json
+            data = load_json(collection)
+        except (OSError, UtilityError) as exc:
+            return Response(
+                request_id=request.request_id,
+                type="error",
+                error=_err("scan_failed", str(exc)),
+            )
+
+        from .resizer import scene_names as _scene_names
+        names = _scene_names(data)
+        return Response(
+            request_id=request.request_id,
+            type="result",
+            data={
+                "scenes": names,
+                "count": len(names),
             },
         )
 

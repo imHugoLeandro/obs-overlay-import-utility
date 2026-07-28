@@ -173,6 +173,7 @@ class BackendUnknownCommandTests(unittest.TestCase):
                 "undo_live_resize",
                 "scan_resize_collections",
                 "resize_source_choices",
+                "resize_scene_choices",
                 "preview_resize",
             }),
         )
