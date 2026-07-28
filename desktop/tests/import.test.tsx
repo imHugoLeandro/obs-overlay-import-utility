@@ -9,6 +9,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ImportPage } from "../src/renderer/ImportPage";
 import { mockElectronAPI } from "./setup";
+import { ThemeProvider } from "../src/renderer/theme";
+
+function renderWithTheme(ui: React.ReactElement) {
+  return render(<ThemeProvider>{ui}</ThemeProvider>);
+}
 
 describe("ImportPage — Streamlabs Import", () => {
   beforeEach(() => {
@@ -18,14 +23,14 @@ describe("ImportPage — Streamlabs Import", () => {
   });
 
   it("renders the Streamlabs import section", () => {
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     expect(screen.getByText("Import Streamlabs Scene File")).toBeInTheDocument();
     expect(screen.getByTestId("choose-streamlabs-overlay-button")).toBeInTheDocument();
   });
 
   it("shows busy state during import", async () => {
     mockElectronAPI.chooseStreamlabsOverlay.mockImplementation(() => new Promise(() => {}));
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
 
     const btn = screen.getByTestId("choose-streamlabs-overlay-button");
     await userEvent.click(btn);
@@ -46,14 +51,17 @@ describe("ImportPage — Streamlabs Import", () => {
       profile_name: "Scene Collection",
       error: null,
     });
+    mockElectronAPI.deviceRequirements.mockResolvedValue({ requirements: [], count: 0 });
+    mockElectronAPI.deviceCandidates.mockResolvedValue({ candidates: [], count: 0 });
+    mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("choose-streamlabs-overlay-button"));
 
     await waitFor(() => {
       expect(screen.getByTestId("streamlabs-result")).toBeInTheDocument();
     });
-    expect(screen.getByText("Import Complete")).toBeInTheDocument();
+    expect(screen.getByText("✓ Import Complete")).toBeInTheDocument();
     expect(screen.getByText("My Collection")).toBeInTheDocument();
   });
 
@@ -71,7 +79,7 @@ describe("ImportPage — Streamlabs Import", () => {
       error: "Invalid .overlay archive",
     });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("choose-streamlabs-overlay-button"));
 
     await waitFor(() => {
@@ -89,7 +97,7 @@ describe("ImportPage — Automatic Import", () => {
   });
 
   it("renders the Automatic import section with strict/case defaults ON", () => {
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     expect(screen.getByText("Automatic Scene Collection")).toBeInTheDocument();
     const strictCheckbox = screen.getByTestId("auto-strict-checkbox") as HTMLInputElement;
     const caseCheckbox = screen.getByTestId("auto-case-checkbox") as HTMLInputElement;
@@ -111,13 +119,13 @@ describe("ImportPage — Automatic Import", () => {
       conversion: { success: true, output_filename: "Auto Collection.json", changed: 3, unchanged: 2, missing: [], ambiguous: [], indexed_files: 5, candidate_paths: 0 },
     });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
       expect(screen.getByTestId("auto-result")).toBeInTheDocument();
     });
-    expect(screen.getByText("Import Complete (obs_export)")).toBeInTheDocument();
+    expect(screen.getByText("✓ Import Complete (obs_export)")).toBeInTheDocument();
   });
 
   it("shows error on automatic import failure", async () => {
@@ -134,7 +142,7 @@ describe("ImportPage — Automatic Import", () => {
       conversion: null,
     });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
@@ -168,11 +176,11 @@ describe("ImportPage — Device Setup", () => {
     mockElectronAPI.deviceCandidates.mockResolvedValue({ candidates: [{ candidate_id: "cand-1", label: "Logitech C920", source_id: "source-1" }], count: 1 });
     mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
-      expect(screen.getByText("Device Setup")).toBeInTheDocument();
+      expect(screen.getByText("Device Setup — Auto Collection")).toBeInTheDocument();
     });
     expect(screen.getByTestId("device-requirements")).toBeInTheDocument();
     expect(screen.getByTestId("apply-device-choices")).toBeInTheDocument();
@@ -196,7 +204,7 @@ describe("ImportPage — Device Setup", () => {
     mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
     mockElectronAPI.applyDeviceChoices.mockResolvedValue({ success: false, error: "OBS is running with this collection active" });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
@@ -237,7 +245,7 @@ describe("ImportPage — OBS Activation", () => {
     mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
     mockElectronAPI.activateCollection.mockResolvedValue({ success: true, error: null });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
@@ -273,7 +281,7 @@ describe("ImportPage — OBS Activation", () => {
     mockElectronAPI.obsRunning.mockResolvedValue({ running: true });
     mockElectronAPI.activateCollection.mockResolvedValue({ success: true, error: null });
 
-    render(<ImportPage />);
+    renderWithTheme(<ImportPage />);
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {

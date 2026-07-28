@@ -40,7 +40,7 @@ export function DeviceSetupSection({ palette, installationId, collectionName }: 
       setChoices(initial);
     }).catch(() => {});
     api.deviceCandidates(installationId).then((r) => setCandidates(r.candidates)).catch(() => {});
-    api.obsRunning().then((r) => setObsRunning(r.running)).catch(() => {});
+    api.obsRunning().then((r) => setObsRunning(r.running)).catch(() => setObsRunning(false));
   }, [api, installationId, loaded]);
 
   const handleApply = async (): Promise<void> => {

@@ -57,7 +57,7 @@ export function StreamlabsImportSection({ palette }: Props): React.ReactElement 
       </button>
 
       {result && result.success && (
-        <div className="result-success" data-testid="streamlabs-result">
+        <div className="result-success" data-testid="streamlabs-result" data-installation-id={installationId ?? undefined}>
           <h3>✓ Import Complete</h3>
           <dl className="result-details">
             <div className="result-row"><dt>Collection</dt><dd>{result.collection_name}</dd></div>
@@ -70,6 +70,9 @@ export function StreamlabsImportSection({ palette }: Props): React.ReactElement 
               <h4>Skipped sources ({result.skipped_sources.length})</h4>
               <ul>{result.skipped_sources.map((s, i) => <li key={i}>{s}</li>)}</ul>
             </div>
+          )}
+          {installationId && (
+            <p className="workflow-note">Imported as installation ID: {installationId}</p>
           )}
         </div>
       )}

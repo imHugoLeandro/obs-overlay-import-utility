@@ -80,7 +80,6 @@ const APP_INFO_CHANNEL = "desktop:app-info";
 const CHOOSE_OVERLAY_FOLDER_CHANNEL = "desktop:choose-overlay-folder";
 const CHOOSE_STREAMLABS_OVERLAY_CHANNEL = "desktop:choose-streamlabs-overlay";
 const CHOOSE_AUTOMATIC_FOLDER_CHANNEL = "desktop:choose-automatic-folder";
-const CHOOSE_EXPORT_COLLECTION_CHANNEL = "desktop:choose-export-collection";
 const CHOOSE_EXPORT_DESTINATION_CHANNEL = "desktop:choose-export-destination";
 const SCAN_COLLECTIONS_CHANNEL = "desktop:scan-collections";
 const CHOOSE_COLLECTION_CHANNEL = "desktop:choose-collection";

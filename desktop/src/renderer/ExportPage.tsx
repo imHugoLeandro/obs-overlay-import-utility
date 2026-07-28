@@ -200,7 +200,7 @@ export function ExportPage(): React.ReactElement {
           <h2 className="export-step-title">Export Inventory</h2>
           <dl className="export-details">
             <div className="export-detail-row"><dt>Collection</dt><dd>{inventory.collection_label}</dd></div>
-            <div className="export-detail-row"><dt>Package type</dt><dd>{inventory.compressed ? "ZIP" : "Folder"}</dd></div>
+            <div className="export-detail-row"><dt>Package type</dt><dd>{compressed ? "ZIP" : "Folder"}</dd></div>
             <div className="export-detail-row"><dt>Total size</dt><dd>{formatBytes(inventory.total_bytes)}</dd></div>
             <div className="export-detail-row"><dt>Scenes</dt><dd>{inventory.scene_count}</dd></div>
             <div className="export-detail-row"><dt>Sources</dt><dd>{inventory.source_count}</dd></div>

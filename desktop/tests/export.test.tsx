@@ -8,6 +8,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ExportPage } from "../src/renderer/ExportPage";
 import { mockElectronAPI } from "./setup";
+import { ThemeProvider } from "../src/renderer/theme";
+
+function renderWithTheme(ui: React.ReactElement) {
+  return render(<ThemeProvider>{ui}</ThemeProvider>);
+}
 
 describe("ExportPage — Collection List", () => {
   beforeEach(() => {
@@ -15,7 +20,7 @@ describe("ExportPage — Collection List", () => {
   });
 
   it("renders the collection list on open", () => {
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     expect(screen.getByText("Export Overlay")).toBeInTheDocument();
     expect(screen.getByTestId("refresh-collections-button")).toBeInTheDocument();
   });
@@ -29,7 +34,7 @@ describe("ExportPage — Collection List", () => {
       count: 2,
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
 
     await waitFor(() => {
@@ -44,7 +49,7 @@ describe("ExportPage — Collection List", () => {
       count: 1,
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
 
     await waitFor(() => {
@@ -75,7 +80,7 @@ describe("ExportPage — Destination and Plan", () => {
       destination_label: "exports",
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
 
     await waitFor(() => {
@@ -119,7 +124,7 @@ describe("ExportPage — Destination and Plan", () => {
       items: [],
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
     await waitFor(() => expect(screen.getByTestId("collection-col-1")).toBeInTheDocument());
     await userEvent.click(screen.getByTestId("collection-col-1"));
@@ -133,7 +138,7 @@ describe("ExportPage — Destination and Plan", () => {
       expect(screen.getByTestId("export-inventory")).toBeInTheDocument();
     });
     expect(screen.getByText("Current")).toBeInTheDocument();
-    expect(screen.getByText("5.0 KB")).toBeInTheDocument();
+    expect(screen.getByText("500.0 KB")).toBeInTheDocument();
     expect(screen.getByText("Missing References (1)")).toBeInTheDocument();
   });
 
@@ -163,7 +168,7 @@ describe("ExportPage — Destination and Plan", () => {
       items: [],
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
     await waitFor(() => expect(screen.getByTestId("collection-col-1")).toBeInTheDocument());
     await userEvent.click(screen.getByTestId("collection-col-1"));
@@ -222,7 +227,7 @@ describe("ExportPage — Confirm and Result", () => {
       error: null,
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
     await waitFor(() => expect(screen.getByTestId("collection-col-1")).toBeInTheDocument());
     await userEvent.click(screen.getByTestId("collection-col-1"));
@@ -279,7 +284,7 @@ describe("ExportPage — Confirm and Result", () => {
       error: "Plan has expired. Please rebuild and try again.",
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
     await waitFor(() => expect(screen.getByTestId("collection-col-1")).toBeInTheDocument());
     await userEvent.click(screen.getByTestId("collection-col-1"));
@@ -309,7 +314,7 @@ describe("ExportPage — No raw paths", () => {
       count: 1,
     });
 
-    render(<ExportPage />);
+    renderWithTheme(<ExportPage />);
     await userEvent.click(screen.getByTestId("refresh-collections-button"));
 
     await waitFor(() => {
