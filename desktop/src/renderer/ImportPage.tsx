@@ -30,6 +30,9 @@ import type {
   ConvertResult,
 } from "../types/api";
 import { useTheme } from "./theme";
+import { StreamlabsImportSection } from "./StreamlabsImportSection";
+import { AutomaticImportSection } from "./AutomaticImportSection";
+import { DeviceSetupSection } from "./DeviceSetupSection";
 
 /** Workflow steps for the stepper. */
 type Step = "folder" | "scan" | "collection" | "convert" | "result";
@@ -70,6 +73,10 @@ export function ImportPage(): React.ReactElement {
 
   // Result state.
   const [result, setResult] = React.useState<ConvertResult | null>(null);
+
+  // Installation state for device setup (from Streamlabs or Automatic import).
+  const [installationId, setInstallationId] = React.useState<string | null>(null);
+  const [deviceCollectionName, setDeviceCollectionName] = React.useState<string>("");
 
   /** Clear error and set busy state. */
   function startBusy(): void {
@@ -589,6 +596,31 @@ export function ImportPage(): React.ReactElement {
       </div>
 
       {renderBusyOverlay()}
+
+      <hr className="workflow-divider" />
+
+      <StreamlabsImportSection palette={palette} />
+
+      <hr className="workflow-divider" />
+
+      <AutomaticImportSection
+        palette={palette}
+        onInstallationCreated={(id, name) => {
+          setInstallationId(id);
+          setDeviceCollectionName(name);
+        }}
+      />
+
+      {installationId && (
+        <>
+          <hr className="workflow-divider" />
+          <DeviceSetupSection
+            palette={palette}
+            installationId={installationId}
+            collectionName={deviceCollectionName}
+          />
+        </>
+      )}
     </section>
   );
 }
