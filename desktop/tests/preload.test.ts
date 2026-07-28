@@ -62,11 +62,25 @@ describe("Preload script", () => {
     expect(api).toBeDefined();
     const keys = Object.keys(api).sort();
     expect(keys).toEqual([
+      "activateCollection",
       "appInfo",
+      "applyDeviceChoices",
+      "automaticImport",
+      "buildExportPlan",
+      "chooseAutomaticFolder",
       "chooseCollection",
+      "chooseExportDestination",
       "chooseOverlayFolder",
+      "chooseStreamlabsOverlay",
+      "confirmExport",
       "convertCollection",
+      "deviceCandidates",
+      "deviceRequirements",
+      "exportInventory",
       "health",
+      "importStreamlabs",
+      "listExportCollections",
+      "obsRunning",
       "scanCollections",
     ]);
   });
@@ -130,6 +144,20 @@ describe("Preload script", () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:choose-overlay-folder");
   });
 
+  it("chooseStreamlabsOverlay invokes its fixed channel with no payload", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      selection_id: "sel-456",
+      folder_label: "demo.overlay",
+    });
+
+    api.chooseStreamlabsOverlay();
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:choose-streamlabs-overlay");
+  });
+
   it("scanCollections invokes the fixed desktop:scan-collections channel with selection_id only", () => {
     expect(api).toBeDefined();
 
@@ -186,6 +214,246 @@ describe("Preload script", () => {
       selection_id: "sel-123",
       strict: true,
       case_sensitive: true,
+    });
+  });
+
+  it("importStreamlabs invokes the fixed desktop:import-streamlabs channel with selection_id only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      collection_name: "Demo",
+      canvas_width: 2560,
+      canvas_height: 1440,
+      imported_sources: 3,
+      skipped_sources: [],
+      profile_name: null,
+      error: null,
+    });
+
+    api.importStreamlabs("sel-123");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:import-streamlabs", {
+      selection_id: "sel-123",
+    });
+  });
+
+  it("automaticImport invokes the fixed desktop:automatic-import channel with selection_id, strict, case_sensitive", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      kind: "obs",
+      collection_name: "Imported Pack",
+      canvas_width: 2560,
+      canvas_height: 1440,
+      profile_name: "Streaming",
+      error: null,
+      conversion: null,
+    });
+
+    api.automaticImport("sel-123", true, true);
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:automatic-import", {
+      selection_id: "sel-123",
+      strict: true,
+      case_sensitive: true,
+    });
+  });
+
+  it("deviceRequirements invokes the fixed desktop:device-requirements channel with collection_path only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      requirements: [{ key: "k1", name: "Camera", source_id: "av_capture_input", kind: "Camera or capture device" }],
+      count: 1,
+    });
+
+    api.deviceRequirements("/path/to/collection.json");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:device-requirements", {
+      collection_path: "/path/to/collection.json",
+    });
+  });
+
+  it("deviceCandidates invokes the fixed desktop:device-candidates channel with obs_scenes_directory and optional exclude_collection", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      candidates: [{ candidate_id: "dev-av-0", source_id: "av_capture_input", label: "Camera — Current", kind: "Camera or capture device" }],
+      count: 1,
+    });
+
+    api.deviceCandidates("/obs/scenes", "/obs/scenes/Imported.json");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:device-candidates", {
+      obs_scenes_directory: "/obs/scenes",
+      exclude_collection: "/obs/scenes/Imported.json",
+    });
+  });
+
+  it("applyDeviceChoices invokes the fixed desktop:apply-device-choices channel with collection_path and choices", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      error: null,
+    });
+
+    api.applyDeviceChoices("/path/to/collection.json", { k1: "disable" });
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:apply-device-choices", {
+      collection_path: "/path/to/collection.json",
+      choices: { k1: "disable" },
+    });
+  });
+
+  it("obsRunning invokes the fixed desktop:obs-running channel with no payload", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({ running: true });
+
+    api.obsRunning();
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:obs-running");
+  });
+
+  it("activateCollection invokes the fixed desktop:activate-collection channel with collection_name and optional password", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      error: null,
+    });
+
+    api.activateCollection("My Collection", "secret123");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:activate-collection", {
+      collection_name: "My Collection",
+      password: "secret123",
+    });
+  });
+
+  it("listExportCollections invokes the fixed desktop:list-export-collections channel with obs_scenes_directory only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      collections: [{ label: "Current", path: "/obs/scenes/Current.json" }],
+      count: 1,
+    });
+
+    api.listExportCollections("/obs/scenes");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:list-export-collections", {
+      obs_scenes_directory: "/obs/scenes",
+    });
+  });
+
+  it("chooseExportDestination invokes the fixed desktop:choose-export-destination channel with no payload", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      destination_path: "/export",
+      destination_label: "export",
+    });
+
+    api.chooseExportDestination();
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:choose-export-destination");
+  });
+
+  it("buildExportPlan invokes the fixed desktop:build-export-plan channel with collection_path, destination, compressed", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      plan_id: "plan-123",
+      collection_label: "Current",
+      collection_stem: "Current",
+      compressed: false,
+      source_references: 5,
+      total_bytes: 1024,
+      scene_count: 3,
+      source_count: 5,
+      browser_files: 0,
+      canvas_width: 2560,
+      canvas_height: 1440,
+      missing_references: [],
+      dependency_report: {
+        fonts: [],
+        devices: [],
+        remote_resources: [],
+        plugin_source_ids: [],
+        plugin_filter_ids: [],
+      },
+      items: [],
+    });
+
+    api.buildExportPlan("/path/to/collection.json", "/export", false);
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:build-export-plan", {
+      collection_path: "/path/to/collection.json",
+      destination: "/export",
+      compressed: false,
+    });
+  });
+
+  it("exportInventory invokes the fixed desktop:export-inventory channel with plan_id only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      plan_id: "plan-123",
+      collection_label: "Current",
+      collection_stem: "Current",
+      compressed: false,
+      source_references: 5,
+      total_bytes: 1024,
+      scene_count: 3,
+      source_count: 5,
+      browser_files: 0,
+      canvas_width: 2560,
+      canvas_height: 1440,
+      missing_references: [],
+      items: [],
+    });
+
+    api.exportInventory("plan-123");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:export-inventory", {
+      plan_id: "plan-123",
+    });
+  });
+
+  it("confirmExport invokes the fixed desktop:confirm-export channel with plan_id only", () => {
+    expect(api).toBeDefined();
+
+    ipcRenderer.invoke.mockResolvedValue({
+      success: true,
+      already_executed: false,
+      copied_files: 5,
+      uncompressed_bytes: 1024,
+      source_references: 5,
+      skipped_references: [],
+      verification: { ok: true, errors: [] },
+      output_label: "Current-Portable",
+      error: null,
+    });
+
+    api.confirmExport("plan-123");
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:confirm-export", {
+      plan_id: "plan-123",
     });
   });
 

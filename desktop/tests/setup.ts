@@ -34,9 +34,23 @@ const mockElectronAPI = {
   health: vi.fn(),
   appInfo: vi.fn(),
   chooseOverlayFolder: vi.fn(),
+  chooseStreamlabsOverlay: vi.fn(),
+  chooseAutomaticFolder: vi.fn(),
   scanCollections: vi.fn(),
   chooseCollection: vi.fn(),
   convertCollection: vi.fn(),
+  importStreamlabs: vi.fn(),
+  automaticImport: vi.fn(),
+  deviceRequirements: vi.fn(),
+  deviceCandidates: vi.fn(),
+  applyDeviceChoices: vi.fn(),
+  obsRunning: vi.fn(),
+  activateCollection: vi.fn(),
+  listExportCollections: vi.fn(),
+  chooseExportDestination: vi.fn(),
+  buildExportPlan: vi.fn(),
+  exportInventory: vi.fn(),
+  confirmExport: vi.fn(),
 };
 
 // Assign to window so the renderer can access it.

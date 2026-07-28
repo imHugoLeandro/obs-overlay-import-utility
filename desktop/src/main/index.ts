@@ -51,6 +51,17 @@ const ALLOWED_COMMANDS = new Set([
   "app_info",
   "scan_collections",
   "convert_collection",
+  "import_streamlabs",
+  "automatic_import",
+  "device_requirements",
+  "device_candidates",
+  "apply_device_choices",
+  "obs_running",
+  "activate_collection",
+  "list_export_collections",
+  "build_export_plan",
+  "export_inventory",
+  "confirm_export",
 ]);
 
 /**
@@ -65,9 +76,24 @@ function isAllowedCommand(command: string): boolean {
 const HEALTH_CHANNEL = "desktop:health";
 const APP_INFO_CHANNEL = "desktop:app-info";
 const CHOOSE_OVERLAY_FOLDER_CHANNEL = "desktop:choose-overlay-folder";
+const CHOOSE_STREAMLABS_OVERLAY_CHANNEL = "desktop:choose-streamlabs-overlay";
+const CHOOSE_AUTOMATIC_FOLDER_CHANNEL = "desktop:choose-automatic-folder";
+const CHOOSE_EXPORT_COLLECTION_CHANNEL = "desktop:choose-export-collection";
+const CHOOSE_EXPORT_DESTINATION_CHANNEL = "desktop:choose-export-destination";
 const SCAN_COLLECTIONS_CHANNEL = "desktop:scan-collections";
 const CHOOSE_COLLECTION_CHANNEL = "desktop:choose-collection";
 const CONVERT_COLLECTION_CHANNEL = "desktop:convert-collection";
+const IMPORT_STREAMLABS_CHANNEL = "desktop:import-streamlabs";
+const AUTOMATIC_IMPORT_CHANNEL = "desktop:automatic-import";
+const DEVICE_REQUIREMENTS_CHANNEL = "desktop:device-requirements";
+const DEVICE_CANDIDATES_CHANNEL = "desktop:device-candidates";
+const APPLY_DEVICE_CHOICES_CHANNEL = "desktop:apply-device-choices";
+const OBS_RUNNING_CHANNEL = "desktop:obs-running";
+const ACTIVATE_COLLECTION_CHANNEL = "desktop:activate-collection";
+const LIST_EXPORT_COLLECTIONS_CHANNEL = "desktop:list-export-collections";
+const BUILD_EXPORT_PLAN_CHANNEL = "desktop:build-export-plan";
+const EXPORT_INVENTORY_CHANNEL = "desktop:export-inventory";
+const CONFIRM_EXPORT_CHANNEL = "desktop:confirm-export";
 
 /**
  * Resolve the Python executable for development.
@@ -457,6 +483,484 @@ ipcMain.handle(
       output_filename: resp.output_filename,
       output_path: resp.output_path,
       error: resp.error,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: chooseStreamlabsOverlay — strict .overlay filter
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(CHOOSE_STREAMLABS_OVERLAY_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: "Choose a Streamlabs .overlay file",
+    properties: ["openFile", "dontAddToRecent"],
+    buttonLabel: "Select .overlay File",
+    filters: [{ name: "Streamlabs Overlay", extensions: ["overlay"] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    throw new Error("No file selected");
+  }
+  let archivePath: string;
+  try {
+    archivePath = realpathSync(result.filePaths[0]);
+  } catch {
+    throw new Error("The selected path is not valid.");
+  }
+  const archiveLabel = archivePath.split(/[\\\\/]/).pop() || archivePath;
+  const selectionId = importStore.createFolderSelection(archivePath, archiveLabel);
+  return { selection_id: selectionId, folder_label: archiveLabel };
+});
+
+// ---------------------------------------------------------------------------
+// IPC: chooseAutomaticFolder — narrow folder dialog
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(CHOOSE_AUTOMATIC_FOLDER_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: "Choose an overlay package folder",
+    properties: ["openDirectory", "dontAddToRecent"],
+    buttonLabel: "Select Package Folder",
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    throw new Error("No folder selected");
+  }
+  let folderPath: string;
+  try {
+    folderPath = realpathSync(result.filePaths[0]);
+  } catch {
+    throw new Error("The selected path is not valid.");
+  }
+  const folderLabel = folderPath.split(/[\\\\/]/).pop() || folderPath;
+  const selectionId = importStore.createFolderSelection(folderPath, folderLabel);
+  return { selection_id: selectionId, folder_label: folderLabel };
+});
+
+// ---------------------------------------------------------------------------
+// IPC: importStreamlabs — resolve trusted path, then import
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  IMPORT_STREAMLABS_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+      throw new Error("Invalid selection_id");
+    }
+    let archivePath: string;
+    try {
+      archivePath = importStore.getFolderPath(params.selection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const obsScenesDir = process.env.OBS_SCENES_DIR || "";
+    if (!obsScenesDir) {
+      throw new Error("OBS scenes directory is not configured.");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "import_streamlabs", {
+        archive_path: archivePath,
+        obs_scenes_directory: obsScenesDir,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      success: resp.success,
+      collection_name: resp.collection_name ?? "",
+      canvas_width: resp.canvas_width ?? 2560,
+      canvas_height: resp.canvas_height ?? 1440,
+      imported_sources: resp.imported_sources ?? 0,
+      skipped_sources: resp.skipped_sources ?? [],
+      profile_name: resp.profile_name ?? null,
+      error: resp.error ?? null,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: automaticImport — resolve trusted path, then auto-import
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  AUTOMATIC_IMPORT_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
+      throw new Error("Invalid selection_id");
+    }
+    if (typeof params.strict !== "boolean") {
+      throw new Error("Invalid strict option");
+    }
+    if (typeof params.case_sensitive !== "boolean") {
+      throw new Error("Invalid case_sensitive option");
+    }
+    let folderPath: string;
+    try {
+      folderPath = importStore.getFolderPath(params.selection_id);
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const obsScenesDir = process.env.OBS_SCENES_DIR || "";
+    if (!obsScenesDir) {
+      throw new Error("OBS scenes directory is not configured.");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "automatic_import", {
+        overlay_root: folderPath,
+        obs_scenes_directory: obsScenesDir,
+        strict: params.strict,
+        case_sensitive: params.case_sensitive,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      success: resp.success,
+      kind: resp.kind ?? "",
+      collection_name: resp.collection_name ?? "",
+      canvas_width: resp.canvas_width ?? null,
+      canvas_height: resp.canvas_height ?? null,
+      profile_name: resp.profile_name ?? null,
+      error: resp.error ?? null,
+      conversion: resp.conversion ?? null,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: deviceRequirements — resolve trusted path, list device sources
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  DEVICE_REQUIREMENTS_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
+      throw new Error("Invalid collection_path");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "device_requirements", {
+        collection_path: params.collection_path,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !Array.isArray(resp.requirements)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      requirements: resp.requirements,
+      count: resp.count ?? resp.requirements.length,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: deviceCandidates — list reusable local device settings
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  DEVICE_CANDIDATES_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.obs_scenes_directory)) {
+      throw new Error("Invalid obs_scenes_directory");
+    }
+    const obsScenesDir = params.obs_scenes_directory;
+    const excludeCollection = isNonEmptyString(params.exclude_collection)
+      ? params.exclude_collection
+      : undefined;
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "device_candidates", {
+        obs_scenes_directory: obsScenesDir,
+        exclude_collection: excludeCollection,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !Array.isArray(resp.candidates)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      candidates: resp.candidates,
+      count: resp.count ?? resp.candidates.length,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: applyDeviceChoices — apply selected device settings
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  APPLY_DEVICE_CHOICES_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
+      throw new Error("Invalid collection_path");
+    }
+    if (!isPlainObject(params.choices)) {
+      throw new Error("Invalid choices");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "apply_device_choices", {
+        collection_path: params.collection_path,
+        choices: params.choices,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return { success: resp.success, error: resp.error ?? null };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: obsRunning — check if OBS is running
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(OBS_RUNNING_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  let response: unknown;
+  try {
+    response = await callBackend(backend, "obs_running");
+  } catch (err) {
+    throw new Error(selectionErrorMessage(err));
+  }
+  const resp = response as Record<string, unknown>;
+  if (!resp || typeof resp.running !== "boolean") {
+    throw new Error(BACKEND_UNAVAILABLE_ERROR);
+  }
+  return { running: resp.running };
+});
+
+// ---------------------------------------------------------------------------
+// IPC: activateCollection — optional OBS activation
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  ACTIVATE_COLLECTION_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.collection_name)) {
+      throw new Error("Invalid collection_name");
+    }
+    const password = isNonEmptyString(params.password) ? params.password : undefined;
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "activate_collection", {
+        collection_name: params.collection_name,
+        password: password,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return { success: resp.success, error: resp.error ?? null };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: listExportCollections — list OBS collections for export
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  LIST_EXPORT_COLLECTIONS_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.obs_scenes_directory)) {
+      throw new Error("Invalid obs_scenes_directory");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "list_export_collections", {
+        obs_scenes_directory: params.obs_scenes_directory,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !Array.isArray(resp.collections)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      collections: resp.collections,
+      count: resp.count ?? resp.collections.length,
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: chooseExportDestination — folder dialog for export
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(CHOOSE_EXPORT_DESTINATION_CHANNEL, async (event) => {
+  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+    throw new Error("Unauthorized sender");
+  }
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: "Choose an export destination folder",
+    properties: ["openDirectory", "dontAddToRecent", "createDirectory"],
+    buttonLabel: "Select Destination",
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    throw new Error("No folder selected");
+  }
+  let destPath: string;
+  try {
+    destPath = realpathSync(result.filePaths[0]);
+  } catch {
+    throw new Error("The selected path is not valid.");
+  }
+  const destLabel = destPath.split(/[\\\\/]/).pop() || destPath;
+  return { destination_path: destPath, destination_label: destLabel };
+});
+
+// ---------------------------------------------------------------------------
+// IPC: buildExportPlan — create frozen backend-held plan
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  BUILD_EXPORT_PLAN_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.collection_path)) {
+      throw new Error("Invalid collection_path");
+    }
+    if (!isNonEmptyString(params.destination)) {
+      throw new Error("Invalid destination");
+    }
+    if (typeof params.compressed !== "boolean") {
+      throw new Error("Invalid compressed option");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "build_export_plan", {
+        collection_path: params.collection_path,
+        destination: params.destination,
+        compressed: params.compressed,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !isNonEmptyString(resp.plan_id)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return resp;
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: exportInventory — return sanitized inventory for a plan
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  EXPORT_INVENTORY_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.plan_id)) {
+      throw new Error("Invalid plan_id");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "export_inventory", {
+        plan_id: params.plan_id,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || !isNonEmptyString(resp.plan_id)) {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return resp;
+  }
+);
+
+// ---------------------------------------------------------------------------
+// IPC: confirmExport — execute a frozen plan by opaque ID
+// ---------------------------------------------------------------------------
+
+ipcMain.handle(
+  CONFIRM_EXPORT_CHANNEL,
+  async (event, params: unknown) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
+    if (!isPlainObject(params) || !isNonEmptyString(params.plan_id)) {
+      throw new Error("Invalid plan_id");
+    }
+    let response: unknown;
+    try {
+      response = await callBackend(backend, "confirm_export", {
+        plan_id: params.plan_id,
+      });
+    } catch (err) {
+      throw new Error(selectionErrorMessage(err));
+    }
+    const resp = response as Record<string, unknown>;
+    if (!resp || typeof resp.success !== "boolean") {
+      throw new Error(BACKEND_UNAVAILABLE_ERROR);
+    }
+    return {
+      success: resp.success,
+      already_executed: resp.already_executed ?? false,
+      copied_files: resp.copied_files ?? 0,
+      uncompressed_bytes: resp.uncompressed_bytes ?? 0,
+      source_references: resp.source_references ?? 0,
+      skipped_references: resp.skipped_references ?? [],
+      verification: resp.verification ?? null,
+      output_label: resp.output_label ?? null,
+      error: resp.error ?? null,
     };
   }
 );

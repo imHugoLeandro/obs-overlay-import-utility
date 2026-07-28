@@ -4,6 +4,10 @@
  * These types are imported by both the preload script (which validates
  * payloads before forwarding them) and the renderer (which consumes the
  * typed API exposed via `contextBridge`).
+ *
+ * Security: the renderer never sends or receives raw absolute paths —
+ * only opaque selection IDs, collection IDs, plan IDs, and safe display
+ * labels.  Electron main is the sole owner of concrete filesystem paths.
  */
 
 /** The health payload returned by the `health` command. */
@@ -60,6 +64,134 @@ export interface AmbiguousMatch {
   candidates: string[];
 }
 
+/** Result of importing a Streamlabs .overlay archive. */
+export interface StreamlabsImportResult {
+  success: boolean;
+  collection_name: string;
+  canvas_width: number;
+  canvas_height: number;
+  imported_sources: number;
+  skipped_sources: string[];
+  profile_name: string | null;
+  error: string | null;
+}
+
+/** Result of an automatic import (portable/OBS/Streamlabs). */
+export interface AutomaticImportResult {
+  success: boolean;
+  kind: string;
+  collection_name: string;
+  canvas_width: number | null;
+  canvas_height: number | null;
+  profile_name: string | null;
+  error: string | null;
+  conversion: ConvertResult | null;
+}
+
+/** A configurable device source requirement. */
+export interface DeviceRequirement {
+  key: string;
+  name: string;
+  source_id: string;
+  kind: string;
+}
+
+/** A reusable local device candidate. */
+export interface DeviceCandidate {
+  candidate_id: string;
+  source_id: string;
+  label: string;
+  kind: string;
+}
+
+/** Result of applying device choices. */
+export interface DeviceApplyResult {
+  success: boolean;
+  error: string | null;
+}
+
+/** Result of checking whether OBS is running. */
+export interface ObsRunningResult {
+  running: boolean;
+}
+
+/** Result of activating a collection in OBS. */
+export interface ActivateResult {
+  success: boolean;
+  error: string | null;
+}
+
+/** An OBS scene collection available for export. */
+export interface ExportCollectionInfo {
+  label: string;
+  path: string;
+}
+
+/** Result of choosing an export destination folder. */
+export interface ExportDestinationInfo {
+  destination_path: string;
+  destination_label: string;
+}
+
+/** A single item in an export inventory. */
+export interface ExportInventoryItem {
+  category: string;
+  size: number;
+  source_name: string;
+}
+
+/** A dependency report entry for remote resources. */
+export interface RemoteResourceEntry {
+  host: string;
+  sensitive: boolean;
+}
+
+/** A dependency report for an export plan. */
+export interface ExportDependencyReport {
+  fonts: string[];
+  devices: Array<Record<string, string>>;
+  remote_resources: RemoteResourceEntry[];
+  plugin_source_ids: Array<Record<string, string>>;
+  plugin_filter_ids: Array<Record<string, string>>;
+}
+
+/** A sanitized export inventory view (frozen plan summary). */
+export interface ExportInventory {
+  plan_id: string;
+  collection_label: string;
+  collection_stem: string;
+  compressed: boolean;
+  source_references: number;
+  total_bytes: number;
+  scene_count: number;
+  source_count: number;
+  browser_files: number;
+  canvas_width: number | null;
+  canvas_height: number | null;
+  missing_references: string[];
+  dependency_report: ExportDependencyReport;
+  items: ExportInventoryItem[];
+}
+
+/** Verification status of an exported package. */
+export interface ExportVerification {
+  ok: boolean;
+  errors: string[];
+}
+
+/** Result of confirming (executing) an export plan. */
+export interface ExportResult {
+  success: boolean;
+  already_executed: boolean;
+  copied_files: number;
+  uncompressed_bytes: number;
+  source_references: number;
+  skipped_references: string[];
+  verification: ExportVerification | null;
+  output_label: string | null;
+  error: string | null;
+}
+
 /**
  * Typed API surface exposed to the renderer via `contextBridge`.
  *
@@ -67,7 +199,8 @@ export interface AmbiguousMatch {
  * file-read, or generic function-call endpoint.
  *
  * The renderer never sends or receives raw absolute paths — only opaque
- * selection IDs and collection IDs plus safe display labels.
+ * selection IDs, collection IDs, plan IDs, and safe display labels.
+ * Electron main is the sole owner of concrete filesystem paths.
  */
 export interface ElectronAPI {
   health: () => Promise<HealthData>;
@@ -78,6 +211,22 @@ export interface ElectronAPI {
    * Returns an opaque selection ID plus a safe folder label.
    */
   chooseOverlayFolder: () => Promise<{
+    selection_id: string;
+    folder_label: string;
+  }>;
+  /**
+   * Open a native file dialog with a strict .overlay filter and store
+   * the selected archive in the Electron main-process selection store.
+   */
+  chooseStreamlabsOverlay: () => Promise<{
+    selection_id: string;
+    folder_label: string;
+  }>;
+  /**
+   * Open a native folder dialog for automatic import and store the
+   * selected folder in the Electron main-process selection store.
+   */
+  chooseAutomaticFolder: () => Promise<{
     selection_id: string;
     folder_label: string;
   }>;
@@ -105,6 +254,92 @@ export interface ElectronAPI {
     strict: boolean,
     caseSensitive: boolean
   ) => Promise<ConvertResult>;
+  /**
+   * Import a Streamlabs .overlay archive.
+   * The archive path is resolved from the selection ID by Electron main.
+   */
+  importStreamlabs: (selectionId: string) => Promise<StreamlabsImportResult>;
+  /**
+   * Detect and import one supported package (portable/OBS/Streamlabs).
+   * The folder path is resolved from the selection ID by Electron main.
+   */
+  automaticImport: (
+    selectionId: string,
+    strict: boolean,
+    caseSensitive: boolean
+  ) => Promise<AutomaticImportResult>;
+  /**
+   * List configurable device sources for an installed collection.
+   * Returns requirement IDs, names, kinds, and source IDs — never raw
+   * paths or arbitrary settings objects.
+   */
+  deviceRequirements: (
+    collectionPath: string
+  ) => Promise<{ requirements: DeviceRequirement[]; count: number }>;
+  /**
+   * List reusable local device settings.
+   * Returns safe candidate labels and opaque candidate IDs — never raw
+   * paths or arbitrary settings objects.
+   */
+  deviceCandidates: (
+    obsScenesDirectory: string,
+    excludeCollection?: string
+  ) => Promise<{ candidates: DeviceCandidate[]; count: number }>;
+  /**
+   * Apply selected device settings to an imported collection.
+   * Choices are opaque candidate IDs or "disable".
+   */
+  applyDeviceChoices: (
+    collectionPath: string,
+    choices: Record<string, unknown>
+  ) => Promise<DeviceApplyResult>;
+  /**
+   * Check whether OBS appears to be running.
+   */
+  obsRunning: () => Promise<ObsRunningResult>;
+  /**
+   * Activate a collection in OBS via WebSocket (optional, explicit action).
+   * The password is accepted only for this one request, forwarded once,
+   * and never persisted.
+   */
+  activateCollection: (
+    collectionName: string,
+    password?: string
+  ) => Promise<ActivateResult>;
+  /**
+   * List OBS scene collections available for export.
+   * Returns safe collection labels — never raw paths to the renderer.
+   */
+  listExportCollections: (
+    obsScenesDirectory: string
+  ) => Promise<{ collections: ExportCollectionInfo[]; count: number }>;
+  /**
+   * Open a native folder dialog for the export destination.
+   * Returns the destination path (to Electron main only) and a safe label.
+   */
+  chooseExportDestination: () => Promise<ExportDestinationInfo>;
+  /**
+   * Build a frozen, backend-held export plan.
+   * Returns a sanitized inventory view with an opaque plan ID.
+   * The renderer cannot reconstruct, modify, or submit a replacement plan.
+   */
+  buildExportPlan: (
+    collectionPath: string,
+    destination: string,
+    compressed: boolean
+  ) => Promise<ExportInventory>;
+  /**
+   * Return a sanitized inventory view for an existing plan.
+   * Expired or unknown plan IDs fail safely.
+   */
+  exportInventory: (planId: string) => Promise<ExportInventory>;
+  /**
+   * Execute a frozen export plan by opaque ID.
+   * The backend revalidates and executes the exact frozen plan.
+   * Unknown, expired, already-executed, or altered plans fail safely.
+   * Successful plans become idempotent.
+   */
+  confirmExport: (planId: string) => Promise<ExportResult>;
 }
 
 /** Augment the global `Window` type so the renderer can use `window.electronAPI`. */
