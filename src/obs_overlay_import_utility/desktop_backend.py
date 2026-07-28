@@ -69,7 +69,6 @@ from .device_setup import (
 )
 from .exporter import (
     DependencyReport,
-    build_export_inventory,
     build_export_plan,
     export_inventory_from_plan,
     export_scene_collection,
