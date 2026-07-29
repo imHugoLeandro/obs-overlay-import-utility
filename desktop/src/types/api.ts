@@ -232,6 +232,18 @@ export interface ResizeCollectionInfo {
   scene_count: number;
 }
 
+/** Fixed public method names exposed by the sandboxed preload. */
+export const ELECTRON_API_METHODS = [
+  "activateCollection", "appInfo", "applyDeviceChoices", "applyResize",
+  "automaticImport", "buildExportPlan", "chooseAutomaticFolder",
+  "chooseCollection", "chooseExportDestination", "chooseOverlayFolder",
+  "chooseResizeCollection", "chooseStreamlabsOverlay", "confirmExport",
+  "convertCollection", "deviceCandidates", "deviceRequirements",
+  "exportInventory", "health", "importStreamlabs", "listExportCollections",
+  "obsRunning", "previewResize", "resizeSceneChoices", "resizeSourceChoices",
+  "scanCollections", "scanResizeCollections", "undoResize",
+] as const;
+
 /**
  * Typed API surface exposed to the renderer via `contextBridge`.
  *

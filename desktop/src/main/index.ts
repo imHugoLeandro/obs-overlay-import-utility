@@ -51,7 +51,7 @@ import { registerSelectionHandlers } from "./ipc/selectionHandlers";
 // IPC contracts — all renderer channels and backend commands are defined once.
 // ---------------------------------------------------------------------------
 
-import { IPC_CHANNELS } from "./contracts/channels";
+import { IPC_CHANNELS } from "../shared/ipcChannels";
 
 const {
   health: HEALTH_CHANNEL,

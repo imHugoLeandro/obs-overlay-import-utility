@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { IPC_CHANNELS } from "../src/main/contracts/channels";
+import { IPC_CHANNELS } from "../src/shared/ipcChannels";
 
 const distElectron = path.resolve(__dirname, "..", "dist-electron");
 const dist = path.resolve(__dirname, "..", "dist");
@@ -29,7 +29,7 @@ const dist = path.resolve(__dirname, "..", "dist");
 const mainJs = path.join(distElectron, "main", "index.js");
 const preloadJs = path.join(distElectron, "preload", "index.js");
 const securityJs = path.join(distElectron, "main", "security.js");
-const channelsJs = path.join(distElectron, "main", "contracts", "channels.js");
+const sharedChannelsJs = path.join(distElectron, "shared", "ipcChannels.js");
 const rendererIndexHtml = path.join(dist, "index.html");
 const mainSource = path.resolve(__dirname, "..", "src", "main", "index.ts");
 const preloadSource = path.resolve(__dirname, "..", "src", "preload", "index.ts");
@@ -65,8 +65,8 @@ describe("Compiled Electron output verification", () => {
       assertFileExists(securityJs);
     });
 
-    it("compiled IPC channel registry exists", () => {
-      assertFileExists(channelsJs);
+    it("compiled shared IPC contract exists", () => {
+      assertFileExists(sharedChannelsJs);
     });
 
     it("compiled renderer exists at dist/index.html", () => {
@@ -76,6 +76,23 @@ describe("Compiled Electron output verification", () => {
     it("preload is NOT at dist-electron/main/preload/index.js", () => {
       const wrongPath = path.join(distElectron, "main", "preload", "index.js");
       expect(fs.existsSync(wrongPath)).toBe(false);
+    });
+  });
+
+  describe("shared IPC contract", () => {
+    it("has a pure complete fixed shared contract", () => {
+      const source = fs.readFileSync(
+        path.resolve(__dirname, "..", "src", "shared", "ipcChannels.ts"),
+        "utf8"
+      );
+      const channelValues = Object.values(IPC_CHANNELS);
+
+      expect(channelValues).toHaveLength(new Set(channelValues).size);
+      expect(channelValues.every((channel) => /^desktop:[a-z-]+$/.test(channel))).toBe(true);
+      expect(source).not.toMatch(/^\s*import\s+.*from\s+["'](?:electron|node:)/m);
+      expect(source).not.toMatch(/\b(require|process|__dirname)\b|\b(?:path|fs|app)\./);
+      expect(source).not.toMatch(/\[.*\+.*\]|\.concat\(/);
+      expect(Object.keys(IPC_CHANNELS)).toHaveLength(27);
     });
   });
 
@@ -121,15 +138,15 @@ describe("Compiled Electron output verification", () => {
 
     it("uses the canonical fixed IPC channel registry", () => {
       const channelValues = Object.values(IPC_CHANNELS);
-      const channelsContent = readCompiledFile(channelsJs);
+      const sharedChannelsContent = readCompiledFile(sharedChannelsJs);
       const source = fs.readFileSync(mainSource, "utf8");
 
       expect(channelValues).toHaveLength(new Set(channelValues).size);
       expect(channelValues.every((channel) => /^desktop:[a-z-]+$/.test(channel))).toBe(true);
       for (const channel of channelValues) {
-        expect(channelsContent).toContain(channel);
+        expect(sharedChannelsContent).toContain(channel);
       }
-      expect(mainContent).toContain("contracts/channels");
+      expect(mainContent).toContain("shared/ipcChannels");
       expect(source).toContain("IPC_CHANNELS");
       expect(source).toMatch(/ipcMain\.handle\([A-Z_]+_CHANNEL/);
       expect(source).not.toMatch(/ipcMain\.handle\(\s*["'`]/);
@@ -194,19 +211,22 @@ describe("Compiled Electron output verification", () => {
       expect(preloadContent).not.toContain("ipcRenderer.once");
     });
 
-    it("maps every preload method to the canonical fixed channel registry", () => {
+    it("bundles the fixed preload API without local runtime imports", () => {
       const source = fs.readFileSync(preloadSource, "utf8");
 
-      // Sandboxed preloads cannot require arbitrary relative modules, so the
-      // compiled preload carries a fixed mirror that must stay value-identical
-      // to the canonical main-process registry.
-      expect(preloadContent).not.toContain("contracts/channels");
+      expect(source).toContain("../shared/ipcChannels");
+      expect(preloadContent).not.toMatch(/require\(\s*["']\.\.?[\\/]/);
+      expect(preloadContent).not.toContain("main/contracts/channels");
+      expect(preloadContent).not.toContain("shared/ipcChannels");
+      expect(preloadContent).toMatch(/require\(\s*["']electron["']\s*\)/);
       for (const [key, channel] of Object.entries(IPC_CHANNELS)) {
         expect(source).toContain(`IPC_CHANNELS.${key}`);
         expect(preloadContent).toContain(channel);
       }
       expect(source).not.toMatch(/ipcRenderer\.invoke\(\s*["'`]/);
       expect(source).not.toMatch(/ipcRenderer\.invoke\([^)]*\bchannel\b/i);
+      expect(preloadContent).toContain("contextBridge.exposeInMainWorld");
+      expect(preloadContent).not.toMatch(/nodeIntegration|sandbox\s*:\s*false/);
     });
 
     it("does not contain live resize channels", () => {

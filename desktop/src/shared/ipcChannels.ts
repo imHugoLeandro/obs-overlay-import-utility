@@ -1,4 +1,10 @@
-/** Fixed renderer-to-main IPC channels. Do not construct channels dynamically. */
+/**
+ * Fixed renderer-to-main IPC contract.
+ *
+ * This module is deliberately runtime-neutral: it has no Electron or Node
+ * imports, performs no runtime access, and exports only fixed serializable
+ * channel values plus their TypeScript types.
+ */
 export const IPC_CHANNELS = {
   health: "desktop:health",
   appInfo: "desktop:app-info",

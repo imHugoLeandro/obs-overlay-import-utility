@@ -1,4 +1,4 @@
-import { IPC_CHANNELS } from "../contracts/channels";
+import { IPC_CHANNELS } from "../../shared/ipcChannels";
 
 export interface SelectionHandlerDependencies {
   ipcMain: { handle(channel: string, handler: SelectionHandler): void };

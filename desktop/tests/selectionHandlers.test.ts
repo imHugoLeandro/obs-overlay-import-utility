@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { IPC_CHANNELS } from "../src/main/contracts/channels";
+import { IPC_CHANNELS } from "../src/shared/ipcChannels";
 import { registerSelectionHandlers } from "../src/main/ipc/selectionHandlers";
 
 type Handler = (event: { sender: { getURL(): string } }, payload?: unknown) => Promise<unknown>;

@@ -12,8 +12,8 @@ const { contextBridge, ipcRenderer } = vi.hoisted(() => {
 
 vi.mock("electron", () => ({ contextBridge, ipcRenderer }));
 
+import { ELECTRON_API_METHODS } from "../src/types/api";
 import "../src/preload/index";
-
 describe("Preload script", () => {
   const apiCall = contextBridge.exposeInMainWorld.mock.calls[0];
   const api = apiCall ? apiCall[1] : undefined;
@@ -39,35 +39,7 @@ describe("Preload script", () => {
   it("exposes exactly the finite API surface", () => {
     expect(api).toBeDefined();
     const keys = Object.keys(api).sort();
-    expect(keys).toEqual([
-      "activateCollection",
-      "appInfo",
-      "applyDeviceChoices",
-      "applyResize",
-      "automaticImport",
-      "buildExportPlan",
-      "chooseAutomaticFolder",
-      "chooseCollection",
-      "chooseExportDestination",
-      "chooseOverlayFolder",
-      "chooseResizeCollection",
-      "chooseStreamlabsOverlay",
-      "confirmExport",
-      "convertCollection",
-      "deviceCandidates",
-      "deviceRequirements",
-      "exportInventory",
-      "health",
-      "importStreamlabs",
-      "listExportCollections",
-      "obsRunning",
-      "previewResize",
-      "resizeSceneChoices",
-      "resizeSourceChoices",
-      "scanCollections",
-      "scanResizeCollections",
-      "undoResize",
-    ]);
+    expect(keys).toEqual([...ELECTRON_API_METHODS].sort());
   });
 
   it("does not expose raw paths or raw IPC", () => {
