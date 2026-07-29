@@ -180,9 +180,9 @@ describe("ImportPage — Device Setup", () => {
     await userEvent.click(screen.getByTestId("automatic-import-button"));
 
     await waitFor(() => {
-      expect(screen.getByText("Device Setup — Auto Collection")).toBeInTheDocument();
+      expect(screen.getByTestId("device-requirements")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("device-requirements")).toBeInTheDocument();
+    expect(screen.getByText("Device Setup — Auto Collection")).toBeInTheDocument();
     expect(screen.getByTestId("apply-device-choices")).toBeInTheDocument();
   });
 
