@@ -12,6 +12,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
+const fakeDesktopAppPath = path.join(
+  path.parse(process.cwd()).root,
+  "fake",
+  "repo",
+  "desktop"
+);
+
 // Mock Electron's app module using vi.hoisted to avoid hoisting issues.
 const mockApp = vi.hoisted(() => ({
   isPackaged: false,
@@ -39,7 +46,7 @@ describe("Security helpers", () => {
     vi.clearAllMocks();
     mockApp.isPackaged = false;
     // In development, app.getAppPath() returns the desktop/ directory.
-    mockApp.getAppPath.mockReturnValue("/fake/repo/desktop");
+    mockApp.getAppPath.mockReturnValue(fakeDesktopAppPath);
   });
 
   describe("hasExactOrigin", () => {
@@ -139,7 +146,7 @@ describe("Security helpers", () => {
   describe("resolveRepoRoot", () => {
     it("resolves to the parent of the app path in development", () => {
       const result = resolveRepoRoot();
-      expect(result).toBe("/fake/repo");
+      expect(result).toBe(path.dirname(fakeDesktopAppPath));
     });
 
     it("does not return process.execPath", () => {
@@ -160,7 +167,7 @@ describe("Security helpers", () => {
   describe("resolvePythonPath", () => {
     it("resolves to <repo>/src", () => {
       const result = resolvePythonPath();
-      expect(result).toBe(path.join("/fake/repo", "src"));
+      expect(result).toBe(path.join(path.dirname(fakeDesktopAppPath), "src"));
     });
   });
 
