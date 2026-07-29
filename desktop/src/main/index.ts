@@ -1453,16 +1453,36 @@ function runPackagedSmokeTest(): void {
   mainWindow.webContents.once("did-finish-load", () => {
     void mainWindow?.webContents
       .executeJavaScript(
-        `Promise.all([window.electronAPI.health(), window.electronAPI.appInfo()])
-          .then(([health, appInfo]) => ({
-            health,
-            appInfo,
-            rendererNodeUnavailable:
-              typeof window.require === "undefined" && typeof window.process === "undefined",
-          }))`
+        `(async () => {
+          try {
+            const api = window.electronAPI;
+            if (!api) {
+              throw new Error("window.electronAPI is unavailable");
+            }
+            const [health, appInfo] = await Promise.all([api.health(), api.appInfo()]);
+            return {
+              health,
+              appInfo,
+              rendererNodeUnavailable:
+                typeof window.require === "undefined" && typeof window.process === "undefined",
+            };
+          } catch (error) {
+            return {
+              smokeError: error instanceof Error ? error.name + ": " + error.message : String(error),
+            };
+          }
+        })()`
       )
       .then((result: unknown) => {
         clearTimeout(timeout);
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          "smokeError" in result
+        ) {
+          finish({ ok: false, error: String(result.smokeError) });
+          return;
+        }
         finish({ ok: true, result });
       })
       .catch((error: Error) => {
