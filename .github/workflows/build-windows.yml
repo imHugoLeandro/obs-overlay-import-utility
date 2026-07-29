@@ -75,21 +75,29 @@ jobs:
             throw "Electron portable EXE was not created."
           }
           $result = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.json"
+          $stdout = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.stderr.log"
           Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue
           $env:OBS_OVERLAY_SMOKE_RESULT = $result
-          $process = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           if (-not $process.WaitForExit(60000)) {
             $process.Kill()
             throw "Packaged Electron smoke test timed out."
           }
           if ($process.ExitCode -ne 0) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
             throw "Packaged Electron smoke test exited with code $($process.ExitCode)."
           }
           if (-not (Test-Path $result)) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
             throw "Packaged Electron smoke test did not write a result."
           }
           $smoke = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
           if (-not $smoke.ok) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
             throw "Packaged Electron smoke test failed: $($smoke.error)"
           }
           if ($smoke.result.health.status -ne "ok") {
@@ -102,8 +110,18 @@ jobs:
             throw "Packaged renderer did not report the Electron application identity."
           }
       - name: Upload Electron portable artifact
+        if: success()
         uses: actions/upload-artifact@v7
         with:
           name: OBS-Overlay-Import-Utility-Electron-Windows
           path: desktop/release/*Electron Portable.exe
           if-no-files-found: error
+          retention-days: 14
+      - name: Upload packaged-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: OBS-Overlay-Import-Utility-Electron-smoke-diagnostics
+          path: ${{ runner.temp }}/electron-packaged-smoke.*
+          if-no-files-found: warn
+          retention-days: 7
