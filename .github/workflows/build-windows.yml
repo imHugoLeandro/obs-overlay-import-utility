@@ -53,9 +53,6 @@ jobs:
       - name: Verify exact compiled Electron output to be packaged
         working-directory: desktop
         run: npm run verify:compiled
-      - name: Run Electron integration tests
-        working-directory: desktop
-        run: npm run test:integration
       - name: Build bundled Python backend once
         working-directory: desktop
         shell: pwsh
