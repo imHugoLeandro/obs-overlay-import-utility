@@ -280,6 +280,12 @@ describe("Compiled Electron output verification", () => {
       expect(pkg.scripts.package).toContain("electron-builder");
     });
 
+    it("keeps Electron as a pinned build dependency", () => {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      expect(pkg.dependencies?.electron).toBeUndefined();
+      expect(pkg.devDependencies.electron).toBe("43.2.0");
+    });
+
     it("packages the desktop backend, never the Tk launcher", () => {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
       expect(pkg.scripts["package:backend"]).toContain("tools/desktop_backend.py");
