@@ -197,9 +197,13 @@ describe("Compiled Electron output verification", () => {
     it("maps every preload method to the canonical fixed channel registry", () => {
       const source = fs.readFileSync(preloadSource, "utf8");
 
-      expect(preloadContent).toContain("contracts/channels");
-      for (const key of Object.keys(IPC_CHANNELS)) {
+      // Sandboxed preloads cannot require arbitrary relative modules, so the
+      // compiled preload carries a fixed mirror that must stay value-identical
+      // to the canonical main-process registry.
+      expect(preloadContent).not.toContain("contracts/channels");
+      for (const [key, channel] of Object.entries(IPC_CHANNELS)) {
         expect(source).toContain(`IPC_CHANNELS.${key}`);
+        expect(preloadContent).toContain(channel);
       }
       expect(source).not.toMatch(/ipcRenderer\.invoke\(\s*["'`]/);
       expect(source).not.toMatch(/ipcRenderer\.invoke\([^)]*\bchannel\b/i);

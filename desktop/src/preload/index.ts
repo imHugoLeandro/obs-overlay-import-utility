@@ -14,7 +14,43 @@
  */
 
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC_CHANNELS } from "../main/contracts/channels";
+
+/**
+ * Sandboxed preloads can require Electron's supported modules but cannot load
+ * arbitrary relative CommonJS modules. Keep this fixed mirror of the main
+ * registry local to the preload; compiled-output tests compare it with the
+ * canonical main-process registry on every build.
+ */
+const IPC_CHANNELS = {
+  health: "desktop:health",
+  appInfo: "desktop:app-info",
+  chooseOverlayFolder: "desktop:choose-overlay-folder",
+  chooseStreamlabsOverlay: "desktop:choose-streamlabs-overlay",
+  chooseAutomaticFolder: "desktop:choose-automatic-folder",
+  chooseExportDestination: "desktop:choose-export-destination",
+  scanCollections: "desktop:scan-collections",
+  chooseCollection: "desktop:choose-collection",
+  convertCollection: "desktop:convert-collection",
+  importStreamlabs: "desktop:import-streamlabs",
+  automaticImport: "desktop:automatic-import",
+  deviceRequirements: "desktop:device-requirements",
+  deviceCandidates: "desktop:device-candidates",
+  applyDeviceChoices: "desktop:apply-device-choices",
+  obsRunning: "desktop:obs-running",
+  activateCollection: "desktop:activate-collection",
+  listExportCollections: "desktop:list-export-collections",
+  buildExportPlan: "desktop:build-export-plan",
+  exportInventory: "desktop:export-inventory",
+  confirmExport: "desktop:confirm-export",
+  scanResizeCollections: "desktop:scan-resize-collections",
+  chooseResizeCollection: "desktop:choose-resize-collection",
+  resizeSourceChoices: "desktop:resize-source-choices",
+  resizeSceneChoices: "desktop:resize-scene-choices",
+  previewResize: "desktop:preview-resize",
+  applyResize: "desktop:apply-resize",
+  undoResize: "desktop:undo-resize",
+} as const;
+
 import type {
   AppInfoData,
   ConvertResult,
