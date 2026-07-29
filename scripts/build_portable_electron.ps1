@@ -21,6 +21,27 @@ function Assert-LastExit([string] $Step) {
     }
 }
 
+function Install-ElectronDependencies([string] $DesktopPath) {
+    $NodeModules = Join-Path $DesktopPath "node_modules"
+
+    # node_modules is platform-specific and must not be reused from the Linux
+    # Hermes workspace. Remove it before npm ci creates the Windows dependency
+    # tree, instead of asking npm to delete a mixed-platform .bin directory.
+    if (Test-Path -LiteralPath $NodeModules) {
+        Write-Host "Removing existing Electron dependencies before the Windows install..."
+        try {
+            Remove-Item -LiteralPath $NodeModules -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            throw "Could not remove $NodeModules. Close any Node/Electron processes using this workspace, then run the script again. $($_.Exception.Message)"
+        }
+    }
+
+    Write-Host "Installing Electron dependencies..."
+    & npm ci
+    Assert-LastExit "Installing Electron dependencies"
+}
+
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Desktop = Join-Path $Root "desktop"
 
@@ -37,8 +58,7 @@ Assert-LastExit "Installing Python build dependencies"
 
 Push-Location $Desktop
 try {
-    & npm ci
-    Assert-LastExit "Installing Electron dependencies"
+    Install-ElectronDependencies $Desktop
     & npm run package
     Assert-LastExit "Electron portable application build"
 }

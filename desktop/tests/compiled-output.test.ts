@@ -296,6 +296,9 @@ describe("Compiled Electron output verification", () => {
       const workflow = readRootFile(".github", "workflows", "build-windows.yml");
       const desktopReadme = readRootFile("desktop", "README.md");
 
+      expect(electronScript).toContain("function Install-ElectronDependencies");
+      expect(electronScript).toContain("Remove-Item -LiteralPath $NodeModules -Recurse -Force");
+      expect(electronScript).toContain("Removing existing Electron dependencies before the Windows install");
       expect(electronScript).toContain("npm run package");
       expect(electronScript).not.toContain("tools\\launcher.py");
       expect(electronScript).not.toContain("ui.py");
