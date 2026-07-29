@@ -63,9 +63,13 @@ jobs:
           $result = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.json"
           Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
           $env:OBS_OVERLAY_SMOKE_RESULT = $result
-          & $exe.FullName --smoke-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged Electron smoke test exited with code $LASTEXITCODE."
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            throw "Packaged Electron smoke test timed out."
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Packaged Electron smoke test exited with code $($process.ExitCode)."
           }
           if (-not (Test-Path $result)) {
             throw "Packaged Electron smoke test did not write a result."
