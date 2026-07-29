@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
+import { toVitestGlob } from "./vitest-paths";
 
 const srcRoot = resolve(__dirname, "src/renderer");
 
@@ -27,16 +28,16 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: [resolve(__dirname, "tests/setup.ts")],
     include: [
-      resolve(__dirname, "tests/**/*.test.ts"),
-      resolve(__dirname, "tests/**/*.test.tsx"),
+      toVitestGlob(resolve(__dirname, "tests/**/*.test.ts")),
+      toVitestGlob(resolve(__dirname, "tests/**/*.test.tsx")),
     ],
     exclude: [
       // Compiled-output verification runs only via `npm run verify:compiled`
       // after `npm run build`.  It must not run as part of `npm test`.
-      resolve(__dirname, "tests/compiled-output.test.ts"),
+      toVitestGlob(resolve(__dirname, "tests/compiled-output.test.ts")),
       // Electron integration smoke test runs only via `npm run test:integration`
       // which requires Xvfb and a display.  It must not run as part of `npm test`.
-      resolve(__dirname, "tests/integration.test.ts"),
+      toVitestGlob(resolve(__dirname, "tests/integration.test.ts")),
     ],
     css: true,
   },

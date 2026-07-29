@@ -7,12 +7,13 @@
 
 import { defineConfig } from "vitest/config";
 import { resolve } from "path";
+import { toVitestGlob } from "./vitest-paths";
 
 export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: [resolve(__dirname, "tests/integration.test.ts")],
+    include: [toVitestGlob(resolve(__dirname, "tests/integration.test.ts"))],
     setupFiles: [],
     css: false,
     testTimeout: 60000,
