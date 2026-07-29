@@ -6,6 +6,7 @@
  */
 
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { app } from "electron";
 
 /** Expected Vite dev server origin (exact match, no startsWith). */
@@ -24,30 +25,52 @@ export function hasExactOrigin(targetUrl: string, expectedOrigin: string): boole
   }
 }
 
+/** Resolve the built React renderer that electron-builder packages. */
+export function resolvePackagedRendererPath(): string {
+  return path.join(app.getAppPath(), "dist", "index.html");
+}
+
+/**
+ * Check that a packaged renderer URL is the exact local built renderer.
+ * Electron's `loadFile` uses file://, so generic file URLs must not be
+ * accepted: only the packaged dist/index.html document may issue IPC or
+ * navigate the application window.
+ */
+export function isPackagedRendererUrl(targetUrl: string): boolean {
+  try {
+    const parsed = new URL(targetUrl);
+    if (parsed.protocol !== "file:") {
+      return false;
+    }
+    return path.normalize(fileURLToPath(parsed)) ===
+      path.normalize(resolvePackagedRendererPath());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate that the sender's URL is an expected origin.
  * - Development: exact http://localhost:5173 origin.
- * - Packaged mode: fails closed (Stage 3 packaging deferred).
+ * - Packaged mode: exact file:// URL of the built local renderer.
  */
 export function isValidOrigin(senderUrl: string): boolean {
   if (!app.isPackaged) {
     return hasExactOrigin(senderUrl, DEV_ORIGIN);
   }
-  // Packaged mode: fail closed. Stage 3 packaging is deferred.
-  return false;
+  return isPackagedRendererUrl(senderUrl);
 }
 
 /**
  * Validate that a navigation URL is allowed.
  * - Development: exact http://localhost:5173 origin.
- * - Packaged mode: fails closed.
+ * - Packaged mode: only the built local renderer (no external navigation).
  */
 export function isAllowedNavigation(targetUrl: string): boolean {
   if (!app.isPackaged) {
     return hasExactOrigin(targetUrl, DEV_ORIGIN);
   }
-  // Packaged mode: fail closed.
-  return false;
+  return isPackagedRendererUrl(targetUrl);
 }
 
 /**
@@ -62,7 +85,8 @@ export function isAllowedNavigation(targetUrl: string): boolean {
  * Strategy:
  * - In development: use app.getAppPath() which returns the desktop/ dir,
  *   then resolve its parent.
- * - Fallback: use __dirname and navigate up from dist-electron/main/.
+ * - In packaged mode: use process.resourcesPath, which electron-builder
+ *   sets to the resources directory containing the bundled backend.
  */
 export function resolveRepoRoot(): string {
   if (!app.isPackaged) {
@@ -71,8 +95,11 @@ export function resolveRepoRoot(): string {
     const appPath = app.getAppPath();
     return path.resolve(appPath, "..");
   }
-  // Packaged mode should fail closed — this path should never be reached.
-  return path.resolve(__dirname, "..", "..", "..");
+  // Packaged mode: process.resourcesPath is the resources directory
+  // that contains the bundled backend executable. The Python source
+  // is not needed in packaged mode — the backend is a standalone
+  // executable. Return the resources path for consistency.
+  return process.resourcesPath;
 }
 
 /**

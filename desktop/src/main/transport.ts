@@ -11,6 +11,7 @@
  */
 
 import * as child_process from "child_process";
+import { app } from "electron";
 
 /** A parsed JSON-lines response from the backend. */
 export interface BackendResponse {
@@ -43,23 +44,34 @@ export class BackendTransport {
     return `req-${Date.now()}-${this.requestIdCounter}`;
   }
 
-  /** Start the Python backend as a stdio subprocess. */
+  /** Start the Python backend as a stdio subprocess.
+   *
+   * In development, `pythonExec` is a Python interpreter and `pythonPath`
+   * is the PYTHONPATH pointing to the source tree.
+   *
+   * In packaged mode, `pythonExec` is the bundled backend executable
+   * (a PyInstaller one-file build of `desktop_backend.py`) and
+   * `pythonPath` is ignored.
+   */
   start(pythonExec: string, pythonPath: string): void {
     if (this.pyProcess) {
       return;
     }
 
-    this.pyProcess = child_process.spawn(
-      pythonExec,
-      ["-u", "-m", "obs_overlay_import_utility.desktop_backend"],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          PYTHONPATH: pythonPath,
-        },
-      }
-    );
+    const isPackaged = app.isPackaged;
+    const args = isPackaged
+      ? [] // Bundled backend executable runs directly.
+      : ["-u", "-m", "obs_overlay_import_utility.desktop_backend"];
+
+    const env: Record<string, string | undefined> = { ...process.env };
+    if (!isPackaged) {
+      env.PYTHONPATH = pythonPath;
+    }
+
+    this.pyProcess = child_process.spawn(pythonExec, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+    });
 
     this.pyStdin = this.pyProcess.stdin;
     this.pyStdout = this.pyProcess.stdout;

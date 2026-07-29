@@ -19,7 +19,8 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css,md}\"",
     "verify:compiled": "vitest run --config vitest.verify.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "package": "echo \"Error: Portable Electron packaging is deferred to Stage 3. Use 'npm run build' for development artifacts.\" && exit 1"
+    "package": "npm run build && npm run package:backend && electron-builder --win --publish=never",
+    "package:backend": "python -m PyInstaller --noconfirm --clean --onefile --name obs-overlay-backend ../tools/desktop_backend.py --paths ../src --collect-data obs_overlay_import_utility --distpath ../build/backend --workpath ../build/backend-work --specpath ../build/backend"
   },
   "config": {
     "electron:serve": "http://localhost:5173"
@@ -54,5 +55,27 @@
   "engines": {
     "node": ">=20",
     "npm": ">=10"
+  },
+  "build": {
+    "appId": "com.obs-overlay-import-utility.desktop",
+    "productName": "OBS Overlay Import Utility",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/backend/obs-overlay-backend.exe",
+        "to": "obs-overlay-backend.exe",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": ["portable"],
+      "artifactName": "${productName} Electron Portable.${ext}"
+    }
   }
 }

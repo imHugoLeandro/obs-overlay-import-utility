@@ -29,11 +29,13 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
-import { realpathSync } from "fs";
+import * as path from "path";
+import { realpathSync, writeFileSync } from "fs";
 import {
   DEV_ORIGIN,
   isValidOrigin,
   isAllowedNavigation,
+  resolvePackagedRendererPath,
   resolvePythonPath,
   resolvePreloadPath,
 } from "./security";
@@ -1443,42 +1445,26 @@ ipcMain.handle(
 let mainWindow: BrowserWindow | null = null;
 
 /**
- * Show a Stage-3-not-implemented error and quit safely.
+ * Resolve the path to the bundled Python backend executable.
+ *
+ * In packaged mode, the backend is a PyInstaller one-file executable
+ * placed in Electron's resources directory by electron-builder.
+ * It is resolved from Electron's resources directory, never from the app
+ * executable path.
  */
-function showPackagedNotImplemented(): void {
-  const errorWindow = new BrowserWindow({
-    width: 600,
-    height: 300,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webviewTag: false,
-      webSecurity: true,
-    },
-  });
-  errorWindow.loadURL(
-    "data:text/html," +
-      encodeURIComponent(
-        "<!DOCTYPE html><html><head><title>Error</title></head><body>" +
-          "<h1>Portable Electron Packaging Not Implemented</h1>" +
-          "<p>Stage 3 (portable Electron + bundled Python) is deferred. " +
-          "This application must be run in development mode.</p>" +
-          "</body></html>"
-      )
-  );
-  errorWindow.on("closed", () => {
-    app.quit();
-  });
+function resolveBackendExecutable(): string | null {
+  if (!app.isPackaged) {
+    return null;
+  }
+  // The backend executable is placed in resources/ by electron-builder's
+  // extraResources configuration. On Windows it has a .exe extension.
+  const exeName = process.platform === "win32"
+    ? "obs-overlay-backend.exe"
+    : "obs-overlay-backend";
+  return path.join(process.resourcesPath, exeName);
 }
 
 function createWindow(): void {
-  // Packaged mode: fail closed. Stage 3 packaging is deferred.
-  if (app.isPackaged) {
-    showPackagedNotImplemented();
-    return;
-  }
-
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 720,
@@ -1501,10 +1487,17 @@ function createWindow(): void {
     },
   });
 
-  // Load the renderer from the Vite dev server.
-  mainWindow.loadURL(DEV_ORIGIN);
-  // Open DevTools in development.
-  mainWindow.webContents.openDevTools({ mode: "detach" });
+  if (app.isPackaged) {
+    // Packaged mode: load the built React renderer from the local file system.
+    // The renderer is built into dist/index.html by Vite and packaged by
+    // electron-builder. We use loadFile (not loadURL) for the local file.
+    mainWindow.loadFile(resolvePackagedRendererPath());
+  } else {
+    // Development mode: load from the Vite dev server.
+    mainWindow.loadURL(DEV_ORIGIN);
+    // Open DevTools in development.
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+  }
 
   // Security: block unexpected navigation.
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
@@ -1532,6 +1525,57 @@ function createWindow(): void {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+}
+
+/**
+ * Run the packaged-app smoke check when CI starts the portable executable
+ * with --smoke-test. The check intentionally exercises the renderer's
+ * public preload API rather than calling the backend directly.
+ */
+function runPackagedSmokeTest(): void {
+  if (!app.isPackaged || !process.argv.includes("--smoke-test")) {
+    return;
+  }
+
+  const resultPath = process.env.OBS_OVERLAY_SMOKE_RESULT;
+  if (!resultPath || !mainWindow) {
+    return;
+  }
+
+  let finished = false;
+  const finish = (result: Record<string, unknown>): void => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    writeFileSync(resultPath, JSON.stringify(result), "utf8");
+    app.quit();
+  };
+
+  const timeout = setTimeout(() => {
+    finish({ ok: false, error: "Timed out waiting for packaged renderer health" });
+  }, 30_000);
+
+  mainWindow.webContents.once("did-finish-load", () => {
+    void mainWindow?.webContents
+      .executeJavaScript(
+        `Promise.all([window.electronAPI.health(), window.electronAPI.appInfo()])
+          .then(([health, appInfo]) => ({
+            health,
+            appInfo,
+            rendererNodeUnavailable:
+              typeof window.require === "undefined" && typeof window.process === "undefined",
+          }))`
+      )
+      .then((result: unknown) => {
+        clearTimeout(timeout);
+        finish({ ok: true, result });
+      })
+      .catch((error: Error) => {
+        clearTimeout(timeout);
+        finish({ ok: false, error: error.message });
+      });
   });
 }
 
@@ -1567,8 +1611,21 @@ function configureCSP(): void {
 app.whenReady().then(() => {
   configureCSP();
 
-  // Start the Python backend in development.
-  if (!app.isPackaged) {
+  // Start the Python backend.
+  if (app.isPackaged) {
+    // Packaged mode: start the bundled backend executable from
+    // process.resourcesPath. No system Python is required.
+    const backendExec = resolveBackendExecutable();
+    if (backendExec) {
+      try {
+        backend.start(backendExec, "");
+      } catch (err) {
+        console.error("[backend]", (err as Error).message);
+      }
+    }
+  } else {
+    // Development mode: start the Python backend from source using
+    // the OBS_OVERLAY_PYTHON environment variable.
     try {
       const pythonExec = resolveDevPython();
       if (!pythonExec || !isValidExecutable(pythonExec)) {
@@ -1585,6 +1642,7 @@ app.whenReady().then(() => {
   }
 
   createWindow();
+  runPackagedSmokeTest();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -1,7 +1,8 @@
-name: Build Windows portable app
+name: Build Windows portable app (Electron)
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - "v*"
@@ -17,21 +18,71 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: python -m pip install -e ".[build]"
-      - run: python -m unittest discover -s tests -v
-      - shell: pwsh
-        run: >-
-          python -m PyInstaller
-          --noconfirm --clean --onefile --windowed
-          --name "OBS Overlay Import Utility"
-          --paths src
-          --collect-data obs_overlay_import_utility
-          --distpath dist
-          --workpath build
-          --specpath .
-          tools/launcher.py
-      - uses: actions/upload-artifact@v7
+      - uses: actions/setup-node@v4
         with:
-          name: OBS-Overlay-Import-Utility-Windows
-          path: dist/OBS Overlay Import Utility.exe
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Python package and build tools
+        run: python -m pip install -e ".[build]"
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+      - name: Install Electron dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: TypeScript type checking
+        working-directory: desktop
+        run: npm run typecheck
+      - name: Run Electron tests
+        working-directory: desktop
+        run: npm test
+      - name: Run ESLint
+        working-directory: desktop
+        run: npm run lint
+      - name: Build Electron renderer and main process
+        working-directory: desktop
+        run: npm run build
+      - name: Verify compiled Electron output
+        working-directory: desktop
+        run: npm run verify:compiled
+      - name: Build Electron portable executable and bundled backend
+        working-directory: desktop
+        run: npm run package
+      - name: Smoke test packaged Electron application
+        shell: pwsh
+        env:
+          # A deliberate invalid value proves the portable app does not use a
+          # system Python interpreter after packaging.
+          OBS_OVERLAY_PYTHON: Z:\not-a-system-python.exe
+        run: |
+          $exe = Get-ChildItem "desktop/release" -Recurse -Filter "*Electron Portable.exe" |
+            Select-Object -First 1
+          if ($null -eq $exe) {
+            throw "Electron portable EXE was not created."
+          }
+          $result = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.json"
+          Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+          $env:OBS_OVERLAY_SMOKE_RESULT = $result
+          & $exe.FullName --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Electron smoke test exited with code $LASTEXITCODE."
+          }
+          if (-not (Test-Path $result)) {
+            throw "Packaged Electron smoke test did not write a result."
+          }
+          $smoke = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+          if (-not $smoke.ok) {
+            throw "Packaged Electron smoke test failed: $($smoke.error)"
+          }
+          if ($smoke.result.health.status -ne "ok") {
+            throw "Renderer health IPC did not report an ok backend."
+          }
+          if (-not $smoke.result.rendererNodeUnavailable) {
+            throw "Renderer Node access was available in packaged mode."
+          }
+      - name: Upload Electron portable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OBS-Overlay-Import-Utility-Electron-Windows
+          path: desktop/release/*Electron Portable.exe
           if-no-files-found: error

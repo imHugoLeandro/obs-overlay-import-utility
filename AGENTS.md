@@ -109,10 +109,10 @@ Update this map when responsibilities change.
 
 ## Parallel Electron Migration
 
-An Electron + React + TypeScript desktop shell is under development in
-`desktop/`.  This is a **foundation** stage — the Electron shell is **not**
-the shipping default.  The existing Tk-based `ui.py` remains the primary
-interface and must continue to pass all tests.
+The Electron + React + TypeScript desktop shell in `desktop/` is the primary
+portable Windows delivery target. The existing Tk-based `ui.py` remains in
+source as a supported fallback and must continue to pass all tests, but its
+PyInstaller executable is not the Electron portable app.
 
 ### Scope
 
@@ -125,8 +125,10 @@ interface and must continue to pass all tests.
 - The main process validates every IPC sender, channel, and payload.
 - IPC uses fixed channels (`desktop:health`, `desktop:app-info`) via
   `ipcMain.handle`/`ipcRenderer.invoke`.  No dynamic channels.
-- The Python backend is started using the `OBS_OVERLAY_PYTHON` environment
-  variable.  If it is not set or invalid, a clear error is shown.
+- In development, the Python backend starts through the
+  `OBS_OVERLAY_PYTHON` environment variable. In packaged mode, Electron
+  starts only the bundled backend executable from `process.resourcesPath`.
+  The portable app never uses `process.execPath` as Python.
 
 ### Development
 
@@ -140,13 +142,15 @@ npm test             # Vitest unit tests
 npm run lint         # ESLint
 ```
 
-### What is not done
+### Portable Electron packaging
 
-- Import, Export, Resizer, and Settings pages are not yet implemented in
-  the Electron shell.
-- The Electron shell is not wired into the Windows build pipeline.
-- Portable Electron + bundled Python packaging is deferred to Stage 3.
-- Do not merge or ship the Electron shell as the default UI.
+- `npm run package` builds the React renderer and Electron main/preload,
+  bundles the JSON-lines backend with PyInstaller, places it in
+  electron-builder `extraResources`, and produces the Windows portable EXE.
+- The Windows artifact workflow must build and smoke-test that Electron EXE,
+  including renderer health IPC and unavailable renderer Node globals.
+- `scripts/build_portable_tk.ps1` produces the separately named legacy Tk
+  fallback. It must never be presented as the Electron portable artifact.
 
 ## Non-Negotiable Safety Invariants
 

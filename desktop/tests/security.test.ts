@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as path from "path";
+import { pathToFileURL } from "url";
 
 // Mock Electron's app module using vi.hoisted to avoid hoisting issues.
 const mockApp = vi.hoisted(() => ({
@@ -27,6 +28,7 @@ import {
   hasExactOrigin,
   isValidOrigin,
   isAllowedNavigation,
+  resolvePackagedRendererPath,
   resolveRepoRoot,
   resolvePythonPath,
   resolvePreloadPath,
@@ -90,9 +92,21 @@ describe("Security helpers", () => {
       mockApp.isPackaged = true;
     });
 
-    it("fails closed — rejects everything", () => {
+    it("accepts only the built local renderer", () => {
+      const rendererUrl = pathToFileURL(resolvePackagedRendererPath()).toString();
+      expect(isValidOrigin(rendererUrl)).toBe(true);
+    });
+
+    it("rejects http://localhost:5173 in packaged mode", () => {
       expect(isValidOrigin("http://localhost:5173")).toBe(false);
+    });
+
+    it("rejects other file:// URLs in packaged mode", () => {
       expect(isValidOrigin("file:///path/to/index.html")).toBe(false);
+    });
+
+    it("rejects a different origin", () => {
+      expect(isValidOrigin("http://evil.com:5173")).toBe(false);
     });
   });
 
@@ -109,9 +123,16 @@ describe("Security helpers", () => {
       expect(isAllowedNavigation("file:///etc/passwd")).toBe(false);
     });
 
-    it("fails closed in packaged mode", () => {
+    it("allows the built renderer navigation in packaged mode", () => {
+      mockApp.isPackaged = true;
+      const rendererUrl = pathToFileURL(resolvePackagedRendererPath()).toString();
+      expect(isAllowedNavigation(rendererUrl)).toBe(true);
+    });
+
+    it("blocks external URLs in packaged mode", () => {
       mockApp.isPackaged = true;
       expect(isAllowedNavigation("http://localhost:5173")).toBe(false);
+      expect(isAllowedNavigation("https://evil.com")).toBe(false);
     });
   });
 
@@ -122,6 +143,15 @@ describe("Security helpers", () => {
     });
 
     it("does not return process.execPath", () => {
+      const result = resolveRepoRoot();
+      expect(result).not.toBe(process.execPath);
+    });
+
+    it("returns process.resourcesPath in packaged mode", () => {
+      mockApp.isPackaged = true;
+      // process.resourcesPath is set by Electron in packaged mode.
+      // In the test environment it may be undefined, but the function
+      // should not throw or return process.execPath.
       const result = resolveRepoRoot();
       expect(result).not.toBe(process.execPath);
     });

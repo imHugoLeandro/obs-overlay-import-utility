@@ -2,13 +2,19 @@
 
 A small, open-source Windows desktop utility that imports and exports portable OBS overlay packages. It is designed for independent overlay creators who want customers to import a package without manually finding and replacing every image, video, audio, local browser-source, plugin, or filter resource path.
 
-The portable build is a single lightweight executable: it has no installer, does not require Python, and adds no heavyweight GUI runtime dependencies.
+The primary portable build is a single **Electron + React** Windows executable:
+it has no installer and bundles its Python JSON-lines backend, so customers do
+not need Python, Node, npm, PATH changes, or developer setup. The original
+Tk/ttk interface remains available in source as a legacy fallback build.
 
 The Settings page supports the Windows default, white, and dark themes; adjustable UI scaling; remembered overlay folders; import defaults; and optional custom OBS/Python locations. Settings are saved per Windows user in `%APPDATA%\OBS Overlay Import Utility\settings.json`.
 
 ## Interface and display
 
-- Lightweight standard-library Tk/ttk interface with no Qt, Electron, browser engine, or third-party theme runtime.
+- Primary interface: Electron + React with a sandboxed renderer, context
+  isolation, Node integration disabled, and a typed IPC-only API.
+- Legacy fallback: the original standard-library Tk/ttk interface remains in
+  source for users who need it; it is not the Electron portable app.
 - Responsive left-side tool navigation with clear page titles, bordered option cards, semantic primary actions, and compact status consoles.
 - Accessible light and dark palettes with the Social Space red accent; **Windows default** follows the current Windows app theme at startup.
 - Windows Per-Monitor V2 DPI awareness is embedded in the executable and enabled before Tk starts, preventing Windows bitmap stretching on high-DPI displays.
@@ -94,19 +100,52 @@ python -m pip install -e .
 python -m obs_overlay_import_utility
 ```
 
+That command starts the legacy Tk fallback. To develop the Electron + React
+interface, install Node.js 20+ and run:
+
+```powershell
+cd desktop
+npm ci
+$env:OBS_OVERLAY_PYTHON = (Resolve-Path ..\.venv\Scripts\python.exe)
+npm run dev
+```
+
 Run the automated checks:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Build the portable Windows executable:
+Build the primary Electron portable Windows executable:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_portable.ps1
+python -m pip install -e ".[build]"
+cd desktop
+npm ci
+npm run package
 ```
 
-The executable will be written to `dist\OBS Overlay Import Utility.exe`.
+On Windows, `scripts\build_portable_electron.ps1` runs that same primary
+build flow for you.
+
+The Electron app is written to:
+
+```text
+desktop\release\OBS Overlay Import Utility Electron Portable.exe
+```
+
+Run that EXE directly. It launches the Electron + React interface and starts
+the bundled `obs-overlay-backend.exe` automatically; it does **not** launch
+`obs_overlay_import_utility.ui` or require a system Python installation.
+
+To build the separately named legacy Tk fallback instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_portable_tk.ps1
+```
+
+That fallback output is `dist\OBS Overlay Import Utility.exe` and should not
+be confused with the Electron portable app.
 
 ## GitHub and releases
 

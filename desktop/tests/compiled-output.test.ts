@@ -150,6 +150,33 @@ describe("Compiled Electron output verification", () => {
       expect(mainContent).not.toMatch(/\beval\s*\(/);
     });
 
+    it("does not contain showPackagedNotImplemented", () => {
+      expect(mainContent).not.toContain("showPackagedNotImplemented");
+      expect(mainContent).not.toContain("Portable Electron Packaging Not Implemented");
+    });
+
+    it("loads local built renderer in packaged mode (not Vite URL)", () => {
+      // The compiled main process should load the built renderer from
+      // the local file system in packaged mode, not from the Vite dev server.
+      expect(mainContent).toContain("loadFile");
+      expect(mainContent).toContain("dist");
+      expect(mainContent).toContain("index.html");
+    });
+
+    it("does not use process.execPath as Python", () => {
+      expect(mainContent).not.toContain("process.execPath");
+    });
+
+    it("resolves backend from process.resourcesPath", () => {
+      expect(mainContent).toContain("process.resourcesPath");
+    });
+
+    it("starts bundled backend in packaged mode", () => {
+      // The compiled output should start the backend in both dev and
+      // packaged modes, resolving the executable from resourcesPath.
+      expect(mainContent).toContain("resolveBackendExecutable");
+    });
+
     it("uses exact origin validation (not startsWith)", () => {
       const securityContent = fs.existsSync(securityJs)
         ? fs.readFileSync(securityJs, "utf8")
@@ -215,6 +242,48 @@ describe("Compiled Electron output verification", () => {
 
     it("does not contain eval() calls", () => {
       expect(preloadContent).not.toMatch(/\beval\s*\(/);
+    });
+  });
+
+  describe("package configuration", () => {
+    const packageJsonPath = path.resolve(__dirname, "..", "package.json");
+
+    it("package.json includes the backend in extraResources", () => {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      expect(pkg.build).toBeDefined();
+      expect(pkg.build.extraResources).toBeDefined();
+      expect(pkg.build.extraResources.length).toBeGreaterThan(0);
+      const backendResource = pkg.build.extraResources.find(
+        (r: { to: string }) => r.to && r.to.includes("obs-overlay-backend")
+      );
+      expect(backendResource).toBeDefined();
+    });
+
+    it("package.json has a portable Windows target", () => {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      expect(pkg.build.win).toBeDefined();
+      expect(pkg.build.win.target).toBeDefined();
+      const target = pkg.build.win.target;
+      if (Array.isArray(target)) {
+        expect(target).toContain("portable");
+      } else if (typeof target === "object") {
+        expect(target.portable).toBeDefined();
+      } else {
+        expect(target).toBe("portable");
+      }
+    });
+
+    it("package.json has a package script that builds Electron", () => {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      expect(pkg.scripts.package).toBeDefined();
+      expect(pkg.scripts.package).not.toContain("deferred");
+      expect(pkg.scripts.package).toContain("electron-builder");
+    });
+
+    it("packages the desktop backend, never the Tk launcher", () => {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      expect(pkg.scripts["package:backend"]).toContain("tools/desktop_backend.py");
+      expect(pkg.scripts["package:backend"]).not.toContain("tools/launcher.py");
     });
   });
 });
