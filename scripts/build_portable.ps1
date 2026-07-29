@@ -7,9 +7,8 @@
     build_portable_tk.ps1 for clarity. This file remains as a backward-
     compatible redirect.
 
-    For the Electron + React portable app, use:
-        cd desktop
-        npm run package
+    For the primary Electron + React portable app, use:
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
 
     Output: dist\OBS Overlay Import Utility.exe (Tk fallback)
 #>

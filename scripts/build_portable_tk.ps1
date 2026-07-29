@@ -6,15 +6,14 @@
     This script builds the Tk-based UI (ui.py) as a standalone Windows
     executable using PyInstaller. This is the LEGACY fallback build —
     the primary Electron + React portable app is built via the
-    Electron build pipeline (desktop/package.json "npm run package").
+    primary Electron build script (scripts\build_portable_electron.ps1).
 
     The Tk fallback is kept for users who prefer the original
     standard-library Tk/ttk interface. It is NOT the default or
     recommended build for new users.
 
-    To build the Electron portable app instead, see:
-        cd desktop
-        npm run package
+    To build the Electron portable app instead, run:
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
 
     Output: dist\OBS Overlay Import Utility.exe (Tk fallback)
 #>
@@ -82,5 +81,4 @@ Write-Host $PortableApp
 Write-Host ""
 Write-Host "NOTE: This is the legacy Tk fallback build."
 Write-Host "For the Electron + React portable app, run:"
-Write-Host "  cd desktop"
-Write-Host "  npm run package"
+Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1"

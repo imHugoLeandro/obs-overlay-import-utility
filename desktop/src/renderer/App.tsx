@@ -28,8 +28,7 @@ import "./App.css";
 
 /**
  * Render the content for the active page.
- * Import and Export are functional pages.
- * Auto Resizer is a placeholder (Stage 3).
+ * Import, Export, and Auto Resizer are functional pages.
  * Settings exposes only the theme selector.
  */
 function PageContent({

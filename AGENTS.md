@@ -99,9 +99,11 @@ src/obs_overlay_import_utility/
   assets/           Packaged branding assets (SVGs, PNGs, logo)
 
 tests/              Unit and failure-oriented regression tests
-scripts/build_portable.ps1  Official Windows build entry point
+scripts/build_portable_electron.ps1  Primary Electron portable Windows build
+scripts/build_portable_tk.ps1  Legacy Tk fallback Windows build
 scripts/app.manifest       Per-Monitor V2 manifest
-tools/launcher.py          Packaged entry point
+tools/desktop_backend.py   Electron backend PyInstaller entry point
+tools/launcher.py          Legacy Tk fallback PyInstaller entry point
 tools/render_icons.py      Design-time icon PNG generator (numpy + Pillow + svg.path, scanline nonzero-fill)
 ```
 
@@ -118,8 +120,8 @@ PyInstaller executable is not the Electron portable app.
 
 - The Electron shell communicates with the Python engine via a stdio
   JSON-lines backend (`src/obs_overlay_import_utility/desktop_backend.py`).
-- The backend exposes **only** `health` and `app_info` commands.  There is
-  no shell, file-read, or generic function-call endpoint.
+- The backend exposes a fixed, validated workflow command set. There is no
+  shell, file-read, or generic function-call endpoint.
 - The renderer never imports Electron, Node, filesystem, child_process, or
   IPC primitives directly.
 - The main process validates every IPC sender, channel, and payload.
@@ -344,13 +346,13 @@ Do not cite an old test count as proof. Run the current suite and report its act
 After substantive user-facing code or UI changes, build the portable executable so the user can test it—unless the request was explicitly planning/review only or the user said not to build.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
 ```
 
 The expected output is:
 
 ```text
-dist\OBS Overlay Import Utility.exe
+desktop\release\OBS Overlay Import Utility Electron Portable.exe
 ```
 
 Before building, pass source tests and close any running copy of the executable. Do not kill unrelated or pre-existing user processes.

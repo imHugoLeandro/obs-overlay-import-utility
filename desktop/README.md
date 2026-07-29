@@ -1,13 +1,9 @@
 # Electron Desktop Shell
 
-> **Foundation stage** — This is the initial Electron + React + TypeScript
-> foundation for the OBS Overlay Import Utility. The real Import, Export,
-> Resizer, and Settings pages are not yet implemented.
->
-> **Parallel migration**: The Electron shell is being developed in parallel
-> with the existing Tk-based `ui.py`. **Tk remains the shipping/default UI**
-> until a later approval. Portable Electron + bundled Python packaging is
-> **deferred to Stage 3**.
+The Electron + React shell is the primary portable Windows application. It
+ships the React renderer, Electron main/preload code, and a bundled Python
+JSON-lines backend in one portable EXE. The Tk-based `ui.py` remains a
+separately named legacy fallback build; it is not part of this package.
 
 ## Overview
 
@@ -51,11 +47,14 @@ communicates with the existing Python engine via a stdio JSON-lines backend.
 | **Main process** (`src/main/index.ts`) | Window management, IPC validation, Python backend lifecycle |
 | **Preload** (`src/preload/index.ts`) | Exposes typed `electronAPI` via `contextBridge` |
 | **Renderer** (`src/renderer/`) | React UI — never imports Electron, Node, filesystem, child_process, or IPC directly |
-| **Python backend** (`desktop_backend.py`) | Stdio JSON-lines protocol — `health` and `app_info` only |
+| **Python backend** (`desktop_backend.py`) | Stdio JSON-lines protocol for the supported import, export, resize, and health operations |
 
-## Allowed API Surface
+## Health/status API example
 
-The renderer can call **only** two methods on `window.electronAPI`:
+The renderer can call the typed, fixed methods on `window.electronAPI`,
+including health/app-info and the supported import, export, and resize
+workflows. It never receives raw filesystem, Node, or Electron access. For
+example, its health/status methods are:
 
 ```typescript
 window.electronAPI.health()    // → Promise<{ status, pid, uptime_seconds, python_version }>
@@ -186,7 +185,8 @@ The backend is located at:
 src/obs_overlay_import_utility/desktop_backend.py
 ```
 
-It implements a minimal stdio JSON-lines protocol with two commands:
+It implements a fixed, validated stdio JSON-lines protocol for health,
+import, export, and resize operations. Its health/status commands include:
 
 - **`health`** — Returns backend liveness and process metadata.
 - **`app_info`** — Returns the application name and version.
@@ -211,27 +211,32 @@ It implements a minimal stdio JSON-lines protocol with two commands:
 {"request_id": "req-123", "type": "error", "error": {"code": "unknown_command", "message": "..."}}
 ```
 
-### Python Executable
+### Backend startup and packaging
 
-The Electron main process starts the Python backend using the path from the
-`OBS_OVERLAY_PYTHON` environment variable. If this variable is not set or
-does not point to a valid Python executable, the backend will not start and
-a clear error message is displayed.
+In development, Electron starts the source backend only through the
+`OBS_OVERLAY_PYTHON` environment variable and adds the repository `src/`
+directory to `PYTHONPATH`.
 
-## Packaging Status
+In packaged mode, Electron loads `dist/index.html` with `loadFile()` and
+starts only `obs-overlay-backend.exe` from `process.resourcesPath`. It does
+not use a system Python, Node, source-tree path, `process.execPath`,
+`tools/launcher.py`, or `ui.py`.
 
-**Portable Electron + bundled Python packaging is deferred to Stage 3.**
+### Primary Windows portable build
 
-The `npm run package` command is intentionally disabled and will fail with
-a clear message. The `electron-builder` configuration has been removed.
-Do not attempt to create a packaged distribution until Stage 3 is approved.
+From the repository root, run the one supported primary build command:
 
-## Migration Status
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
+```
 
-This is a **foundation** stage. The Electron shell is being developed in
-**parallel** with the existing Tk-based UI. The Electron shell is **not**
-the shipping default — the Tk-based `ui.py` remains the primary interface.
+It creates:
 
-Future stages will add Import, Export, Resizer, and Settings pages to the
-Electron shell, and Stage 3 will add portable packaging with a bundled
-Python engine.
+```text
+desktop\release\OBS Overlay Import Utility Electron Portable.exe
+```
+
+`npm run package` is the lower-level command used by that script and CI.
+The legacy Tk fallback is built only with
+`scripts\build_portable_tk.ps1`; the compatibility
+`scripts\build_portable.ps1` redirects to that fallback script.

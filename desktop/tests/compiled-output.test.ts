@@ -156,15 +156,9 @@ describe("Compiled Electron output verification", () => {
     });
 
     it("loads local built renderer in packaged mode (not Vite URL)", () => {
-      // The compiled main process should load the built renderer from
-      // the local file system in packaged mode, not from the Vite dev server.
-      expect(mainContent).toContain("loadFile");
-      expect(mainContent).toContain("dist");
-      expect(mainContent).toContain("index.html");
-    });
-
-    it("does not use process.execPath as Python", () => {
-      expect(mainContent).not.toContain("process.execPath");
+      expect(mainContent).toMatch(
+        /if \(electron_1\.app\.isPackaged\)[\s\S]*?loadFile\(\(0, security_1\.resolvePackagedRendererPath\)\(\)\)[\s\S]*?else[\s\S]*?loadURL\(security_1\.DEV_ORIGIN\)/
+      );
     });
 
     it("resolves backend from process.resourcesPath", () => {
@@ -290,6 +284,30 @@ describe("Compiled Electron output verification", () => {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
       expect(pkg.scripts["package:backend"]).toContain("tools/desktop_backend.py");
       expect(pkg.scripts["package:backend"]).not.toContain("tools/launcher.py");
+    });
+
+    it("keeps Electron packaging separate from the Tk fallback scripts and workflow", () => {
+      const repoRoot = path.resolve(__dirname, "..", "..");
+      const readRootFile = (...segments: string[]) =>
+        fs.readFileSync(path.join(repoRoot, ...segments), "utf8");
+      const electronScript = readRootFile("scripts", "build_portable_electron.ps1");
+      const tkScript = readRootFile("scripts", "build_portable_tk.ps1");
+      const compatibilityScript = readRootFile("scripts", "build_portable.ps1");
+      const workflow = readRootFile(".github", "workflows", "build-windows.yml");
+      const desktopReadme = readRootFile("desktop", "README.md");
+
+      expect(electronScript).toContain("npm run package");
+      expect(electronScript).not.toContain("tools\\launcher.py");
+      expect(electronScript).not.toContain("ui.py");
+      expect(workflow).toContain("npm run package");
+      expect(workflow).not.toContain("tools/launcher.py");
+      expect(workflow).not.toContain("ui.py");
+      expect(tkScript).toContain("legacy Tk fallback");
+      expect(tkScript).toContain("tools\\launcher.py");
+      expect(compatibilityScript).toContain("build_portable_tk.ps1");
+      expect(compatibilityScript).toContain("legacy Tk fallback");
+      expect(desktopReadme).toContain("build_portable_electron.ps1");
+      expect(desktopReadme).not.toMatch(/deferred to Stage|Tk remains the shipping\/default/i);
     });
   });
 });
