@@ -40,6 +40,8 @@ tests/<relevant tests>.py
 
 Do not switch branches, pull, commit, push, tag, publish, or rewrite Git history unless the user explicitly asks. Preserve unrelated user changes and untracked files.
 
+The repository-local `/workspace/` directory is user-owned agent scratch space. It is intentionally ignored by Git and outside the product boundary: do not inspect, modify, delete, stage, or include it in audits, builds, tests, or commits unless Hugo explicitly asks.
+
 For planning, research, or review-only requests, do not edit files or build artifacts.
 
 ## Product Goals

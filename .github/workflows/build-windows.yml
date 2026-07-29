@@ -23,10 +23,18 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - name: Install Python package and build tools
-        run: python -m pip install -e ".[build]"
+      - name: Create dedicated Electron build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv-build-electron
+          .\.venv-build-electron\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv-build-electron\Scripts\python.exe -m pip install -e ".[build]"
       - name: Run Python tests
-        run: python -m unittest discover -s tests -v
+        shell: pwsh
+        run: .\.venv-build-electron\Scripts\python.exe -m unittest discover -s tests -v
+      - name: Compile Python sources
+        shell: pwsh
+        run: .\.venv-build-electron\Scripts\python.exe -m compileall -q src tools tests
       - name: Install Electron dependencies
         working-directory: desktop
         run: npm ci
@@ -42,10 +50,19 @@ jobs:
       - name: Build Electron renderer and main process
         working-directory: desktop
         run: npm run build
-      - name: Verify compiled Electron output
+      - name: Verify exact compiled Electron output to be packaged
         working-directory: desktop
         run: npm run verify:compiled
-      - name: Build Electron portable executable and bundled backend
+      - name: Run Electron integration tests
+        working-directory: desktop
+        run: npm run test:integration
+      - name: Build bundled Python backend once
+        working-directory: desktop
+        shell: pwsh
+        env:
+          OBS_OVERLAY_BUILD_PYTHON: ${{ github.workspace }}\.venv-build-electron\Scripts\python.exe
+        run: npm run package:backend
+      - name: Package verified Electron portable executable
         working-directory: desktop
         run: npm run package
       - name: Smoke test packaged Electron application
@@ -83,6 +100,9 @@ jobs:
           }
           if (-not $smoke.result.rendererNodeUnavailable) {
             throw "Renderer Node access was available in packaged mode."
+          }
+          if ($smoke.result.appInfo.name -ne "OBS Overlay Import Utility") {
+            throw "Packaged renderer did not report the Electron application identity."
           }
       - name: Upload Electron portable artifact
         uses: actions/upload-artifact@v7

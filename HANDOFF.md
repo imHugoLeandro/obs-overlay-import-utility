@@ -18,6 +18,16 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 - Current executable SHA-256: `F4C5310B92CB5AF18B7182F4021631F9C24D7A337D0491353159293583CCA5E0`
 - `dist/` is intentionally Git-ignored. Release executables should be built locally or through GitHub Actions.
 
+## Electron portable delivery (current branch)
+
+- The Electron + React shell under `desktop/` is the primary portable delivery path. The Tk executable remains the explicitly named fallback built by `scripts/build_portable_tk.ps1`.
+- Renderer-to-main channels are fixed in `desktop/src/main/contracts/channels.ts`; preload and main process imports must use that registry. There is no generic renderer-to-main invoke endpoint.
+- The Python JSON-lines backend command allow-list is independent at `desktop/src/main/contracts/backendCommands.ts`. Native file-selection operations remain local Electron handlers and must not be treated as backend commands.
+- `desktop/scripts/package-backend.cjs` packages only `tools/desktop_backend.py`, with the explicit `OBS_OVERLAY_BUILD_PYTHON` executable. It never packages the Tk launcher.
+- `scripts/build_portable_electron.ps1` is the primary local build command. It creates/uses `.venv-build-electron`, installs the Python build dependencies through that executable, runs `npm ci`, builds renderer/main/preload once, verifies that exact output, packages the backend once, then invokes Electron Builder.
+- `-CleanDependencies` is opt-in. Normal builds preserve a valid `desktop/node_modules`; cleanup errors must never kill unrelated processes.
+- The Windows workflow follows the same order and smoke-tests the packaged app. No Windows packaged smoke result is authoritative until the workflow completes for the committed SHA.
+
 ## Implemented features
 
 ### Import Overlay

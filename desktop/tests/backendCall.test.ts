@@ -155,6 +155,21 @@ describe("callBackend — transport failures", () => {
 });
 
 describe("callBackend — success", () => {
+  it("uses operation-specific timeouts instead of one unexplained transport timeout", async () => {
+    const healthTransport = makeTransport({ request_id: "health", type: "result", data: { status: "ok" } });
+    const importTransport = makeTransport({ request_id: "import", type: "result", data: { success: true } });
+
+    await callBackend(healthTransport, "health");
+    await callBackend(importTransport, "import_streamlabs", { selection_id: "selection-1" });
+
+    expect(healthTransport.sendRequest).toHaveBeenCalledWith("health", undefined, 5_000);
+    expect(importTransport.sendRequest).toHaveBeenCalledWith(
+      "import_streamlabs",
+      { selection_id: "selection-1" },
+      120_000
+    );
+  });
+
   it("returns result data on success", async () => {
     const transport = makeTransport({
       request_id: "r6",

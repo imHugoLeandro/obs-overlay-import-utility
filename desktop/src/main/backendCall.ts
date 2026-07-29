@@ -14,11 +14,40 @@
  *   "The backend is unavailable. Restart the application and try again."
  */
 
+import type { BackendCommand } from "./contracts/backendCommands";
 import type { BackendTransport } from "./transport";
 
 /** Generic customer-safe error for backend unavailability. */
 export const BACKEND_UNAVAILABLE_ERROR =
   "The backend is unavailable. Restart the application and try again.";
+
+/**
+ * Explicit operation budgets. Small read-only checks fail quickly; archive,
+ * export, and resize operations receive enough time for legitimate local I/O.
+ */
+const BACKEND_TIMEOUT_MS: Record<BackendCommand, number> = {
+  health: 5_000,
+  app_info: 5_000,
+  obs_running: 5_000,
+  scan_collections: 30_000,
+  scan_resize_collections: 30_000,
+  resize_source_choices: 30_000,
+  resize_scene_choices: 30_000,
+  device_requirements: 30_000,
+  device_candidates: 30_000,
+  list_export_collections: 30_000,
+  export_inventory: 30_000,
+  convert_collection: 60_000,
+  apply_device_choices: 60_000,
+  activate_collection: 60_000,
+  preview_resize: 60_000,
+  undo_resize: 60_000,
+  import_streamlabs: 120_000,
+  automatic_import: 120_000,
+  build_export_plan: 120_000,
+  confirm_export: 120_000,
+  resize_collection: 120_000,
+};
 
 /**
  * Typed internal expected-backend error.
@@ -55,12 +84,12 @@ export class ExpectedBackendError extends Error {
  */
 export async function callBackend(
   backend: BackendTransport,
-  command: string,
+  command: BackendCommand,
   params?: Record<string, unknown>
 ): Promise<unknown> {
   let response: unknown;
   try {
-    response = await backend.sendRequest(command, params);
+    response = await backend.sendRequest(command, params, BACKEND_TIMEOUT_MS[command]);
   } catch {
     // Transport failure, backend exit, timeout, etc.
     throw new Error(BACKEND_UNAVAILABLE_ERROR);

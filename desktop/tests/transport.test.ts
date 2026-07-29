@@ -142,10 +142,9 @@ describe("BackendTransport", () => {
       const promise = transport.sendRequest("health");
       const requestId = getRequestId(transport);
 
-      // Send non-JSON output, then a valid response.
+      // A valid response for the pending request after an unknown response.
       const chunk = Buffer.from(
-        "Python startup warning\n" +
-          "{invalid json\n" +
+        makeResponseLine("req-unknown", "result", { ignored: true }) + "\n" +
           makeResponseLine(requestId, "result", { status: "ok" }) + "\n"
       );
 
@@ -224,6 +223,35 @@ describe("BackendTransport", () => {
       // Advancing past the timeout should NOT reject (the timer was cleared).
       vi.advanceTimersByTime(10000);
       // The promise already resolved; advancing timers should not cause issues.
+    });
+  });
+
+  describe("protocol and lifecycle failures", () => {
+    it("rejects pending requests immediately on malformed backend output", async () => {
+      const promise = transport.sendRequest("health");
+      transport.handleStdout(Buffer.from("{not-json}\n"));
+      expect(transport.getPendingCount()).toBe(0);
+      await expect(promise).rejects.toThrow("Backend protocol error");
+    });
+
+    it("stop rejects and clears pending requests before terminating the process", async () => {
+      const promise = transport.sendRequest("health");
+      const kill = vi.fn();
+      (transport as unknown as { pyProcess: unknown }).pyProcess = { kill };
+      transport.stop();
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+      expect(transport.getPendingCount()).toBe(0);
+      await expect(promise).rejects.toThrow("Backend process stopped");
+    });
+
+    it("clears the pending request when stdin reports a write failure", async () => {
+      const failing = new BackendTransport();
+      (failing as unknown as { pyStdin: unknown }).pyStdin = {
+        write: vi.fn((_data: unknown, callback: (error: Error) => void) => callback(new Error("broken pipe"))),
+      };
+      const promise = failing.sendRequest("health");
+      expect(failing.getPendingCount()).toBe(0);
+      await expect(promise).rejects.toThrow("broken pipe");
     });
   });
 

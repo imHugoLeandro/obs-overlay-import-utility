@@ -3,15 +3,18 @@
     Builds the primary Electron + React Windows portable executable.
 
 .DESCRIPTION
-    Builds the standalone Python JSON-lines backend, the React renderer, and
-    Electron main/preload code, then packages them with electron-builder's
-    Windows portable target.
+    Uses a dedicated repository-local Python environment for every backend
+    packaging step, then packages already-built Electron output. The legacy Tk
+    fallback remains scripts/build_portable_tk.ps1.
 
-    This is the primary customer artifact. It does not package or run the Tk
-    launcher. The legacy Tk fallback is built by build_portable_tk.ps1.
-
-    Output: desktop\release\OBS Overlay Import Utility Electron Portable.exe
+.PARAMETER CleanDependencies
+    Explicitly remove desktop\node_modules before npm ci. Use only when the
+    dependency tree is known to be stale or incompatible with this platform.
 #>
+[CmdletBinding()]
+param(
+    [switch]$CleanDependencies
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -21,53 +24,74 @@ function Assert-LastExit([string] $Step) {
     }
 }
 
-function Install-ElectronDependencies([string] $DesktopPath) {
-    $NodeModules = Join-Path $DesktopPath "node_modules"
+function Resolve-BootstrapPython {
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        return @("py", "-3")
+    }
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return @("python")
+    }
+    throw "Python 3.10 or newer was not found."
+}
 
-    # node_modules is platform-specific and must not be reused from the Linux
-    # Hermes workspace. Remove it before npm ci creates the Windows dependency
-    # tree, instead of asking npm to delete a mixed-platform .bin directory.
-    if (Test-Path -LiteralPath $NodeModules) {
-        Write-Host "Removing existing Electron dependencies before the Windows install..."
+function Install-ElectronDependencies([string] $DesktopPath, [bool] $RemoveExisting) {
+    $NodeModules = Join-Path $DesktopPath "node_modules"
+    if ($RemoveExisting -and (Test-Path -LiteralPath $NodeModules)) {
+        Write-Host "Removing Electron dependencies because -CleanDependencies was specified..."
         try {
             Remove-Item -LiteralPath $NodeModules -Recurse -Force -ErrorAction Stop
         }
         catch {
-            throw "Could not remove $NodeModules. Close any Node/Electron processes using this workspace, then run the script again. $($_.Exception.Message)"
+            throw "Could not remove $NodeModules. Close only the application or terminal using this repository, then rerun with -CleanDependencies. $($_.Exception.Message)"
         }
     }
 
-    Write-Host "Installing Electron dependencies..."
-    & npm ci
-    Assert-LastExit "Installing Electron dependencies"
+    Write-Host "Installing Electron dependencies from the lockfile..."
+    Push-Location $DesktopPath
+    try {
+        & npm ci
+        Assert-LastExit "Installing Electron dependencies"
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Desktop = Join-Path $Root "desktop"
+$BuildVenv = Join-Path $Root ".venv-build-electron"
+$BuildPython = Join-Path $BuildVenv "Scripts\python.exe"
 
-if (Get-Command py -ErrorAction SilentlyContinue) {
-    & py -3 -m pip install -e "$Root[build]"
+if (-not (Test-Path -LiteralPath $BuildPython)) {
+    $BootstrapPython = Resolve-BootstrapPython
+    $BootstrapArgs = @($BootstrapPython | Select-Object -Skip 1) + @("-m", "venv", $BuildVenv)
+    Write-Host "Creating dedicated Electron build environment at $BuildVenv..."
+    & $BootstrapPython[0] @BootstrapArgs
+    Assert-LastExit "Creating Electron build environment"
 }
-elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    & python -m pip install -e "$Root[build]"
-}
-else {
-    throw "Python 3.10 or newer was not found."
-}
+
+& $BuildPython -m pip install --upgrade pip
+Assert-LastExit "Upgrading build-environment pip"
+& $BuildPython -m pip install -e "$Root[build]"
 Assert-LastExit "Installing Python build dependencies"
 
+# This is consumed by desktop/scripts/package-backend.cjs. Do not mutate a
+# shell-global Python setting: the package step receives this one explicit path.
+$env:OBS_OVERLAY_BUILD_PYTHON = $BuildPython
+
+Install-ElectronDependencies $Desktop $CleanDependencies.IsPresent
 Push-Location $Desktop
 try {
-    Install-ElectronDependencies $Desktop
-    & npm run package
+    & npm run package:all
     Assert-LastExit "Electron portable application build"
 }
 finally {
     Pop-Location
+    Remove-Item Env:OBS_OVERLAY_BUILD_PYTHON -ErrorAction SilentlyContinue
 }
 
 $PortableApp = Join-Path $Desktop "release\OBS Overlay Import Utility Electron Portable.exe"
-if (-not (Test-Path $PortableApp)) {
+if (-not (Test-Path -LiteralPath $PortableApp)) {
     throw "Electron portable executable was not created at $PortableApp."
 }
 

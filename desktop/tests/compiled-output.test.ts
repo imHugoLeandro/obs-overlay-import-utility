@@ -21,6 +21,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import { IPC_CHANNELS } from "../src/main/contracts/channels";
 
 const distElectron = path.resolve(__dirname, "..", "dist-electron");
 const dist = path.resolve(__dirname, "..", "dist");
@@ -28,7 +29,10 @@ const dist = path.resolve(__dirname, "..", "dist");
 const mainJs = path.join(distElectron, "main", "index.js");
 const preloadJs = path.join(distElectron, "preload", "index.js");
 const securityJs = path.join(distElectron, "main", "security.js");
+const channelsJs = path.join(distElectron, "main", "contracts", "channels.js");
 const rendererIndexHtml = path.join(dist, "index.html");
+const mainSource = path.resolve(__dirname, "..", "src", "main", "index.ts");
+const preloadSource = path.resolve(__dirname, "..", "src", "preload", "index.ts");
 
 // Assert that a file exists.  Throws with a descriptive message if not.
 function assertFileExists(filePath: string): void {
@@ -59,6 +63,10 @@ describe("Compiled Electron output verification", () => {
 
     it("compiled security module exists at dist-electron/main/security.js", () => {
       assertFileExists(securityJs);
+    });
+
+    it("compiled IPC channel registry exists", () => {
+      assertFileExists(channelsJs);
     });
 
     it("compiled renderer exists at dist/index.html", () => {
@@ -111,34 +119,21 @@ describe("Compiled Electron output verification", () => {
       expect(mainContent).toContain("setPermissionRequestHandler");
     });
 
-    it("has fixed IPC channels", () => {
-      expect(mainContent).toContain("desktop:health");
-      expect(mainContent).toContain("desktop:app-info");
-      expect(mainContent).toContain("desktop:choose-overlay-folder");
-      expect(mainContent).toContain("desktop:choose-streamlabs-overlay");
-      expect(mainContent).toContain("desktop:choose-automatic-folder");
-      expect(mainContent).toContain("desktop:choose-export-destination");
-      expect(mainContent).toContain("desktop:scan-collections");
-      expect(mainContent).toContain("desktop:choose-collection");
-      expect(mainContent).toContain("desktop:convert-collection");
-      expect(mainContent).toContain("desktop:import-streamlabs");
-      expect(mainContent).toContain("desktop:automatic-import");
-      expect(mainContent).toContain("desktop:device-requirements");
-      expect(mainContent).toContain("desktop:device-candidates");
-      expect(mainContent).toContain("desktop:apply-device-choices");
-      expect(mainContent).toContain("desktop:obs-running");
-      expect(mainContent).toContain("desktop:activate-collection");
-      expect(mainContent).toContain("desktop:list-export-collections");
-      expect(mainContent).toContain("desktop:build-export-plan");
-      expect(mainContent).toContain("desktop:export-inventory");
-      expect(mainContent).toContain("desktop:confirm-export");
-      expect(mainContent).toContain("desktop:scan-resize-collections");
-      expect(mainContent).toContain("desktop:choose-resize-collection");
-      expect(mainContent).toContain("desktop:resize-source-choices");
-      expect(mainContent).toContain("desktop:resize-scene-choices");
-      expect(mainContent).toContain("desktop:preview-resize");
-      expect(mainContent).toContain("desktop:apply-resize");
-      expect(mainContent).toContain("desktop:undo-resize");
+    it("uses the canonical fixed IPC channel registry", () => {
+      const channelValues = Object.values(IPC_CHANNELS);
+      const channelsContent = readCompiledFile(channelsJs);
+      const source = fs.readFileSync(mainSource, "utf8");
+
+      expect(channelValues).toHaveLength(new Set(channelValues).size);
+      expect(channelValues.every((channel) => /^desktop:[a-z-]+$/.test(channel))).toBe(true);
+      for (const channel of channelValues) {
+        expect(channelsContent).toContain(channel);
+      }
+      expect(mainContent).toContain("contracts/channels");
+      expect(source).toContain("IPC_CHANNELS");
+      expect(source).toMatch(/ipcMain\.handle\([A-Z_]+_CHANNEL/);
+      expect(source).not.toMatch(/ipcMain\.handle\(\s*["'`]/);
+      expect(source).not.toMatch(/ipcMain\.handle\([^,]*\bcommand\b/i);
     });
 
     it("does not contain live resize channels", () => {
@@ -199,34 +194,15 @@ describe("Compiled Electron output verification", () => {
       expect(preloadContent).not.toContain("ipcRenderer.once");
     });
 
-    it("exposes only health, appInfo, and all workflow channels", () => {
-      expect(preloadContent).toContain("desktop:health");
-      expect(preloadContent).toContain("desktop:app-info");
-      expect(preloadContent).toContain("desktop:choose-overlay-folder");
-      expect(preloadContent).toContain("desktop:choose-streamlabs-overlay");
-      expect(preloadContent).toContain("desktop:choose-automatic-folder");
-      expect(preloadContent).toContain("desktop:choose-export-destination");
-      expect(preloadContent).toContain("desktop:scan-collections");
-      expect(preloadContent).toContain("desktop:choose-collection");
-      expect(preloadContent).toContain("desktop:convert-collection");
-      expect(preloadContent).toContain("desktop:import-streamlabs");
-      expect(preloadContent).toContain("desktop:automatic-import");
-      expect(preloadContent).toContain("desktop:device-requirements");
-      expect(preloadContent).toContain("desktop:device-candidates");
-      expect(preloadContent).toContain("desktop:apply-device-choices");
-      expect(preloadContent).toContain("desktop:obs-running");
-      expect(preloadContent).toContain("desktop:activate-collection");
-      expect(preloadContent).toContain("desktop:list-export-collections");
-      expect(preloadContent).toContain("desktop:build-export-plan");
-      expect(preloadContent).toContain("desktop:export-inventory");
-      expect(preloadContent).toContain("desktop:confirm-export");
-      expect(preloadContent).toContain("desktop:scan-resize-collections");
-      expect(preloadContent).toContain("desktop:choose-resize-collection");
-      expect(preloadContent).toContain("desktop:resize-source-choices");
-      expect(preloadContent).toContain("desktop:resize-scene-choices");
-      expect(preloadContent).toContain("desktop:preview-resize");
-      expect(preloadContent).toContain("desktop:apply-resize");
-      expect(preloadContent).toContain("desktop:undo-resize");
+    it("maps every preload method to the canonical fixed channel registry", () => {
+      const source = fs.readFileSync(preloadSource, "utf8");
+
+      expect(preloadContent).toContain("contracts/channels");
+      for (const key of Object.keys(IPC_CHANNELS)) {
+        expect(source).toContain(`IPC_CHANNELS.${key}`);
+      }
+      expect(source).not.toMatch(/ipcRenderer\.invoke\(\s*["'`]/);
+      expect(source).not.toMatch(/ipcRenderer\.invoke\([^)]*\bchannel\b/i);
     });
 
     it("does not contain live resize channels", () => {
@@ -280,10 +256,12 @@ describe("Compiled Electron output verification", () => {
       expect(pkg.devDependencies.electron).toBe("43.2.0");
     });
 
-    it("packages the desktop backend, never the Tk launcher", () => {
+    it("keeps packaging as an already-built artifact pipeline", () => {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-      expect(pkg.scripts["package:backend"]).toContain("tools/desktop_backend.py");
-      expect(pkg.scripts["package:backend"]).not.toContain("tools/launcher.py");
+      expect(pkg.scripts.package).toBe("electron-builder --win --publish=never");
+      expect(pkg.scripts["package:all"]).toContain("npm run build");
+      expect(pkg.scripts["package:all"]).toContain("npm run verify:compiled");
+      expect(pkg.scripts["package:all"]).toContain("npm run package:backend");
     });
 
     it("keeps Electron packaging separate from the Tk fallback scripts and workflow", () => {
@@ -296,12 +274,11 @@ describe("Compiled Electron output verification", () => {
       const workflow = readRootFile(".github", "workflows", "build-windows.yml");
       const desktopReadme = readRootFile("desktop", "README.md");
 
-      expect(electronScript).toContain("function Install-ElectronDependencies");
-      expect(electronScript).toContain("Remove-Item -LiteralPath $NodeModules -Recurse -Force");
-      expect(electronScript).toContain("Removing existing Electron dependencies before the Windows install");
-      expect(electronScript).toContain("npm run package");
+      expect(electronScript).toContain(".venv-build-electron");
+      expect(electronScript).toContain("npm run package:all");
       expect(electronScript).not.toContain("tools\\launcher.py");
       expect(electronScript).not.toContain("ui.py");
+      expect(workflow).toContain("npm run package:backend");
       expect(workflow).toContain("npm run package");
       expect(workflow).not.toContain("tools/launcher.py");
       expect(workflow).not.toContain("ui.py");

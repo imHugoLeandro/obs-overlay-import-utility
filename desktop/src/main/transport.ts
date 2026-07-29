@@ -109,12 +109,14 @@ export class BackendTransport {
 
   /** Stop the Python backend gracefully. */
   stop(): void {
-    if (this.pyProcess) {
-      this.pyProcess.kill("SIGTERM");
-      this.pyProcess = null;
-      this.pyStdin = null;
-      this.pyStdout = null;
-      this.stdoutBuffer = "";
+    const processToStop = this.pyProcess;
+    this.rejectAllPending(new Error("Backend process stopped"));
+    this.pyProcess = null;
+    this.pyStdin = null;
+    this.pyStdout = null;
+    this.stdoutBuffer = "";
+    if (processToStop) {
+      processToStop.kill("SIGTERM");
     }
   }
 
@@ -127,7 +129,11 @@ export class BackendTransport {
    * @param command  The backend command to invoke.
    * @param params   Optional parameters object forwarded as ``params``.
    */
-  sendRequest(command: string, params?: Record<string, unknown>): Promise<unknown> {
+  sendRequest(
+    command: string,
+    params?: Record<string, unknown>,
+    timeoutMs = 10_000
+  ): Promise<unknown> {
     if (!this.pyStdin) {
       return Promise.reject(new Error("Backend not running"));
     }
@@ -143,7 +149,7 @@ export class BackendTransport {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(`Backend request timed out: ${command}`));
-      }, 10000);
+      }, timeoutMs);
 
       this.pending.set(requestId, { resolve, reject, timer });
 
@@ -184,7 +190,9 @@ export class BackendTransport {
           pending.resolve(response);
         }
       } catch {
-        // Ignore non-JSON lines (e.g., Python startup output).
+        // The backend protocol is JSON-lines only. Reject immediately instead
+        // of leaving callers to time out with an ambiguous transport error.
+        this.rejectAllPending(new Error("Backend protocol error"));
       }
     }
   }

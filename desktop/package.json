@@ -1,7 +1,7 @@
 {
   "name": "obs-overlay-import-utility-desktop",
-  "version": "0.1.0-foundation",
-  "description": "Electron + React desktop shell for OBS Overlay Import Utility (foundation stage)",
+  "version": "0.1.0",
+  "description": "Electron + React desktop shell for OBS Overlay Import Utility",
   "main": "dist-electron/main/index.js",
   "type": "commonjs",
   "scripts": {
@@ -19,11 +19,9 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css,md}\"",
     "verify:compiled": "vitest run --config vitest.verify.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "package": "npm run build && npm run package:backend && electron-builder --win --publish=never",
-    "package:backend": "python -m PyInstaller --noconfirm --clean --onefile --name obs-overlay-backend ../tools/desktop_backend.py --paths ../src --collect-data obs_overlay_import_utility --distpath ../build/backend --workpath ../build/backend-work --specpath ../build/backend"
-  },
-  "config": {
-    "electron:serve": "http://localhost:5173"
+    "package:backend": "node scripts/package-backend.cjs",
+    "package": "electron-builder --win --publish=never",
+    "package:all": "npm run build && npm run verify:compiled && npm run package:backend && npm run package"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.0",

@@ -24,5 +24,8 @@ desktop/*.exe
 desktop/*.dll
 desktop/.env*
 
+# Repository-local agent scratch space; user-owned and outside product scope.
+/workspace/
+
 # uv lock file — intentionally untracked
 uv.lock

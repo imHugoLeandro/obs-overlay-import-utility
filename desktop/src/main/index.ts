@@ -45,66 +45,41 @@ import { ImportInstallationStore, InstallationError } from "./importInstallation
 import { ExportStore, ExportError } from "./exportStore";
 import { ResizeUndoStore, UndoError } from "./resizeUndoStore";
 import { callBackend, BACKEND_UNAVAILABLE_ERROR, ExpectedBackendError } from "./backendCall";
+import { registerSelectionHandlers } from "./ipc/selectionHandlers";
 
 // ---------------------------------------------------------------------------
-// Configuration
+// IPC contracts — all renderer channels and backend commands are defined once.
 // ---------------------------------------------------------------------------
 
-/** Allowed commands that can be sent to the Python backend. */
-const ALLOWED_COMMANDS = new Set([
-  "health",
-  "app_info",
-  "scan_collections",
-  "convert_collection",
-  "import_streamlabs",
-  "automatic_import",
-  "device_requirements",
-  "device_candidates",
-  "apply_device_choices",
-  "obs_running",
-  "activate_collection",
-  "list_export_collections",
-  "build_export_plan",
-  "export_inventory",
-  "confirm_export",
-]);
+import { IPC_CHANNELS } from "./contracts/channels";
 
-/**
- * Validate that a command is in the allowed set.
- * This provides defense-in-depth alongside the fixed IPC channels.
- */
-function isAllowedCommand(command: string): boolean {
-  return ALLOWED_COMMANDS.has(command);
-}
-
-/** Fixed IPC channels — no dynamic channel construction. */
-const HEALTH_CHANNEL = "desktop:health";
-const APP_INFO_CHANNEL = "desktop:app-info";
-const CHOOSE_OVERLAY_FOLDER_CHANNEL = "desktop:choose-overlay-folder";
-const CHOOSE_STREAMLABS_OVERLAY_CHANNEL = "desktop:choose-streamlabs-overlay";
-const CHOOSE_AUTOMATIC_FOLDER_CHANNEL = "desktop:choose-automatic-folder";
-const CHOOSE_EXPORT_DESTINATION_CHANNEL = "desktop:choose-export-destination";
-const SCAN_COLLECTIONS_CHANNEL = "desktop:scan-collections";
-const CHOOSE_COLLECTION_CHANNEL = "desktop:choose-collection";
-const CONVERT_COLLECTION_CHANNEL = "desktop:convert-collection";
-const IMPORT_STREAMLABS_CHANNEL = "desktop:import-streamlabs";
-const AUTOMATIC_IMPORT_CHANNEL = "desktop:automatic-import";
-const DEVICE_REQUIREMENTS_CHANNEL = "desktop:device-requirements";
-const DEVICE_CANDIDATES_CHANNEL = "desktop:device-candidates";
-const APPLY_DEVICE_CHOICES_CHANNEL = "desktop:apply-device-choices";
-const OBS_RUNNING_CHANNEL = "desktop:obs-running";
-const ACTIVATE_COLLECTION_CHANNEL = "desktop:activate-collection";
-const LIST_EXPORT_COLLECTIONS_CHANNEL = "desktop:list-export-collections";
-const BUILD_EXPORT_PLAN_CHANNEL = "desktop:build-export-plan";
-const EXPORT_INVENTORY_CHANNEL = "desktop:export-inventory";
-const CONFIRM_EXPORT_CHANNEL = "desktop:confirm-export";
-const SCAN_RESIZE_COLLECTIONS_CHANNEL = "desktop:scan-resize-collections";
-const CHOOSE_RESIZE_COLLECTION_CHANNEL = "desktop:choose-resize-collection";
-const RESIZE_SOURCE_CHOICES_CHANNEL = "desktop:resize-source-choices";
-const RESIZE_SCENE_CHOICES_CHANNEL = "desktop:resize-scene-choices";
-const PREVIEW_RESIZE_CHANNEL = "desktop:preview-resize";
-const APPLY_RESIZE_CHANNEL = "desktop:apply-resize";
-const UNDO_RESIZE_CHANNEL = "desktop:undo-resize";
+const {
+  health: HEALTH_CHANNEL,
+  appInfo: APP_INFO_CHANNEL,
+  chooseStreamlabsOverlay: CHOOSE_STREAMLABS_OVERLAY_CHANNEL,
+  chooseAutomaticFolder: CHOOSE_AUTOMATIC_FOLDER_CHANNEL,
+  chooseExportDestination: CHOOSE_EXPORT_DESTINATION_CHANNEL,
+  scanCollections: SCAN_COLLECTIONS_CHANNEL,
+  convertCollection: CONVERT_COLLECTION_CHANNEL,
+  importStreamlabs: IMPORT_STREAMLABS_CHANNEL,
+  automaticImport: AUTOMATIC_IMPORT_CHANNEL,
+  deviceRequirements: DEVICE_REQUIREMENTS_CHANNEL,
+  deviceCandidates: DEVICE_CANDIDATES_CHANNEL,
+  applyDeviceChoices: APPLY_DEVICE_CHOICES_CHANNEL,
+  obsRunning: OBS_RUNNING_CHANNEL,
+  activateCollection: ACTIVATE_COLLECTION_CHANNEL,
+  listExportCollections: LIST_EXPORT_COLLECTIONS_CHANNEL,
+  buildExportPlan: BUILD_EXPORT_PLAN_CHANNEL,
+  exportInventory: EXPORT_INVENTORY_CHANNEL,
+  confirmExport: CONFIRM_EXPORT_CHANNEL,
+  scanResizeCollections: SCAN_RESIZE_COLLECTIONS_CHANNEL,
+  chooseResizeCollection: CHOOSE_RESIZE_COLLECTION_CHANNEL,
+  resizeSourceChoices: RESIZE_SOURCE_CHOICES_CHANNEL,
+  resizeSceneChoices: RESIZE_SCENE_CHOICES_CHANNEL,
+  previewResize: PREVIEW_RESIZE_CHANNEL,
+  applyResize: APPLY_RESIZE_CHANNEL,
+  undoResize: UNDO_RESIZE_CHANNEL,
+} = IPC_CHANNELS;
 
 /**
  * Resolve the Python executable for development.
@@ -189,6 +164,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
+/** Resolve a selected folder and reject paths that are not directories. */
+function canonicalizeDirectory(value: string): string | null {
+  try {
+    const resolved = realpathSync(value);
+    const { statSync } = require("fs") as typeof import("fs");
+    return statSync(resolved).isDirectory() ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+registerSelectionHandlers({
+  ipcMain,
+  dialog,
+  getMainWindow: () => mainWindow,
+  isValidSender,
+  isValidOrigin,
+  canonicalizeDirectory,
+  importStore,
+});
+
 /**
  * Convert an error to a renderer-safe error message.
  * SelectionError and ExpectedBackendError messages are already
@@ -221,9 +217,6 @@ ipcMain.handle(HEALTH_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
   }
-  if (!isAllowedCommand("health")) {
-    throw new Error("Command not allowed");
-  }
   try {
     return await callBackend(backend, "health");
   } catch (err) {
@@ -239,9 +232,6 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
   }
-  if (!isAllowedCommand("app_info")) {
-    throw new Error("Command not allowed");
-  }
   try {
     return await callBackend(backend, "app_info");
   } catch (err) {
@@ -249,60 +239,6 @@ ipcMain.handle(APP_INFO_CHANNEL, async (event) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// IPC: chooseOverlayFolder — no renderer arguments
-// ---------------------------------------------------------------------------
-
-ipcMain.handle(CHOOSE_OVERLAY_FOLDER_CHANNEL, async (event) => {
-  if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
-    throw new Error("Unauthorized sender");
-  }
-  if (!isAllowedCommand("choose_folder")) {
-    throw new Error("Command not allowed");
-  }
-
-  // Open a folder dialog — the main process holds the absolute path.
-  // No renderer arguments are accepted.
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    title: "Choose an extracted overlay folder",
-    properties: ["openDirectory", "dontAddToRecent", "createDirectory"],
-    buttonLabel: "Select Overlay Folder",
-  });
-
-  if (result.canceled || result.filePaths.length === 0) {
-    throw new Error("No folder selected");
-  }
-
-  // Validate the folder with realpathSync and statSync.isDirectory().
-  // This resolves symlinks/reparse-points to their canonical target
-  // and rejects paths that are not directories.
-  let folderPath: string;
-  try {
-    folderPath = realpathSync(result.filePaths[0]);
-  } catch {
-    throw new Error("The selected path is not valid.");
-  }
-
-  try {
-    const { statSync } = require("fs");
-    if (!statSync(folderPath).isDirectory()) {
-      throw new Error("The selected path is not a directory.");
-    }
-  } catch {
-    throw new Error("The selected path is not a directory.");
-  }
-
-  const folderLabel = folderPath.split(/[\\/]/).pop() || folderPath;
-
-  // Store the canonical path in the main-process selection store.
-  // The renderer receives only the opaque selection ID and label.
-  const selectionId = importStore.createFolderSelection(folderPath, folderLabel);
-
-  return {
-    selection_id: selectionId,
-    folder_label: folderLabel,
-  };
-});
 
 // ---------------------------------------------------------------------------
 // IPC: scanCollections — Electron main resolves the folder path
@@ -311,9 +247,6 @@ ipcMain.handle(CHOOSE_OVERLAY_FOLDER_CHANNEL, async (event) => {
 ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
   if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
     throw new Error("Unauthorized sender");
-  }
-  if (!isAllowedCommand("scan_collections")) {
-    throw new Error("Command not allowed");
   }
   if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
     throw new Error("Invalid selection_id");
@@ -370,46 +303,6 @@ ipcMain.handle(SCAN_COLLECTIONS_CHANNEL, async (event, params: unknown) => {
   };
 });
 
-// ---------------------------------------------------------------------------
-// IPC: chooseCollection — verify collection ID belongs to selection
-// ---------------------------------------------------------------------------
-
-ipcMain.handle(
-  CHOOSE_COLLECTION_CHANNEL,
-  async (event, params: unknown) => {
-    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
-      throw new Error("Unauthorized sender");
-    }
-    if (!isAllowedCommand("choose_collection")) {
-      throw new Error("Command not allowed");
-    }
-    if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
-      throw new Error("Invalid selection_id");
-    }
-    if (!isNonEmptyString(params.collection_id)) {
-      throw new Error("Invalid collection_id");
-    }
-
-    try {
-      importStore.chooseCollection(params.selection_id, params.collection_id);
-    } catch (err) {
-      throw new Error(selectionErrorMessage(err));
-    }
-
-    // Return the real selected collection label, not a hard-coded string.
-    let collectionLabel: string;
-    try {
-      collectionLabel = importStore.getCollectionLabel(params.selection_id);
-    } catch (err) {
-      throw new Error(selectionErrorMessage(err));
-    }
-
-    return {
-      selection_id: params.selection_id,
-      collection_label: collectionLabel,
-    };
-  }
-);
 
 // ---------------------------------------------------------------------------
 // IPC: convertCollection — resolve trusted path, then convert
@@ -420,9 +313,6 @@ ipcMain.handle(
   async (event, params: unknown) => {
     if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
       throw new Error("Unauthorized sender");
-    }
-    if (!isAllowedCommand("convert_collection")) {
-      throw new Error("Command not allowed");
     }
     if (!isPlainObject(params) || !isNonEmptyString(params.selection_id)) {
       throw new Error("Invalid selection_id");
@@ -887,7 +777,10 @@ ipcMain.handle(
 
 ipcMain.handle(
   LIST_EXPORT_COLLECTIONS_CHANNEL,
-  async (_event) => {
+  async (event) => {
+    if (!isValidSender(event.sender) || !isValidOrigin(event.sender.getURL())) {
+      throw new Error("Unauthorized sender");
+    }
     const obsScenesDir = resolveObsScenesDir();
     if (!obsScenesDir) {
       throw new Error("OBS scenes directory is not configured.");

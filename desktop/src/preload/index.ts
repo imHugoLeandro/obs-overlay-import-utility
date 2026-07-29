@@ -14,6 +14,7 @@
  */
 
 import { contextBridge, ipcRenderer } from "electron";
+import { IPC_CHANNELS } from "../main/contracts/channels";
 import type {
   AppInfoData,
   ConvertResult,
@@ -42,9 +43,9 @@ import type {
 // ---------------------------------------------------------------------------
 
 const electronAPI = {
-  health: (): Promise<HealthData> => ipcRenderer.invoke("desktop:health"),
+  health: (): Promise<HealthData> => ipcRenderer.invoke(IPC_CHANNELS.health),
 
-  appInfo: (): Promise<AppInfoData> => ipcRenderer.invoke("desktop:app-info"),
+  appInfo: (): Promise<AppInfoData> => ipcRenderer.invoke(IPC_CHANNELS.appInfo),
 
   /**
    * Open a native folder dialog (no renderer arguments).
@@ -53,7 +54,7 @@ const electronAPI = {
   chooseOverlayFolder: (): Promise<{
     selection_id: string;
     folder_label: string;
-  }> => ipcRenderer.invoke("desktop:choose-overlay-folder"),
+  }> => ipcRenderer.invoke(IPC_CHANNELS.chooseOverlayFolder),
 
   /**
    * Open a native file dialog with a strict .overlay filter.
@@ -63,7 +64,7 @@ const electronAPI = {
   chooseStreamlabsOverlay: (): Promise<{
     selection_id: string;
     folder_label: string;
-  }> => ipcRenderer.invoke("desktop:choose-streamlabs-overlay"),
+  }> => ipcRenderer.invoke(IPC_CHANNELS.chooseStreamlabsOverlay),
 
   /**
    * Open a native folder dialog for automatic import.
@@ -73,7 +74,7 @@ const electronAPI = {
   chooseAutomaticFolder: (): Promise<{
     selection_id: string;
     folder_label: string;
-  }> => ipcRenderer.invoke("desktop:choose-automatic-folder"),
+  }> => ipcRenderer.invoke(IPC_CHANNELS.chooseAutomaticFolder),
 
   /**
    * Scan the selected folder for OBS scene collections.
@@ -83,7 +84,7 @@ const electronAPI = {
   scanCollections: (
     selectionId: string
   ): Promise<ScanCollectionsResult> =>
-    ipcRenderer.invoke("desktop:scan-collections", { selection_id: selectionId }),
+    ipcRenderer.invoke(IPC_CHANNELS.scanCollections, { selection_id: selectionId }),
 
   /**
    * Select one detected collection by its opaque collection ID.
@@ -92,7 +93,7 @@ const electronAPI = {
     selectionId: string,
     collectionId: string
   ): Promise<{ selection_id: string; collection_label: string }> =>
-    ipcRenderer.invoke("desktop:choose-collection", {
+    ipcRenderer.invoke(IPC_CHANNELS.chooseCollection, {
       selection_id: selectionId,
       collection_id: collectionId,
     }),
@@ -105,7 +106,7 @@ const electronAPI = {
     strict: boolean,
     caseSensitive: boolean
   ): Promise<ConvertResult> =>
-    ipcRenderer.invoke("desktop:convert-collection", {
+    ipcRenderer.invoke(IPC_CHANNELS.convertCollection, {
       selection_id: selectionId,
       strict,
       case_sensitive: caseSensitive,
@@ -119,7 +120,7 @@ const electronAPI = {
   importStreamlabs: (
     selectionId: string
   ): Promise<StreamlabsImportResult> =>
-    ipcRenderer.invoke("desktop:import-streamlabs", {
+    ipcRenderer.invoke(IPC_CHANNELS.importStreamlabs, {
       selection_id: selectionId,
     }),
 
@@ -132,7 +133,7 @@ const electronAPI = {
     strict: boolean,
     caseSensitive: boolean
   ): Promise<AutomaticImportResult> =>
-    ipcRenderer.invoke("desktop:automatic-import", {
+    ipcRenderer.invoke(IPC_CHANNELS.automaticImport, {
       selection_id: selectionId,
       strict,
       case_sensitive: caseSensitive,
@@ -145,7 +146,7 @@ const electronAPI = {
   deviceRequirements: (
     installationId: string
   ): Promise<{ requirements: DeviceRequirement[]; count: number }> =>
-    ipcRenderer.invoke("desktop:device-requirements", {
+    ipcRenderer.invoke(IPC_CHANNELS.deviceRequirements, {
       installation_id: installationId,
     }),
 
@@ -156,7 +157,7 @@ const electronAPI = {
   deviceCandidates: (
     installationId: string
   ): Promise<{ candidates: DeviceCandidate[]; count: number }> =>
-    ipcRenderer.invoke("desktop:device-candidates", {
+    ipcRenderer.invoke(IPC_CHANNELS.deviceCandidates, {
       installation_id: installationId,
     }),
 
@@ -169,7 +170,7 @@ const electronAPI = {
     installationId: string,
     choices: Record<string, unknown>
   ): Promise<DeviceApplyResult> =>
-    ipcRenderer.invoke("desktop:apply-device-choices", {
+    ipcRenderer.invoke(IPC_CHANNELS.applyDeviceChoices, {
       installation_id: installationId,
       choices,
     }),
@@ -178,7 +179,7 @@ const electronAPI = {
    * Check whether OBS appears to be running.
    */
   obsRunning: (): Promise<ObsRunningResult> =>
-    ipcRenderer.invoke("desktop:obs-running"),
+    ipcRenderer.invoke(IPC_CHANNELS.obsRunning),
 
   /**
    * Activate a collection in OBS via WebSocket (optional, explicit action).
@@ -190,7 +191,7 @@ const electronAPI = {
     installationId: string,
     password?: string
   ): Promise<ActivateResult> =>
-    ipcRenderer.invoke("desktop:activate-collection", {
+    ipcRenderer.invoke(IPC_CHANNELS.activateCollection, {
       installation_id: installationId,
       password,
     }),
@@ -203,14 +204,14 @@ const electronAPI = {
   listExportCollections: (): Promise<{
     collections: ExportCollectionInfo[];
     count: number;
-  }> => ipcRenderer.invoke("desktop:list-export-collections"),
+  }> => ipcRenderer.invoke(IPC_CHANNELS.listExportCollections),
 
   /**
    * Open a native folder dialog for the export destination.
    * Returns an opaque destination_id and a safe label — never a raw path.
    */
   chooseExportDestination: (): Promise<ExportDestinationInfo> =>
-    ipcRenderer.invoke("desktop:choose-export-destination"),
+    ipcRenderer.invoke(IPC_CHANNELS.chooseExportDestination),
 
   /**
    * Build a frozen, backend-held export plan.
@@ -222,7 +223,7 @@ const electronAPI = {
     destinationId: string,
     compressed: boolean
   ): Promise<ExportInventory> =>
-    ipcRenderer.invoke("desktop:build-export-plan", {
+    ipcRenderer.invoke(IPC_CHANNELS.buildExportPlan, {
       collection_id: collectionId,
       destination_id: destinationId,
       compressed,
@@ -232,7 +233,7 @@ const electronAPI = {
    * Return a sanitized inventory view for an existing plan.
    */
   exportInventory: (planId: string): Promise<ExportInventory> =>
-    ipcRenderer.invoke("desktop:export-inventory", {
+    ipcRenderer.invoke(IPC_CHANNELS.exportInventory, {
       plan_id: planId,
     }),
 
@@ -240,7 +241,7 @@ const electronAPI = {
    * Execute a frozen export plan by opaque plan_id.
    */
   confirmExport: (planId: string): Promise<ExportResult> =>
-    ipcRenderer.invoke("desktop:confirm-export", {
+    ipcRenderer.invoke(IPC_CHANNELS.confirmExport, {
       plan_id: planId,
     }),
 
@@ -252,7 +253,7 @@ const electronAPI = {
     collections: ResizeCollectionInfo[];
     count: number;
   }> =>
-    ipcRenderer.invoke("desktop:scan-resize-collections", {
+    ipcRenderer.invoke(IPC_CHANNELS.scanResizeCollections, {
       selection_id: selectionId,
     }),
 
@@ -263,7 +264,7 @@ const electronAPI = {
     selectionId: string,
     collectionId: string
   ): Promise<{ collection_id: string; label: string }> =>
-    ipcRenderer.invoke("desktop:choose-resize-collection", {
+    ipcRenderer.invoke(IPC_CHANNELS.chooseResizeCollection, {
       selection_id: selectionId,
       collection_id: collectionId,
     }),
@@ -274,7 +275,7 @@ const electronAPI = {
   resizeSourceChoices: (
     selectionId: string
   ): Promise<{ choices: ResizeSourceChoice[]; count: number }> =>
-    ipcRenderer.invoke("desktop:resize-source-choices", {
+    ipcRenderer.invoke(IPC_CHANNELS.resizeSourceChoices, {
       selection_id: selectionId,
     }),
 
@@ -284,7 +285,7 @@ const electronAPI = {
   resizeSceneChoices: (
     selectionId: string
   ): Promise<{ scenes: string[]; count: number }> =>
-    ipcRenderer.invoke("desktop:resize-scene-choices", {
+    ipcRenderer.invoke(IPC_CHANNELS.resizeSceneChoices, {
       selection_id: selectionId,
     }),
 
@@ -300,7 +301,7 @@ const electronAPI = {
     selectedName?: string,
     selectedUuid?: string
   ): Promise<{ valid: boolean; error: string | null; source_width: number; source_height: number; changed_items: number }> =>
-    ipcRenderer.invoke("desktop:preview-resize", {
+    ipcRenderer.invoke(IPC_CHANNELS.previewResize, {
       selection_id: selectionId,
       scope,
       mode,
@@ -322,7 +323,7 @@ const electronAPI = {
     selectedName?: string,
     selectedUuid?: string
   ): Promise<ResizeResult> =>
-    ipcRenderer.invoke("desktop:apply-resize", {
+    ipcRenderer.invoke(IPC_CHANNELS.applyResize, {
       selection_id: selectionId,
       scope,
       mode,
@@ -340,7 +341,7 @@ const electronAPI = {
     selectionId: string,
     undoId: string
   ): Promise<{ success: boolean; error: string | null }> =>
-    ipcRenderer.invoke("desktop:undo-resize", {
+    ipcRenderer.invoke(IPC_CHANNELS.undoResize, {
       selection_id: selectionId,
       undo_id: undoId,
     }),
