@@ -7,7 +7,7 @@ separately named legacy fallback build; it is not part of this package.
 
 ## Overview
 
-This directory contains a parallel Electron-based desktop shell that
+This directory contains the primary Electron desktop application. It
 communicates with the existing Python engine via a stdio JSON-lines backend.
 
 ## Process Boundaries
@@ -151,24 +151,18 @@ npm run lint
 desktop/
 ├── package.json           # Dependencies and scripts
 ├── tsconfig.json          # TypeScript config (renderer + tests)
-├── tsconfig.electron.json # TypeScript config (Electron main + preload)
-├── vite.config.ts         # Vite build/dev server config
+├── tsconfig.electron.json # Electron main/shared TypeScript config
+├── vite.config.ts         # Renderer Vite config
+├── vite.preload.config.ts # Standalone sandboxed preload bundle
 ├── eslint.config.js       # ESLint configuration
 ├── .prettierrc.json       # Prettier configuration
 ├── README.md              # This file
 ├── src/
-│   ├── main/
-│   │   └── index.ts       # Electron main process
-│   ├── preload/
-│   │   └── index.ts       # Preload script (contextBridge)
-│   ├── renderer/
-│   │   ├── index.html     # HTML entry point
-│   │   ├── main.tsx       # React entry point
-│   │   ├── App.tsx        # Foundation shell component
-│   │   ├── index.css      # Base styles
-│   │   └── App.css        # Component styles
-│   └── types/
-│       └── api.ts         # Shared type definitions
+│   ├── main/              # Electron main process and IPC modules
+│   ├── preload/           # Sandboxed contextBridge entry point
+│   ├── renderer/          # React application
+│   ├── shared/            # Cross-process serializable IPC contracts
+│   └── types/             # Shared renderer/preload type definitions
 ├── tests/
 │   ├── setup.ts           # Vitest setup (mock electronAPI)
 │   ├── preload.test.ts    # Preload IPC transport tests

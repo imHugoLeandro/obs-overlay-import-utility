@@ -1,8 +1,7 @@
 /**
  * Import page — "Fix Scene Collection Paths" workflow.
  *
- * This is the functional implementation of Stage 2B: the Fix Scene
- * Collection Paths import workflow.
+ * This is the functional Electron implementation of Fix Scene Collection Paths.
  *
  * Workflow:
  * 1. User chooses an extracted overlay folder (main-process folder dialog).

@@ -142,29 +142,6 @@
   line-height: 1.5;
 }
 
-/* Placeholder page */
-.placeholder-page {
-  flex: 1;
-  overflow-y: auto;
-  padding: 2rem;
-  max-width: 960px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-.placeholder-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--color-text);
-  margin-bottom: 0.75rem;
-}
-
-.placeholder-description {
-  color: var(--color-text-muted);
-  font-size: 0.95rem;
-  margin-bottom: 1.5rem;
-}
-
 /* Settings section */
 .settings-section {
   margin: 1.5rem 0;
@@ -288,8 +265,7 @@
     font-size: 0.8rem;
   }
 
-  .page-content,
-  .placeholder-page {
+  .page-content {
     padding: 1rem;
   }
 }

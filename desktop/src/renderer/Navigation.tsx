@@ -16,8 +16,6 @@ export type PageId = "import" | "export" | "resizer" | "settings";
 export interface NavItem {
   id: PageId;
   label: string;
-  /** Short description shown on the placeholder page. */
-  description: string;
 }
 
 /** Navigation items matching the Python SECTIONS tuple. */
@@ -25,22 +23,18 @@ export const NAV_ITEMS: NavItem[] = [
   {
     id: "import",
     label: "Import",
-    description: "Import workflows are coming next.",
   },
   {
     id: "export",
     label: "Export",
-    description: "Export workflows are coming next.",
   },
   {
     id: "resizer",
     label: "Auto Resizer",
-    description: "Auto Resizer workflows are coming next.",
   },
   {
     id: "settings",
     label: "Settings",
-    description: "Application settings.",
   },
 ];
 

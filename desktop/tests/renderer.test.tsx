@@ -146,19 +146,19 @@ describe("App component", () => {
     expect(errorText).not.toContain("Connection refused");
   });
 
-  it("shows Stage 2 footer mentioning Import and Export are implemented", async () => {
+  it("describes the available workflows without migration-stage language", async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Stage 2/i)).toBeInTheDocument();
+      expect(screen.getByText(/Available workflows/i)).toBeInTheDocument();
     });
 
-    // The footer should mention that Import and Export workflows are implemented.
-    const footer = screen.getByText(/Stage 2/i).closest("footer");
+    const footer = screen.getByText(/Available workflows/i).closest("footer");
     expect(footer).not.toBeNull();
     expect(footer!.textContent).toContain("Import");
     expect(footer!.textContent).toContain("Export");
-    expect(footer!.textContent).toContain("implemented");
+    expect(footer!.textContent).toContain("Auto Resizer");
+    expect(footer!.textContent).not.toMatch(/stage|placeholder/i);
   });
 
   it("supports keyboard navigation between pages", async () => {

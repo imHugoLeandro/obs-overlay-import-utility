@@ -3,7 +3,7 @@
  *
  * Layout:
  * - Persistent navigation sidebar (Import, Export, Auto Resizer, Settings)
- * - Main content area with the Import page and placeholder pages
+ * - Main content area with functional workflows and Settings
  * - Backend status area (health + app version)
  *
  * Theme state lives in React only.  No Python settings integration yet.
@@ -13,12 +13,7 @@ import React from "react";
 import {
   ThemeProvider,
 } from "./theme";
-import {
-  Navigation,
-  type PageId,
-  NAV_ITEMS,
-} from "./Navigation";
-import { PlaceholderPage } from "./PlaceholderPages";
+import { Navigation, type PageId } from "./Navigation";
 import { ThemeSelector } from "./ThemeSelector";
 import { BackendStatus } from "./BackendStatus";
 import { ImportPage } from "./ImportPage";
@@ -36,56 +31,28 @@ function PageContent({
 }: {
   activePage: PageId;
 }): React.ReactElement {
-  const item = NAV_ITEMS.find((n) => n.id === activePage);
-
-  if (activePage === "import") {
-    return <ImportPage />;
+  switch (activePage) {
+    case "import":
+      return <ImportPage />;
+    case "export":
+      return <ExportPage />;
+    case "resizer":
+      return <AutoResizerPage />;
+    case "settings":
+      return (
+        <section className="page-content" aria-labelledby="settings-title">
+          <h1 id="settings-title" className="page-title">
+            Settings
+          </h1>
+          <p className="page-description">
+            Application settings for the OBS Overlay Import Utility.
+          </p>
+          <div className="settings-section">
+            <ThemeSelector />
+          </div>
+        </section>
+      );
   }
-
-  if (activePage === "export") {
-    return <ExportPage />;
-  }
-
-  if (activePage === "resizer") {
-    return <AutoResizerPage />;
-  }
-
-  if (activePage === "settings") {
-    return (
-      <section
-        className="page-content"
-        aria-labelledby="settings-title"
-      >
-        <h1 id="settings-title" className="page-title">
-          Settings
-        </h1>
-        <p className="page-description">
-          Application settings for the OBS Overlay Import Utility.
-        </p>
-        <div className="settings-section">
-          <ThemeSelector />
-        </div>
-      </section>
-    );
-  }
-
-  if (!item) {
-    return (
-      <PlaceholderPage
-        pageId={activePage}
-        title="Not Found"
-        description="This page does not exist."
-      />
-    );
-  }
-
-  return (
-    <PlaceholderPage
-      pageId={activePage}
-      title={item.label}
-      description={item.description}
-    />
-  );
 }
 
 /**
@@ -107,9 +74,8 @@ function AppContent(): React.ReactElement {
       </main>
       <footer className="app-footer">
         <p>
-          Stage 2 — Import (Fix Scene Collection Paths, Streamlabs, Automatic,
-          Device Setup, OBS Activation), Export, and Auto Resizer workflows are
-          implemented. Auto Resizer supports offline and live OBS resize.
+          Available workflows: Import, Export, and Auto Resizer. Auto Resizer
+          supports offline and live OBS resize.
         </p>
       </footer>
     </div>
