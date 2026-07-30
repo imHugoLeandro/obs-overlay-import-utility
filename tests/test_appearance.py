@@ -67,7 +67,7 @@ class AppearanceTests(unittest.TestCase):
         text = manifest.read_text(encoding="utf-8")
         self.assertIn("PerMonitorV2,PerMonitor,System", text)
         self.assertIn("true/pm", text)
-        build_script = (ROOT / "scripts" / "build_portable.ps1").read_text(
+        build_script = (ROOT / "scripts" / "build_portable_tk.ps1").read_text(
             encoding="utf-8"
         )
         self.assertIn(

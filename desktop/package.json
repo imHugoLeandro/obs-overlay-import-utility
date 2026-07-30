@@ -1,0 +1,83 @@
+{
+  "name": "obs-overlay-import-utility-desktop",
+  "version": "0.1.0",
+  "description": "Electron + React desktop shell for OBS Overlay Import Utility",
+  "main": "dist-electron/main/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:electron\" \"npm run dev:renderer\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && npm run build:main && npm run build:preload && electron . --dev",
+    "build": "npm run clean && npm run build:renderer && npm run build:main && npm run build:preload",
+    "clean": "node scripts/clean-build.cjs",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.electron.json --outDir dist-electron",
+    "build:preload": "vite build --config vite.preload.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:ui": "vitest --ui",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css,md}\"",
+    "verify:compiled": "vitest run --config vitest.verify.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "package:backend": "node scripts/package-backend.cjs",
+    "package": "electron-builder --win --publish=never",
+    "package:all": "npm run build && npm run verify:compiled && npm run package:backend && npm run package"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/node": "22.10.0",
+    "@types/react": "18.3.14",
+    "@types/react-dom": "18.3.1",
+    "@typescript-eslint/eslint-plugin": "8.18.0",
+    "@typescript-eslint/parser": "8.18.0",
+    "@vitejs/plugin-react": "5.1.0",
+    "concurrently": "9.1.2",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "eslint": "9.17.0",
+    "eslint-config-prettier": "9.1.0",
+    "eslint-plugin-react": "7.37.2",
+    "jsdom": "29.1.1",
+    "prettier": "3.4.2",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "typescript": "5.7.3",
+    "vite": "6.4.3",
+    "vitest": "3.2.7",
+    "wait-on": "8.0.1"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "build": {
+    "appId": "com.obs-overlay-import-utility.desktop",
+    "productName": "OBS Overlay Import Utility",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/backend/obs-overlay-backend.exe",
+        "to": "obs-overlay-backend.exe",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "${productName} Electron Portable.${ext}"
+    }
+  }
+}

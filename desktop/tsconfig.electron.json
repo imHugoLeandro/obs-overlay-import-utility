@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-electron",
+    "rootDir": "src",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": [
+    "src/main/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-electron", "tests", "vite.config.ts", "eslint.config.js"]
+}

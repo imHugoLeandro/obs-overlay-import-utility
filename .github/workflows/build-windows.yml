@@ -1,7 +1,8 @@
-name: Build Windows portable app
+name: Build Windows portable app (Electron)
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - "v*"
@@ -17,21 +18,110 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: python -m pip install -e ".[build]"
-      - run: python -m unittest discover -s tests -v
-      - shell: pwsh
-        run: >-
-          python -m PyInstaller
-          --noconfirm --clean --onefile --windowed
-          --name "OBS Overlay Import Utility"
-          --paths src
-          --collect-data obs_overlay_import_utility
-          --distpath dist
-          --workpath build
-          --specpath .
-          tools/launcher.py
-      - uses: actions/upload-artifact@v7
+      - uses: actions/setup-node@v4
         with:
-          name: OBS-Overlay-Import-Utility-Windows
-          path: dist/OBS Overlay Import Utility.exe
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Create dedicated Electron build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv-build-electron
+          .\.venv-build-electron\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv-build-electron\Scripts\python.exe -m pip install -e ".[build]"
+      - name: Run Python tests
+        shell: pwsh
+        run: .\.venv-build-electron\Scripts\python.exe -m unittest discover -s tests -v
+      - name: Compile Python sources
+        shell: pwsh
+        run: .\.venv-build-electron\Scripts\python.exe -m compileall -q src tools tests
+      - name: Install Electron dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: TypeScript type checking
+        working-directory: desktop
+        run: npm run typecheck
+      - name: Run Electron tests
+        working-directory: desktop
+        run: npm test
+      - name: Run ESLint
+        working-directory: desktop
+        run: npm run lint
+      - name: Build Electron renderer and main process
+        working-directory: desktop
+        run: npm run build
+      - name: Verify exact compiled Electron output to be packaged
+        working-directory: desktop
+        run: npm run verify:compiled
+      - name: Build bundled Python backend once
+        working-directory: desktop
+        shell: pwsh
+        env:
+          OBS_OVERLAY_BUILD_PYTHON: ${{ github.workspace }}\.venv-build-electron\Scripts\python.exe
+        run: npm run package:backend
+      - name: Package verified Electron portable executable
+        working-directory: desktop
+        run: npm run package
+      - name: Smoke test packaged Electron application
+        shell: pwsh
+        env:
+          # A deliberate invalid value proves the portable app does not use a
+          # system Python interpreter after packaging.
+          OBS_OVERLAY_PYTHON: Z:\not-a-system-python.exe
+        run: |
+          $exe = Get-ChildItem "desktop/release" -Recurse -Filter "*Electron Portable.exe" |
+            Select-Object -First 1
+          if ($null -eq $exe) {
+            throw "Electron portable EXE was not created."
+          }
+          $result = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.json"
+          $stdout = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "electron-packaged-smoke.stderr.log"
+          Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue
+          $env:OBS_OVERLAY_SMOKE_RESULT = $result
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            throw "Packaged Electron smoke test timed out."
+          }
+          if ($process.ExitCode -ne 0) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
+            throw "Packaged Electron smoke test exited with code $($process.ExitCode)."
+          }
+          if (-not (Test-Path $result)) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
+            throw "Packaged Electron smoke test did not write a result."
+          }
+          $smoke = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+          if (-not $smoke.ok) {
+            Get-Content -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
+            throw "Packaged Electron smoke test failed: $($smoke.error)"
+          }
+          if ($smoke.result.health.status -ne "ok") {
+            throw "Renderer health IPC did not report an ok backend."
+          }
+          if (-not $smoke.result.rendererNodeUnavailable) {
+            throw "Renderer Node access was available in packaged mode."
+          }
+          if ($smoke.result.appInfo.name -ne "OBS Overlay Import Utility") {
+            throw "Packaged renderer did not report the Electron application identity."
+          }
+      - name: Upload Electron portable artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: OBS-Overlay-Import-Utility-Electron-Windows
+          path: desktop/release/*Electron Portable.exe
           if-no-files-found: error
+          retention-days: 14
+      - name: Upload packaged-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: OBS-Overlay-Import-Utility-Electron-smoke-diagnostics
+          path: ${{ runner.temp }}/electron-packaged-smoke.*
+          if-no-files-found: warn
+          retention-days: 7

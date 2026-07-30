@@ -40,6 +40,8 @@ tests/<relevant tests>.py
 
 Do not switch branches, pull, commit, push, tag, publish, or rewrite Git history unless the user explicitly asks. Preserve unrelated user changes and untracked files.
 
+The repository-local `/workspace/` directory is user-owned agent scratch space. It is intentionally ignored by Git and outside the product boundary: do not inspect, modify, delete, stage, or include it in audits, builds, tests, or commits unless Hugo explicitly asks.
+
 For planning, research, or review-only requests, do not edit files or build artifacts.
 
 ## Product Goals
@@ -99,13 +101,60 @@ src/obs_overlay_import_utility/
   assets/           Packaged branding assets (SVGs, PNGs, logo)
 
 tests/              Unit and failure-oriented regression tests
-scripts/build_portable.ps1  Official Windows build entry point
+scripts/build_portable_electron.ps1  Primary Electron portable Windows build
+scripts/build_portable_tk.ps1  Legacy Tk fallback Windows build
 scripts/app.manifest       Per-Monitor V2 manifest
-tools/launcher.py          Packaged entry point
+tools/desktop_backend.py   Electron backend PyInstaller entry point
+tools/launcher.py          Legacy Tk fallback PyInstaller entry point
 tools/render_icons.py      Design-time icon PNG generator (numpy + Pillow + svg.path, scanline nonzero-fill)
 ```
 
 Update this map when responsibilities change.
+
+## Parallel Electron Migration
+
+The Electron + React + TypeScript desktop shell in `desktop/` is the primary
+portable Windows delivery target. The existing Tk-based `ui.py` remains in
+source as a supported fallback and must continue to pass all tests, but its
+PyInstaller executable is not the Electron portable app.
+
+### Scope
+
+- The Electron shell communicates with the Python engine via a stdio
+  JSON-lines backend (`src/obs_overlay_import_utility/desktop_backend.py`).
+- The backend exposes a fixed, validated workflow command set. There is no
+  shell, file-read, or generic function-call endpoint.
+- The renderer never imports Electron, Node, filesystem, child_process, or
+  IPC primitives directly.
+- The main process validates every IPC sender, channel, and payload.
+- IPC uses fixed channels (`desktop:health`, `desktop:app-info`) via
+  `ipcMain.handle`/`ipcRenderer.invoke`.  No dynamic channels.
+- In development, the Python backend starts through the
+  `OBS_OVERLAY_PYTHON` environment variable. In packaged mode, Electron
+  starts only the bundled backend executable from `process.resourcesPath`.
+  The portable app never uses `process.execPath` as Python.
+
+### Development
+
+```bash
+cd desktop
+npm ci
+npm run dev          # renderer + Electron with hot reload
+npm run build        # build renderer + Electron main/preload
+npm run typecheck    # TypeScript type checking
+npm test             # Vitest unit tests
+npm run lint         # ESLint
+```
+
+### Portable Electron packaging
+
+- `npm run package` builds the React renderer and Electron main/preload,
+  bundles the JSON-lines backend with PyInstaller, places it in
+  electron-builder `extraResources`, and produces the Windows portable EXE.
+- The Windows artifact workflow must build and smoke-test that Electron EXE,
+  including renderer health IPC and unavailable renderer Node globals.
+- `scripts/build_portable_tk.ps1` produces the separately named legacy Tk
+  fallback. It must never be presented as the Electron portable artifact.
 
 ## Non-Negotiable Safety Invariants
 
@@ -299,13 +348,13 @@ Do not cite an old test count as proof. Run the current suite and report its act
 After substantive user-facing code or UI changes, build the portable executable so the user can test it—unless the request was explicitly planning/review only or the user said not to build.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
 ```
 
 The expected output is:
 
 ```text
-dist\OBS Overlay Import Utility.exe
+desktop\release\OBS Overlay Import Utility Electron Portable.exe
 ```
 
 Before building, pass source tests and close any running copy of the executable. Do not kill unrelated or pre-existing user processes.

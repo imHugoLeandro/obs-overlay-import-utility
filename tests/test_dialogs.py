@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tkinter as tk
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,6 +13,21 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+# Tk-dependent tests require tkinter, which is not available on all CI
+# platforms (e.g. Linux without python3-tk).  Skip the entire module when
+# tkinter is missing rather than failing the whole test run.  The dialogs
+# module itself imports tkinter at module level, so we must guard the
+# import here — before importing obs_overlay_import_utility.dialogs.
+try:
+    import tkinter as tk
+    _TK_AVAILABLE = True
+except ImportError:
+    tk = None  # type: ignore[assignment]
+    _TK_AVAILABLE = False
+
+if not _TK_AVAILABLE:
+    raise unittest.SkipTest("tkinter is not available on this platform")
 
 from obs_overlay_import_utility.appearance import LIGHT_PALETTE, DARK_PALETTE  # noqa: E402
 from obs_overlay_import_utility.dialogs import (  # noqa: E402
@@ -296,6 +310,7 @@ class UiScaleMetricsTests(unittest.TestCase):
         m = ui_scale_metrics(1.0)
         self.assertEqual(m.trough_width + 2 * m.highlight_thickness, m.widget_height)
 
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter is not available on this platform")
     def test_slider_range_and_snapping_unchanged(self) -> None:
         from obs_overlay_import_utility.ui import MIN_UI_SCALE, MAX_UI_SCALE
         self.assertEqual(MIN_UI_SCALE, 75)
@@ -377,6 +392,7 @@ class UiScaleColorsTests(unittest.TestCase):
 class ScaleGeometryTests(unittest.TestCase):
     """Platform-aware slider geometry tests using a clean Tk root."""
 
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter is not available on this platform")
     @classmethod
     def setUpClass(cls) -> None:
         cls._root = tk.Tk()
@@ -430,6 +446,7 @@ class ScaleGeometryTests(unittest.TestCase):
 class ScaleAppWidgetTests(unittest.TestCase):
     """Deterministic widget colour tests -- no user settings file read."""
 
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter is not available on this platform")
     def _assert_dark_slider(self, app: "ImportUtilityApp", palette: object) -> None:
         colors = dlgs.ui_scale_colors(palette)
         self.assertEqual(app.current_palette.mode, "dark")
@@ -472,6 +489,7 @@ class ScaleAppWidgetTests(unittest.TestCase):
 class UiScaleStateTransitionTests(unittest.TestCase):
     """Verify slider visual state logic without a full Tk event loop."""
 
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter is not available on this platform")
     @classmethod
     def setUpClass(cls) -> None:
         cls._context = deterministic_app("dark")

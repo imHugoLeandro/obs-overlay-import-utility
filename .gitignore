@@ -12,3 +12,21 @@ dist/
 *.spec
 .DS_Store
 Thumbs.db
+
+# Electron desktop shell
+desktop/node_modules/
+desktop/src/renderer/node_modules/
+desktop/.vite/
+desktop/release/
+desktop/dist/
+desktop/dist-electron/
+desktop/*.exe
+desktop/*.dll
+desktop/.env*
+
+# Repository-local agent scratch space; user-owned and outside product scope.
+/workspace/
+/artifacts/
+
+# uv lock file — intentionally untracked
+uv.lock

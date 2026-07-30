@@ -1,0 +1,64 @@
+/* Base styles for the Electron desktop shell foundation. */
+/* Follows the Social Space visual language from the Python Tk UI. */
+
+:root {
+  /* Light theme defaults — overridden by data-theme attribute. */
+  --color-bg: #F3F5F7;
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #E9EDF1;
+  --color-text: #171A1F;
+  --color-text-muted: #626A75;
+  --color-border: #D4DAE1;
+  --color-accent: #E1262F;
+  --color-accent-hover: #C91E27;
+  --color-accent-pressed: #A91820;
+  --color-error: #E1262F;
+  --color-loading: #626A75;
+  --color-sidebar: #15181D;
+  --color-sidebar-hover: #252A32;
+  --color-sidebar-selected: #343A45;
+  --color-sidebar-fg: #F7F8FA;
+  --color-sidebar-muted: #A8B0BC;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Dark theme overrides. */
+[data-theme="dark"] {
+  --color-bg: #101318;
+  --color-surface: #191D23;
+  --color-surface-alt: #222730;
+  --color-text: #F4F6F8;
+  --color-text-muted: #AAB2BE;
+  --color-border: #303640;
+  --color-accent: #E1262F;
+  --color-accent-hover: #D9363E;
+  --color-accent-pressed: #B71F28;
+  --color-error: #F0444C;
+  --color-loading: #AAB2BE;
+  --color-sidebar: #0A0C10;
+  --color-sidebar-hover: #1C2128;
+  --color-sidebar-selected: #2B313B;
+  --color-sidebar-fg: #F7F8FA;
+  --color-sidebar-muted: #A8B0BC;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
