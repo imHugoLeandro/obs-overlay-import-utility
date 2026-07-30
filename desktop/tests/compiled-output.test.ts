@@ -308,8 +308,10 @@ describe("Compiled Electron output verification", () => {
       expect(workflow).not.toContain("ui.py");
       expect(tkScript).toContain("legacy Tk fallback");
       expect(tkScript).toContain("tools\\launcher.py");
+      expect(compatibilityScript).toContain("[switch] $LegacyTk");
+      expect(compatibilityScript).toContain("build_portable_electron.ps1");
       expect(compatibilityScript).toContain("build_portable_tk.ps1");
-      expect(compatibilityScript).toContain("legacy Tk fallback");
+      expect(compatibilityScript).not.toContain("PyInstaller");
       expect(desktopReadme).toContain("build_portable_electron.ps1");
       expect(desktopReadme).not.toMatch(/deferred to Stage|Tk remains the shipping\/default/i);
     });

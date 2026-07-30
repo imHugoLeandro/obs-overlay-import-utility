@@ -233,4 +233,5 @@ desktop\release\OBS Overlay Import Utility Electron Portable.exe
 `npm run package` is the lower-level command used by that script and CI.
 The legacy Tk fallback is built only with
 `scripts\build_portable_tk.ps1`; the compatibility
-`scripts\build_portable.ps1` redirects to that fallback script.
+`scripts\build_portable.ps1` is a compatibility wrapper that builds Electron
+by default; pass `-LegacyTk` only to select the Tk fallback.

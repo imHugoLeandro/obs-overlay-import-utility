@@ -87,7 +87,7 @@ src/obs_overlay_import_utility/assets/       Logo SVG and PNG
 tests/test_core.py                           Conversion/path regression tests
 tests/test_settings.py                       Settings persistence tests
 tests/test_appearance.py                     DPI, contrast, manifest, and portability tests
-scripts/build_portable.ps1                   Local Windows build entry point
+scripts/build_portable.ps1                   Compatibility entry point (Electron by default; -LegacyTk for Tk)
 scripts/app.manifest                         Per-Monitor V2 Windows manifest
 .github/workflows/ci.yml                     Windows/Linux test matrix
 .github/workflows/build-windows.yml          Tagged/manual portable build
@@ -121,6 +121,7 @@ Build the portable executable:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1
+# Optional legacy fallback: add -LegacyTk
 ```
 
 Close the running portable application before rebuilding it. The build script detects a locked executable and reports a clear error.

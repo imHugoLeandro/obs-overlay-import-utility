@@ -1,25 +1,26 @@
 <#
 .SYNOPSIS
-    Builds the legacy Tk fallback Windows executable.
+    Builds the primary Electron portable application.
 
 .DESCRIPTION
-    This is the legacy Tk fallback build script. It has been renamed to
-    build_portable_tk.ps1 for clarity. This file remains as a backward-
-    compatible redirect.
-
-    For the primary Electron + React portable app, use:
-        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable_electron.ps1
-
-    Output: dist\OBS Overlay Import Utility.exe (Tk fallback)
+    Compatibility entry point for existing invocations. By default it builds
+    the primary Electron + React portable application. Pass -LegacyTk only to
+    build the separately maintained legacy Tk fallback.
 #>
 
+[CmdletBinding()]
+param(
+    [switch] $LegacyTk
+)
+
 $ErrorActionPreference = "Stop"
-
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$TkScript = Join-Path $ScriptDir "build_portable_tk.ps1"
 
-Write-Host "This is the legacy Tk fallback build script."
-Write-Host "Redirecting to build_portable_tk.ps1..."
-Write-Host ""
-
-& $TkScript
+if ($LegacyTk) {
+    Write-Host "Building the legacy Tk fallback."
+    & (Join-Path $ScriptDir "build_portable_tk.ps1")
+}
+else {
+    Write-Host "Building the primary Electron portable application."
+    & (Join-Path $ScriptDir "build_portable_electron.ps1")
+}
