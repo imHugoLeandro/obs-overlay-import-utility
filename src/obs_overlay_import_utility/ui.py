@@ -22,7 +22,7 @@ from .appearance import (
     palette_for,
     window_dpi,
 )
-from .constants import APP_TITLE, __version__
+from .constants import APP_TITLE, TOOL_LOG_HEIGHT, TOOL_LOG_HEADING, __version__
 from .core import convert_collection, find_scene_collections, load_json
 from .device_setup import (
     DeviceCandidate,
@@ -87,7 +87,7 @@ THEME_NAMES = {value: label for label, value in THEME_LABELS.items()}
 
 _ICON_SIZES = (32, 40, 48, 64)
 
-COLLAPSED_SIDEBAR_BASE_WIDTH = 100
+COLLAPSED_SIDEBAR_BASE_WIDTH = 127  # wide enough for the collapsed logo at 130% of icon size (91px) + 2×18 padding
 COLLAPSED_LOGO_BASE_WIDTH = 60
 COLLAPSED_ICON_BASE_SIZE = 29
 COLLAPSED_ARROW_BASE_SIZE = 13
@@ -259,6 +259,7 @@ class ImportUtilityApp:
         self.open_output_var = tk.BooleanVar(
             value=self.settings.open_output_after_conversion
         )
+        self.tool_logs_var = tk.BooleanVar(value=self.settings.show_tool_logs)
         self.settings_status_var = tk.StringVar(
             value=self.settings_store.last_error
             or "Settings are saved for this Windows user."
@@ -445,7 +446,7 @@ class ImportUtilityApp:
         self.navigation_frame = navigation
         navigation.grid(row=0, column=0, sticky="nsew")
         navigation.columnconfigure(0, weight=1)
-        navigation.rowconfigure(len(self.SECTIONS) + 3, weight=1)
+        navigation.rowconfigure(len(self.SECTIONS) + 1, weight=1)
 
         self.sidebar_handle = tk.Frame(
             self.root,
@@ -462,7 +463,7 @@ class ImportUtilityApp:
         try:
             self.logo_source = tk.PhotoImage(file=logo_path)
             self.logo_label = ttk.Label(navigation, style="Sidebar.TLabel")
-            self.logo_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
+            self.logo_label.grid(row=0, column=0, sticky="", pady=(0, 18))
         except tk.TclError:
             self.logo_label = None
         self.sidebar_caption_label = ttk.Label(
@@ -470,7 +471,7 @@ class ImportUtilityApp:
             text="OVERLAY TOOLS",
             style="SidebarCaption.TLabel",
         )
-        self.sidebar_caption_label.grid(row=1, column=0, sticky="w", pady=(0, 18))
+        self.sidebar_caption_label.grid(row=1, column=0, sticky="w", pady=(0, 8))
 
         self._nav_icon_kinds = {
             "import": "folder-arrow-left",
@@ -479,7 +480,9 @@ class ImportUtilityApp:
             "settings": "cog",
         }
         self._nav_icons = _NavIcons(bundled_asset("."), base_size=COLLAPSED_ICON_BASE_SIZE)
-        for row, (section, label) in enumerate(self.SECTIONS, start=2):
+        for row0, (section, label) in enumerate(self.SECTIONS, start=2):
+            # Settings is pinned to the row directly above the sidebar bottom bar.
+            row = len(self.SECTIONS) + 2 if section == "settings" else row0
             button = tk.Label(
                 navigation,
                 text=label,
@@ -491,6 +494,10 @@ class ImportUtilityApp:
                 font=self.fonts["body_bold"],
             )
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+            # Selected-item accent: 3px red bar overlaying the left edge
+            accent = tk.Frame(navigation, width=3, height=1, bg=self.current_palette.sidebar)
+            accent.grid(row=row, column=0, sticky="wns", pady=(0, 6))
+            button._nav_accent = accent  # type: ignore[attr-defined]
             button.bind(
                 "<Button-1>", lambda _e, s=section: self._select_section(s)
             )
@@ -507,12 +514,12 @@ class ImportUtilityApp:
         self._last_expanded_sidebar_width = 0
 
         sidebar_bottom = ttk.Frame(navigation, style="Sidebar.TFrame")
-        sidebar_bottom.grid(row=len(self.SECTIONS) + 4, column=0, sticky="ew")
+        sidebar_bottom.grid(row=len(self.SECTIONS) + 3, column=0, sticky="ew")
         sidebar_bottom.columnconfigure(0, weight=1)
 
         self.sidebar_version_label = ttk.Label(
             sidebar_bottom,
-            text=f"Portable • v{__version__}",
+            text=f"v{__version__}",
             style="SidebarMuted.TLabel",
         )
         self.sidebar_version_label.grid(row=0, column=0, sticky="w")
@@ -531,10 +538,28 @@ class ImportUtilityApp:
             "<Button-1>", lambda e: self._toggle_sidebar()
         )
 
-        self.page_container = ttk.Frame(self.root, style="Page.TFrame")
-        self.page_container.grid(row=0, column=2, sticky="nsew")
+        # Content area: a canvas + scrollbar so pages never resize the window.
+        # Pages stretch to the canvas width; overflow scrolls vertically.
+        self.page_canvas = tk.Canvas(
+            self.root,
+            bg=self.current_palette.background,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.page_canvas.grid(row=0, column=2, sticky="nsew")
+        self.page_scrollbar = ttk.Scrollbar(
+            self.root, orient="vertical", command=self.page_canvas.yview
+        )
+        self.page_canvas.configure(yscrollcommand=self.page_scrollbar.set)
+        self.page_container = ttk.Frame(self.page_canvas, style="Page.TFrame")
+        self._page_window_id = self.page_canvas.create_window(
+            (0, 0), window=self.page_container, anchor="nw"
+        )
         self.page_container.columnconfigure(0, weight=1)
         self.page_container.rowconfigure(0, weight=1)
+        self.page_canvas.bind("<Configure>", self._on_page_canvas_configure)
+        self.page_container.bind("<Configure>", self._on_page_container_configure)
+        self.root.bind("<MouseWheel>", self._on_page_mousewheel, add="+")
 
         frame = ttk.Frame(self.page_container, padding=26, style="Page.TFrame")
         frame.grid(sticky="nsew")
@@ -788,7 +813,7 @@ class ImportUtilityApp:
         self.selected_method_label = ttk.Label(
             run_row,
             text="Selected: Fix Scene Collection Paths",
-            style="Muted.TLabel",
+            style="PageMuted.TLabel",
         )
         self.selected_method_label.grid(row=0, column=0, sticky="w")
         self.run_button = ttk.Button(
@@ -801,12 +826,13 @@ class ImportUtilityApp:
         self.run_button.grid(row=0, column=1, sticky="e")
 
         ttk.Separator(frame).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(frame, textvariable=self.status_var, style="PageSection.TLabel").grid(
-            row=5, column=0, sticky="w"
+        self.results_label = ttk.Label(
+            frame, text=TOOL_LOG_HEADING, style="PageSection.TLabel"
         )
+        self.results_label.grid(row=5, column=0, sticky="w")
         self.results = tk.Text(
             frame,
-            height=12,
+            height=TOOL_LOG_HEIGHT,
             wrap="word",
             state="disabled",
             relief="flat",
@@ -816,13 +842,15 @@ class ImportUtilityApp:
             pady=10,
         )
         self.results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.results.yview)
-        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
-        self.results.configure(yscrollcommand=scrollbar.set)
+        self.results_scrollbar = ttk.Scrollbar(
+            frame, orient="vertical", command=self.results.yview
+        )
+        self.results_scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+        self.results.configure(yscrollcommand=self.results_scrollbar.set)
         ttk.Label(
             frame,
             text="The original export is never modified. An existing OBS collection is never overwritten.",
-            style="Muted.TLabel",
+            style="PageMuted.TLabel",
         ).grid(row=7, column=0, sticky="w", pady=(10, 0))
         self._update_import_method_panels()
         self._build_export_page()
@@ -917,7 +945,7 @@ class ImportUtilityApp:
         run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         run_row.columnconfigure(0, weight=1)
         ttk.Label(
-            run_row, textvariable=self.export_status_var, style="Muted.TLabel"
+            run_row, textvariable=self.export_status_var, style="PageMuted.TLabel"
         ).grid(row=0, column=0, sticky="w")
         self.export_run_button = ttk.Button(
             run_row,
@@ -930,12 +958,13 @@ class ImportUtilityApp:
         self.export_controls.append(self.export_run_button)
 
         ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(page, text="Export log", style="PageSection.TLabel").grid(
-            row=5, column=0, sticky="w"
+        self.export_log_label = ttk.Label(
+            page, text=TOOL_LOG_HEADING, style="PageSection.TLabel"
         )
+        self.export_log_label.grid(row=5, column=0, sticky="w")
         self.export_results = tk.Text(
             page,
-            height=14,
+            height=TOOL_LOG_HEIGHT,
             wrap="word",
             state="disabled",
             relief="flat",
@@ -945,11 +974,11 @@ class ImportUtilityApp:
             pady=10,
         )
         self.export_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
-        scrollbar = ttk.Scrollbar(
+        self.export_results_scrollbar = ttk.Scrollbar(
             page, orient="vertical", command=self.export_results.yview
         )
-        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
-        self.export_results.configure(yscrollcommand=scrollbar.set)
+        self.export_results_scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+        self.export_results.configure(yscrollcommand=self.export_results_scrollbar.set)
         self._refresh_export_collections()
 
     def _build_resizer_page(self) -> None:
@@ -1092,7 +1121,7 @@ class ImportUtilityApp:
         run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         run_row.columnconfigure(0, weight=1)
         ttk.Label(
-            run_row, textvariable=self.resize_status_var, style="Muted.TLabel"
+            run_row, textvariable=self.resize_status_var, style="PageMuted.TLabel"
         ).grid(row=0, column=0, sticky="w")
         self.undo_resize_button = ttk.Button(
             run_row, text="Undo", command=self._undo_resize, width=12, state="disabled"
@@ -1109,12 +1138,13 @@ class ImportUtilityApp:
         self.resizer_controls.extend((self.undo_resize_button, self.resize_run_button))
 
         ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=14)
-        ttk.Label(page, text="Resize log", style="PageSection.TLabel").grid(
-            row=5, column=0, sticky="w"
+        self.resize_log_label = ttk.Label(
+            page, text=TOOL_LOG_HEADING, style="PageSection.TLabel"
         )
+        self.resize_log_label.grid(row=5, column=0, sticky="w")
         self.resize_results = tk.Text(
             page,
-            height=10,
+            height=TOOL_LOG_HEIGHT,
             wrap="word",
             state="disabled",
             relief="flat",
@@ -1124,11 +1154,11 @@ class ImportUtilityApp:
             pady=10,
         )
         self.resize_results.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
-        scrollbar = ttk.Scrollbar(
+        self.resize_results_scrollbar = ttk.Scrollbar(
             page, orient="vertical", command=self.resize_results.yview
         )
-        scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
-        self.resize_results.configure(yscrollcommand=scrollbar.set)
+        self.resize_results_scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+        self.resize_results.configure(yscrollcommand=self.resize_results_scrollbar.set)
         self._refresh_resize_collections()
         self._update_resize_size_mode()
 
@@ -1143,7 +1173,7 @@ class ImportUtilityApp:
         ttk.Label(
             page,
             text="Customize how the portable utility looks and finds local applications.",
-            style="Muted.TLabel",
+            style="PageMuted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
         appearance = ttk.LabelFrame(
@@ -1289,8 +1319,28 @@ class ImportUtilityApp:
             variable=self.open_output_var,
         ).grid(row=3, column=0, sticky="w", pady=(5, 0))
 
+        program = ttk.LabelFrame(
+            page, text="Program settings", padding=16, style="Card.TLabelframe"
+        )
+        program.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        ttk.Checkbutton(
+            program,
+            text="Show tool logs",
+            variable=self.tool_logs_var,
+            command=self._apply_tool_logs,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            program,
+            text=(
+                "Show the black log consoles on the Import, Export, and Resize pages. "
+                "Turn this off for a cleaner look; results still appear in the status text."
+            ),
+            style="Muted.TLabel",
+            wraplength=690,
+        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+
         actions = ttk.Frame(page)
-        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=6, column=0, sticky="ew", pady=(14, 0))
         ttk.Button(
             actions,
             text="Save settings",
@@ -1301,8 +1351,9 @@ class ImportUtilityApp:
             actions, text="Restore defaults", command=self._restore_defaults
         ).grid(row=0, column=1, padx=(8, 0))
         ttk.Label(
-            actions, textvariable=self.settings_status_var, style="Muted.TLabel"
+            actions, textvariable=self.settings_status_var, style="PageMuted.TLabel"
         ).grid(row=0, column=2, sticky="w", padx=(14, 0))
+        self._apply_tool_logs()
 
     def _select_section(self, section: str) -> None:
         self.section_var.set(section)
@@ -1329,6 +1380,34 @@ class ImportUtilityApp:
         if section == "settings":
             self.settings_page.grid(row=0, column=0, sticky="nsew")
             return
+
+    def _on_page_canvas_configure(self, event: tk.Event) -> None:
+        self.page_canvas.itemconfigure(self._page_window_id, width=event.width)
+        self._update_page_scrollregion()
+
+    def _on_page_container_configure(self, _event: tk.Event) -> None:
+        self._update_page_scrollregion()
+
+    def _update_page_scrollregion(self) -> None:
+        self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
+        bounds = self.page_canvas.bbox("all")
+        needs_scroll = (
+            bounds is not None
+            and bounds[3] > self.page_canvas.winfo_height() + 8
+        )
+        if needs_scroll and not self.page_scrollbar.winfo_ismapped():
+            self.page_scrollbar.grid(row=0, column=3, sticky="ns")
+        elif not needs_scroll and self.page_scrollbar.winfo_ismapped():
+            self.page_scrollbar.grid_remove()
+
+    def _on_page_mousewheel(self, event: tk.Event) -> str | None:
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        while widget is not None and widget is not self.root:
+            if widget is self.page_canvas or widget is self.page_container:
+                self.page_canvas.yview_scroll(-(event.delta // 120), "units")
+                return "break"
+            widget = widget.master
+        return None
 
     def _start_sidebar_drag(self, event: tk.Event) -> None:
         self._sidebar_dragging = True
@@ -1412,7 +1491,15 @@ class ImportUtilityApp:
         )
         if self.logo_label:
             self.logo_label.grid_configure(sticky="")
-        self._update_logo_to_width(m.logo_width)
+        if self.logo_source:
+            # Collapsed logo is 130% of icon height (always bigger than the
+            # nav icons), capped to the bar's content width so the
+            # auto-centered layout never overflows (key rule).
+            aspect = self.logo_source.width() / self.logo_source.height()
+            content_w = m.collapsed_width - 2 * m.horizontal_padding
+            self._update_logo_to_width(
+                min(round(m.icon_size * aspect * 1.3), content_w)
+            )
 
     def _collapse_sidebar(self) -> None:
         self.root.update_idletasks()
@@ -1456,7 +1543,12 @@ class ImportUtilityApp:
             ))))
         )
         if self.logo_label:
-            self.logo_label.grid_configure(sticky="w")
+            self.logo_label.grid_configure(sticky="")
+            scale = (
+                max(1.0, getattr(self, "current_dpi", 96) / 96.0)
+                * max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
+            )
+            self._update_logo_scale(scale)  # restore the expanded-size logo
         for (section, label), button in zip(self.SECTIONS, self.navigation_buttons):
             button.configure(
                 image="", text=label, font=self.fonts["body_bold"],
@@ -1477,11 +1569,16 @@ class ImportUtilityApp:
         )
         for section, btn in zip((s for s, _ in self.SECTIONS), self.navigation_buttons):
             is_selected = section == selected
-            if getattr(btn, "_is_hovering", False) and not is_selected:
-                btn.configure(bg=palette.sidebar_hover, fg=palette.sidebar_foreground)
-            else:
-                bg = palette.sidebar_selected if is_selected else palette.sidebar
-                btn.configure(bg=bg, fg=palette.sidebar_foreground)
+            hovering = getattr(btn, "_is_hovering", False) and not is_selected
+            bg = (
+                palette.sidebar_hover
+                if hovering
+                else (palette.sidebar_selected if is_selected else palette.sidebar)
+            )
+            btn.configure(bg=bg, fg=palette.sidebar_foreground)
+            accent = getattr(btn, "_nav_accent", None)
+            if accent is not None:
+                accent.configure(bg=palette.accent if is_selected else bg)
             if is_collapsed:
                 kind = self._nav_icon_kinds.get(section, "")
                 if kind:
@@ -1574,7 +1671,7 @@ class ImportUtilityApp:
             "SidebarCaption.TLabel",
             background=palette.sidebar,
             foreground=palette.sidebar_muted,
-            font=self.fonts["small"],
+            font=self.fonts["body_bold"],
         )
         style.configure(
             "SidebarMuted.TLabel",
@@ -1808,6 +1905,8 @@ class ImportUtilityApp:
         self.root.option_add("*TCombobox*Listbox.selectBackground", palette.selection)
         self.root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
         self.root.configure(background=palette.background)
+        if hasattr(self, "page_canvas"):
+            self.page_canvas.configure(background=palette.background)
         for text_widget_name in ("results", "export_results", "resize_results"):
             text_widget = getattr(self, text_widget_name, None)
             if text_widget is not None:
@@ -2099,6 +2198,22 @@ class ImportUtilityApp:
         if selected:
             self.obs_path_var.set(selected)
 
+    def _apply_tool_logs(self) -> None:
+        show = self.tool_logs_var.get()
+        for label, text, scrollbar in (
+            (self.results_label, self.results, self.results_scrollbar),
+            (self.export_log_label, self.export_results, self.export_results_scrollbar),
+            (self.resize_log_label, self.resize_results, self.resize_results_scrollbar),
+        ):
+            if show:
+                label.grid(row=5, column=0, sticky="w")
+                text.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
+                scrollbar.grid(row=6, column=1, sticky="ns", pady=(8, 0))
+            else:
+                label.grid_remove()
+                text.grid_remove()
+                scrollbar.grid_remove()
+
     def _collect_settings(self) -> AppSettings:
         remembered_folder = ""
         if self.remember_folder_var.get():
@@ -2120,6 +2235,7 @@ class ImportUtilityApp:
             open_output_after_conversion=self.open_output_var.get(),
             strict_validation=self.strict_var.get(),
             case_sensitive_matching=self.case_var.get(),
+            show_tool_logs=self.tool_logs_var.get(),
         )
 
     def _save_settings(self) -> bool:
@@ -2156,10 +2272,12 @@ class ImportUtilityApp:
         self.open_output_var.set(defaults.open_output_after_conversion)
         self.strict_var.set(defaults.strict_validation)
         self.case_var.set(defaults.case_sensitive_matching)
+        self.tool_logs_var.set(defaults.show_tool_logs)
         self._update_custom_path_states()
         self._apply_theme()
         self._set_scale(defaults.ui_scale)
         self._set_sidebar_collapsed(False, persist=False)
+        self._apply_tool_logs()
         if self._save_settings():
             self.settings_status_var.set("Default settings restored.")
 
@@ -2217,7 +2335,7 @@ class ImportUtilityApp:
         else:
             self.advanced_obs_options.grid_remove()
         self.advanced_obs_button.configure(
-            text="Advanced options ▾"
+            text="Hide advanced options ▾"
             if self.obs_advanced_visible
             else "Advanced options ▸"
         )

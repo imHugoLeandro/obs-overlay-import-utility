@@ -150,3 +150,24 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(normalized_bool(None, True))
         self.assertFalse(normalized_bool([], False))
         self.assertTrue(normalized_bool({}, True))
+
+
+class ShowToolLogsSettingsTests(unittest.TestCase):
+    def test_defaults_to_on(self) -> None:
+        self.assertTrue(AppSettings().show_tool_logs)
+        self.assertTrue(AppSettings.from_dict({}).show_tool_logs)
+
+    def test_can_be_disabled(self) -> None:
+        self.assertFalse(AppSettings.from_dict({"show_tool_logs": False}).show_tool_logs)
+        self.assertTrue(AppSettings.from_dict({"show_tool_logs": True}).show_tool_logs)
+
+    def test_non_bool_value_falls_back_to_on(self) -> None:
+        self.assertTrue(AppSettings.from_dict({"show_tool_logs": "no"}).show_tool_logs)
+
+    def test_save_load_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory))
+            store.save(AppSettings(show_tool_logs=False))
+            self.assertFalse(store.load().show_tool_logs)
+            store.save(AppSettings(show_tool_logs=True))
+            self.assertTrue(store.load().show_tool_logs)

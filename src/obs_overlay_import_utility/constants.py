@@ -7,6 +7,11 @@ __version__ = "2.0.0"
 APP_TITLE = "OBS Overlay Import Utility"
 TRACKING_FILENAME = "rescale_tracking.json"
 
+# Every tool page shows the same log terminal: one heading and one height,
+# so a future tool page reuses these instead of drifting its own values.
+TOOL_LOG_HEADING = "Logs"
+TOOL_LOG_HEIGHT = 12
+
 SUPPORTED_EXTENSIONS = frozenset(
     {
         ".aac",

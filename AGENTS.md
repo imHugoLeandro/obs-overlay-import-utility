@@ -237,6 +237,8 @@ Export does **not** bundle or install OBS plugin binaries, operating-system font
 - Keep Windows display scaling separate from the 75–150% app zoom.
 - App zoom changes fonts, controls, spacing, consoles, navigation, sliders, and logo size—not the window size itself.
 - Preserve system/light/dark themes, Social Space red semantic accents, and at least WCAG AA 4.5:1 contrast for normal text.
+- **When the sidebar is collapsed, all logos and icons must be centered horizontally within the bar.** Size them from the bar's content width (`collapsed_width − 2 × horizontal_padding`); anything wider than the content overflows and pins left instead of centering.
+- Every UI change must be mirrored in the `preview/` web prototype in the same change (and in Electron when a port exists), and the `?selftest` regression checks must be updated so the preview keeps passing. Keep `preview/index.html` + `preview/app.js` in lockstep with `ui.py`: same paddings/offsets (including flex `gap` when text is hidden in collapsed mode — it shifts the icon off-center), and accent bars must **overlay** the item edge (`::before`/separate frame) — never a `border`, which shifts the icon/text 3px and breaks alignment. The selftest asserts icon alignment (expanded: icons at `padding-left` from the sidebar edge like the app; collapsed: icons centered on the bar).
 - Keep import-method selection inside the main window. Modal dialogs are acceptable for focused flows such as device setup and export confirmation.
 - Never update Tk widgets from worker threads. Use the existing queue and `root.after(...)` processing.
 - File scans, archive work, import/export, and network operations must not block the UI thread.

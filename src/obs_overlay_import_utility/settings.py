@@ -39,6 +39,7 @@ class AppSettings:
     open_output_after_conversion: bool = False
     strict_validation: bool = True
     case_sensitive_matching: bool = True
+    show_tool_logs: bool = True
 
     @classmethod
     def from_dict(cls, value: Any) -> "AppSettings":
@@ -78,6 +79,7 @@ class AppSettings:
             "case_sensitive_matching",
         ):
             setattr(settings, name, normalized_bool(getattr(settings, name), False))
+        settings.show_tool_logs = normalized_bool(settings.show_tool_logs, True)
         for name in ("python_path", "obs_path", "last_overlay_folder"):
             value = getattr(settings, name)
             setattr(settings, name, value if isinstance(value, str) else "")

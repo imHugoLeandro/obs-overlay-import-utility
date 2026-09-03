@@ -140,25 +140,25 @@ class SidebarMetricsTests(unittest.TestCase):
 
     # --- exact width targets ---
 
-    def test_96dpi_75pct_approx_75px(self) -> None:
+    def test_96dpi_75pct_approx_95px(self) -> None:
         m = self._metrics(96, 75)
-        self.assertAlmostEqual(m.collapsed_width, 75, delta=2)
+        self.assertAlmostEqual(m.collapsed_width, 95, delta=2)
 
-    def test_96dpi_100pct_approx_100px(self) -> None:
+    def test_96dpi_100pct_approx_127px(self) -> None:
         m = self._metrics(96, 100)
-        self.assertAlmostEqual(m.collapsed_width, 100, delta=2)
+        self.assertAlmostEqual(m.collapsed_width, 127, delta=2)
 
-    def test_96dpi_150pct_approx_150px(self) -> None:
+    def test_96dpi_150pct_approx_190px(self) -> None:
         m = self._metrics(96, 150)
-        self.assertAlmostEqual(m.collapsed_width, 150, delta=2)
+        self.assertAlmostEqual(m.collapsed_width, 190, delta=2)
 
-    def test_144dpi_100pct_approx_150px(self) -> None:
+    def test_144dpi_100pct_approx_190px(self) -> None:
         m = self._metrics(144, 100)
-        self.assertAlmostEqual(m.collapsed_width, 150, delta=2)
+        self.assertAlmostEqual(m.collapsed_width, 190, delta=2)
 
-    def test_144dpi_150pct_approx_225px(self) -> None:
+    def test_144dpi_150pct_approx_286px(self) -> None:
         m = self._metrics(144, 150)
-        self.assertAlmostEqual(m.collapsed_width, 225, delta=2)
+        self.assertAlmostEqual(m.collapsed_width, 286, delta=2)
 
     # --- logo + padding fits inside collapsed width ---
 
@@ -209,8 +209,8 @@ class SidebarMetricsTests(unittest.TestCase):
     # --- constants are sensible ---
 
     def test_base_constants_are_in_range(self) -> None:
-        self.assertGreaterEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 90)
-        self.assertLessEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 110)
+        self.assertGreaterEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 120)
+        self.assertLessEqual(self.COLLAPSED_SIDEBAR_BASE_WIDTH, 140)
         self.assertGreaterEqual(self.COLLAPSED_LOGO_BASE_WIDTH, 50)
         self.assertLessEqual(self.COLLAPSED_LOGO_BASE_WIDTH, 70)
         self.assertGreaterEqual(self.COLLAPSED_ICON_BASE_SIZE, 25)
