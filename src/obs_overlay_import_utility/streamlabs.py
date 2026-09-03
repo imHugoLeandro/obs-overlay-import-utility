@@ -91,7 +91,9 @@ def default_obs_scenes_directory(obs_executable: Path | None = None) -> Path:
     return Path.home() / "AppData" / "Roaming" / "obs-studio" / "basic" / "scenes"
 
 
-def _archive_member_path(member: zipfile.ZipInfo) -> PurePosixPath:
+def _archive_member_path(
+    member: zipfile.ZipInfo, label: str = "The Streamlabs package"
+) -> PurePosixPath:
     normalized = member.filename.replace("\\", "/")
     path = PurePosixPath(normalized)
     if (
@@ -100,31 +102,31 @@ def _archive_member_path(member: zipfile.ZipInfo) -> PurePosixPath:
         or ".." in path.parts
         or any(":" in part for part in path.parts)
     ):
-        raise UtilityError("The Streamlabs package contains an unsafe file path.")
+        raise UtilityError(f"{label} contains an unsafe file path.")
     return path
 
 
-def _safe_archive_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+def _safe_archive_members(
+    archive: zipfile.ZipFile, label: str = "The Streamlabs package"
+) -> list[zipfile.ZipInfo]:
     members = archive.infolist()
     if len(members) > MAX_ARCHIVE_FILES:
-        raise UtilityError(
-            f"The Streamlabs package contains more than {MAX_ARCHIVE_FILES:,} entries."
-        )
+        raise UtilityError(f"{label} contains more than {MAX_ARCHIVE_FILES:,} entries.")
 
     total_size = 0
     safe_members: list[zipfile.ZipInfo] = []
     seen: set[str] = set()
     for member in members:
-        path = _archive_member_path(member)
+        path = _archive_member_path(member, label=label)
         unix_type = stat.S_IFMT(member.external_attr >> 16)
         if unix_type == stat.S_IFLNK:
-            raise UtilityError("The Streamlabs package contains an unsupported symbolic link.")
+            raise UtilityError(f"{label} contains an unsupported symbolic link.")
         if unix_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-            raise UtilityError("The Streamlabs package contains an unsupported special file.")
+            raise UtilityError(f"{label} contains an unsupported special file.")
         if member.flag_bits & 0x1:
-            raise UtilityError("Encrypted Streamlabs package entries are not supported.")
+            raise UtilityError(f"{label} contains encrypted entries, which are not supported.")
         if member.file_size > MAX_ARCHIVE_MEMBER_SIZE:
-            raise UtilityError("A Streamlabs package file is too large to extract safely.")
+            raise UtilityError(f"A file in {label} is too large to extract safely.")
         if (
             member.file_size >= MIN_RATIO_CHECK_SIZE
             and (
@@ -132,15 +134,15 @@ def _safe_archive_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
                 or member.file_size / member.compress_size > MAX_COMPRESSION_RATIO
             )
         ):
-            raise UtilityError("The Streamlabs package has an unsafe compression ratio.")
+            raise UtilityError(f"{label} has an unsafe compression ratio.")
 
         key = path.as_posix().casefold()
         if key in seen:
-            raise UtilityError("The Streamlabs package contains duplicate file paths.")
+            raise UtilityError(f"{label} contains duplicate file paths.")
         seen.add(key)
         total_size += member.file_size
         if total_size > MAX_ARCHIVE_SIZE:
-            raise UtilityError("The Streamlabs package is too large to extract safely.")
+            raise UtilityError(f"{label} is too large to extract safely.")
         safe_members.append(member)
     return safe_members
 
@@ -183,6 +185,37 @@ def _next_available_directory(parent: Path, base_name: str) -> Path:
         candidate = parent / f"{base_name} {number}"
         number += 1
     return candidate
+
+
+def extract_zip_archive(archive_path: Path) -> Path:
+    """Safely extract any ZIP beside itself into a unique folder.
+
+    Reuses the hardened Streamlabs archive validation (traversal, links,
+    duplicates, size/ratio/free-space limits) so redirected ZIP files are
+    treated as untrusted input.
+    """
+    archive_path = archive_path.expanduser().resolve()
+    if not archive_path.is_file() or archive_path.suffix.casefold() != ".zip":
+        raise UtilityError("Choose a valid ZIP archive file.")
+    label = "The ZIP archive"
+    destination = _next_available_directory(
+        archive_path.parent, _portable_folder_name(archive_path.stem)
+    )
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            members = _safe_archive_members(archive, label=label)
+            _ensure_extraction_space(archive_path.parent, members)
+            for member in members:
+                if member.is_dir():
+                    continue
+                member_path = _archive_member_path(member, label=label)
+                target = destination.joinpath(*member_path.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, target.open("wb") as file_out:
+                    shutil.copyfileobj(source, file_out)
+    except zipfile.BadZipFile as exc:
+        raise UtilityError(f"{label} is not a valid ZIP archive.") from exc
+    return destination
 
 
 def _portable_folder_name(value: str) -> str:
@@ -528,7 +561,21 @@ def import_streamlabs_overlay(
     extraction_published = False
     try:
         archive_path = archive_path.expanduser().resolve()
-        if not archive_path.is_file() or archive_path.suffix.casefold() != ".overlay":
+        if not archive_path.is_file():
+            raise UtilityError("Choose a valid Streamlabs .overlay file.")
+        if archive_path.suffix.casefold() == ".zip":
+            # A redirected ZIP wrapper: extract it beside itself, then import
+            # the single .overlay package found inside.
+            extracted_root = extract_zip_archive(archive_path)
+            packages = find_streamlabs_packages(extracted_root)
+            if len(packages) != 1:
+                raise UtilityError(
+                    "The ZIP archive must contain exactly one Streamlabs .overlay file."
+                    if packages
+                    else "No Streamlabs .overlay file was found inside the ZIP archive."
+                )
+            archive_path = packages[0]
+        if archive_path.suffix.casefold() != ".overlay":
             raise UtilityError("Choose a valid Streamlabs .overlay file.")
         package_base = _portable_folder_name(archive_path.stem)
         with zipfile.ZipFile(archive_path) as archive:

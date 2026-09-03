@@ -6,6 +6,7 @@ import copy
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from obs_overlay_import_utility import core  # noqa: E402
 from obs_overlay_import_utility.models import FileIndex  # noqa: E402
 from obs_overlay_import_utility.paths import find_file_match, is_local_media_path  # noqa: E402
+from obs_overlay_import_utility.streamlabs import extract_zip_archive  # noqa: E402
 
 
 def scene_data(*paths: str) -> dict:
@@ -420,6 +422,42 @@ class CoreTests(unittest.TestCase):
         )
         self.assertNotIn("obspython", source.casefold())
         self.assertNotIn("base64.b64decode", source.casefold())
+
+
+class ZipRedirectCoreTests(unittest.TestCase):
+    """A redirected ZIP pack: extract → scan finds the OBS export → convert."""
+
+    def test_zip_pack_scan_and_convert_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "MyOverlayPack.zip"
+            with zipfile.ZipFile(archive, "w") as zip_out:
+                zip_out.writestr("images/logo.png", b"png")
+                zip_out.writestr(
+                    "scene_collection.json",
+                    json.dumps(scene_data(r"C:\old\images\logo.png")),
+                )
+
+            extracted = extract_zip_archive(archive)
+            collections = core.find_scene_collections(extracted)
+
+            self.assertEqual(collections, [(extracted / "scene_collection.json").resolve()])
+            result = core.convert_collection(collections[0], extracted)
+            self.assertTrue(result.success, result.error)
+            self.assertIsNotNone(result.output_path)
+            converted = json.loads(result.output_path.read_text(encoding="utf-8"))
+            self.assertIn("logo.png", converted["sources"][0]["settings"]["playlist"][0]["value"])
+
+    def test_zip_pack_without_collection_scans_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "NoJson.zip"
+            with zipfile.ZipFile(archive, "w") as zip_out:
+                zip_out.writestr("readme.txt", "no collection here")
+
+            extracted = extract_zip_archive(archive)
+            collections = core.find_scene_collections(extracted)
+            self.assertEqual(collections, [])
 
 
 if __name__ == "__main__":

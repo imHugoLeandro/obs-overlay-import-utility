@@ -275,8 +275,9 @@
         <div class="row">
           <input class="grow" type="text" placeholder="C:\Users\You\Downloads\MyOverlayPack" value="">
           <button class="btn">Browse…</button>
+          <button class="btn" id="zipBrowse">ZIP…</button>
         </div>
-        <div class="hint">The scene collection export is found automatically inside this folder. Strict file checks and case-sensitive matching are always enabled.</div>
+        <div class="hint">The scene collection export is found automatically inside this folder, or inside a ZIP archive if one is selected. Strict file checks and case-sensitive matching are always enabled.</div>
         <label class="check" style="margin-top:8px;"><input type="checkbox" id="scaleCanvas" checked> Scale layout to my OBS canvas after import (aspect-preserving)</label>
       </div>
     </div>
@@ -292,7 +293,7 @@
           <input class="grow" type="text" placeholder="C:\Users\You\Downloads\Pack.overlay" value="">
           <button class="btn">Browse…</button>
         </div>
-        <div class="hint">Files are extracted beside the selected package and a new OBS collection is created automatically. Device sources are auto-matched to local devices; unmatched sources stay unconfigured for manual setup.</div>
+        <div class="hint">Files are extracted beside the selected package and a new OBS collection is created automatically. A ZIP archive containing one .overlay file also works. Device sources are auto-matched to local devices; unmatched sources stay unconfigured for manual setup.</div>
         <label class="check" style="margin-top:8px;"><input type="checkbox" id="scaleCanvasStreamlabs" checked> Scale layout to my OBS canvas after import (aspect-preserving)</label>
       </div>
     </div>

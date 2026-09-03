@@ -154,7 +154,7 @@ Changes to archive limits or validation require acceptance and rejection tests.
 
 ### Import OBS Scene Collection File
 
-- The user selects the overlay pack folder.
+- The user selects the overlay pack folder, or a ZIP archive that is safely extracted beside itself first.
 - Detect valid OBS collection JSON automatically when possible.
 - Keep strict validation and case-sensitive matching always enabled.
 - Report matched, missing, and ambiguous assets.
@@ -162,7 +162,7 @@ Changes to archive limits or validation require acceptance and rejection tests.
 
 ### Import Streamlabs Scene File
 
-- Validate the chosen `.overlay` before extraction.
+- Validate the chosen `.overlay` (or ZIP wrapper containing exactly one `.overlay`) before extraction.
 - Extract beside the archive into a unique Windows-safe folder.
 - Convert supported sources while preserving/reporting unsupported configuration.
 - Recursively relink built-in and custom/plugin resource paths.

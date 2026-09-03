@@ -461,5 +461,118 @@ class StreamlabsImportTests(unittest.TestCase):
             self.assertEqual(list(scenes.glob("*.pending")), [])
 
 
+class ZipRedirectImportTests(unittest.TestCase):
+    """ZIP redirects: extract_zip_archive + wrapper .zip handling."""
+
+    def _write_package_zip(self, root: Path, name: str = "Demo.overlay") -> Path:
+        package = root / name
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("config.json", json.dumps(sample_config()))
+            archive.writestr("background.png", b"image")
+        return package
+
+    def test_extract_zip_archive_extracts_beside_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "Pack.zip"
+            with zipfile.ZipFile(archive, "w") as zip_out:
+                zip_out.writestr("scene_collection.json", "{}")
+                zip_out.writestr("assets/logo.png", b"png")
+
+            destination = streamlabs.extract_zip_archive(archive)
+
+            self.assertTrue(destination.is_dir())
+            self.assertNotEqual(destination, root)
+            self.assertTrue((destination / "scene_collection.json").is_file())
+            self.assertTrue((destination / "assets" / "logo.png").is_file())
+
+    def test_extract_zip_archive_picks_unique_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "Pack.zip"
+            (root / "Pack").mkdir()
+            with zipfile.ZipFile(archive, "w") as zip_out:
+                zip_out.writestr("scene_collection.json", "{}")
+
+            destination = streamlabs.extract_zip_archive(archive)
+
+            self.assertEqual(destination, root / "Pack 2")
+            self.assertTrue((destination / "scene_collection.json").is_file())
+
+    def test_extract_zip_archive_rejects_unsafe_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "Unsafe.zip"
+            with zipfile.ZipFile(archive, "w") as zip_out:
+                zip_out.writestr("../outside.txt", "nope")
+
+            with self.assertRaises(streamlabs.UtilityError) as caught:
+                streamlabs.extract_zip_archive(archive)
+
+            self.assertIn("unsafe file path", str(caught.exception))
+            self.assertFalse((root.parent / "outside.txt").exists())
+
+    def test_extract_zip_archive_rejects_non_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "NotAZip.zip"
+            archive.write_text("not a zip", encoding="utf-8")
+
+            with self.assertRaises(streamlabs.UtilityError):
+                streamlabs.extract_zip_archive(archive)
+
+    def test_import_accepts_zip_wrapping_single_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            inner = root / "Inner.overlay"
+            self._write_package_zip(root, "Inner.overlay")
+            wrapper = root / "Package.zip"
+            with zipfile.ZipFile(wrapper, "w") as zip_out:
+                zip_out.write(inner, arcname="Inner.overlay")
+
+            result = import_streamlabs_overlay(wrapper, scenes)
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(result.collection_name, "Inner")
+            # The inner overlay extracts inside the wrapper's extracted folder.
+            self.assertTrue(
+                (root / "Package" / "Inner overlay" / "background.png").is_file()
+            )
+            self.assertTrue((root / "Inner.overlay").exists())
+
+    def test_import_rejects_zip_without_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            wrapper = root / "Empty.zip"
+            with zipfile.ZipFile(wrapper, "w") as zip_out:
+                zip_out.writestr("readme.txt", "nothing here")
+
+            result = import_streamlabs_overlay(wrapper, root / "scenes")
+
+            self.assertFalse(result.success)
+            self.assertIn("No Streamlabs .overlay file", result.error or "")
+            self.assertFalse((root / "Empty overlay").exists())
+            self.assertFalse((root / "Empty overlay 2").exists())
+
+    def test_import_rejects_zip_with_multiple_overlays(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            first = root / "First.overlay"
+            second = root / "Second.overlay"
+            self._write_package_zip(root, "First.overlay")
+            self._write_package_zip(root, "Second.overlay")
+            wrapper = root / "Pair.zip"
+            with zipfile.ZipFile(wrapper, "w") as zip_out:
+                zip_out.write(first, arcname="First.overlay")
+                zip_out.write(second, arcname="Second.overlay")
+
+            result = import_streamlabs_overlay(wrapper, scenes)
+
+            self.assertFalse(result.success)
+            self.assertIn("exactly one Streamlabs .overlay file", result.error or "")
+
+
 if __name__ == "__main__":
     unittest.main()

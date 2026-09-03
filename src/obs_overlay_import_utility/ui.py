@@ -65,6 +65,7 @@ from .resizer import (
 from .streamlabs import (
     StreamlabsImportResult,
     default_obs_scenes_directory,
+    extract_zip_archive,
     import_streamlabs_overlay,
 )
 from .settings import (
@@ -179,6 +180,10 @@ def format_file_size(size: int) -> str:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     return f"{size} B"
+
+
+def _is_zip_path(path: Path) -> bool:
+    return path.is_file() and path.suffix.casefold() == ".zip"
 
 
 class ImportUtilityApp:
@@ -631,10 +636,16 @@ class ImportUtilityApp:
             obs_folder_row, text="Browse…", command=self._browse
         )
         self.browse_button.grid(row=0, column=1)
-        self.method_controls.extend((self.folder_entry, self.browse_button))
+        self.zip_browse_button = ttk.Button(
+            obs_folder_row, text="ZIP…", command=self._browse_zip
+        )
+        self.zip_browse_button.grid(row=0, column=2, padx=(4, 0))
+        self.method_controls.extend(
+            (self.folder_entry, self.browse_button, self.zip_browse_button)
+        )
         ttk.Label(
             obs_options,
-            text="The scene collection export is found automatically inside this folder.",
+            text="The scene collection export is found automatically inside this folder, or inside a ZIP archive if one is selected.",
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
@@ -2190,6 +2201,25 @@ class ImportUtilityApp:
                     pass
             self._scan()
 
+    def _browse_zip(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose a ZIP overlay package",
+            filetypes=(
+                ("ZIP archives", "*.zip"),
+                ("All files", "*.*"),
+            ),
+        )
+        if selected:
+            self.folder_var.set(selected)
+            if self.remember_folder_var.get():
+                self.settings.last_overlay_folder = selected
+                self.settings.remember_last_folder = True
+                try:
+                    self.settings_store.save(self.settings)
+                except OSError:
+                    pass
+            self._scan()
+
     def _select_import_method(self, method: str) -> None:
         self.import_method_var.set(method)
         palette = self.current_palette
@@ -2697,15 +2727,23 @@ class ImportUtilityApp:
         if self.busy:
             return
         folder = Path(self.folder_var.get().strip())
-        if not folder.is_dir():
-            messagebox.showerror(APP_TITLE, "Choose a valid overlay folder.")
+        if not folder.is_dir() and not _is_zip_path(folder):
+            messagebox.showerror(
+                APP_TITLE, "Choose a valid overlay folder or ZIP archive."
+            )
             return
         self.last_output = None
-        self._set_busy(True, "Finding an OBS scene collection export…")
+        self._scan_busy_message = "Extracting the ZIP archive…" if _is_zip_path(folder) else "Finding an OBS scene collection export…"
+        self._set_busy(True, self._scan_busy_message)
         threading.Thread(target=self._scan_worker, args=(folder,), daemon=True).start()
 
     def _scan_worker(self, folder: Path) -> None:
         try:
+            if _is_zip_path(folder):
+                folder = extract_zip_archive(folder)
+                self._extracted_overlay_root = folder
+                self.events.put(("note", f"Extracted ZIP archive to:\n{folder}"))
+                self.events.put(("busy_text", "Finding an OBS scene collection export…"))
             self.events.put(("scan", find_scene_collections(folder)))
         except UtilityError as exc:
             self.events.put(("error", str(exc)))
@@ -2715,6 +2753,8 @@ class ImportUtilityApp:
             return
         collection = self.collections.get(self.collection_var.get())
         folder = Path(self.folder_var.get().strip())
+        if _is_zip_path(folder):
+            folder = getattr(self, "_extracted_overlay_root", None) or folder
         if (
             collection is not None
             and folder.is_dir()
@@ -2722,8 +2762,11 @@ class ImportUtilityApp:
         ):
             collection = None
         if collection is None:
-            if not folder.is_dir():
-                messagebox.showerror(APP_TITLE, "Choose a valid overlay folder.")
+            raw_folder = Path(self.folder_var.get().strip())
+            if not raw_folder.is_dir() and not _is_zip_path(raw_folder):
+                messagebox.showerror(
+                    APP_TITLE, "Choose a valid overlay folder or ZIP archive."
+                )
                 return
             self.pending_obs_conversion = True
             self._scan()
@@ -2813,6 +2856,10 @@ class ImportUtilityApp:
                 elif event == "error":
                     self._set_busy(False, "Could not finish the operation.")
                     messagebox.showerror(APP_TITLE, str(payload))
+                elif event == "note":
+                    self._scan_note = str(payload)
+                elif event == "busy_text":
+                    self._set_busy(True, str(payload))
         except queue.Empty:
             pass
         self._process_events_after_id = self.root.after(100, self._process_events)
@@ -2820,6 +2867,10 @@ class ImportUtilityApp:
     def _finish_scan(self, paths: list[Path]) -> None:
         self.collections.clear()
         root = Path(self.folder_var.get().strip())
+        if _is_zip_path(root):
+            root = getattr(self, "_extracted_overlay_root", None) or root
+        note = getattr(self, "_scan_note", None)
+        self._scan_note = None
         for path in paths:
             try:
                 label = str(path.relative_to(root))
@@ -2832,7 +2883,8 @@ class ImportUtilityApp:
         self.collection_var.set(labels[0] if labels else "")
         if labels:
             self._write_results(
-                "Automatically detected OBS export:\n"
+                (f"{note}\n\n" if note else "")
+                + "Automatically detected OBS export:\n"
                 + "\n".join(f"• {label}" for label in labels)
             )
             self._set_busy(

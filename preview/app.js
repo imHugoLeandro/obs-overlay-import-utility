@@ -169,7 +169,8 @@
   var importRun = pageSelector('import', '.run-row .btn.primary');
 
   wirePicker(methodBrowse('obs'), methodInput('obs'), { dir: true });
-  wirePicker(methodBrowse('streamlabs'), methodInput('streamlabs'), { accept: '.overlay' });
+  wirePicker(document.getElementById('zipBrowse'), methodInput('obs'), { accept: '.zip' });
+  wirePicker(methodBrowse('streamlabs'), methodInput('streamlabs'), { accept: '.overlay,.zip' });
 
   importRun.addEventListener('click', function () {
     var streamlabs = importSelected === 'streamlabs';
@@ -202,7 +203,12 @@
       return;
     }
     runSteps(importRun, [
-      { fn: function () { log(importConsole, 'Scanning overlay folder: ' + picked); } },
+      { fn: function () {
+          if (folderName.toLowerCase().indexOf('.zip') !== -1) {
+            log(importConsole, 'Extracted ZIP archive beside the selected file.');
+          }
+          log(importConsole, 'Scanning overlay folder: ' + picked);
+        } },
       { fn: function () { log(importConsole, 'Detected scene_collection.json (OBS export)'); } },
       { fn: function () {
           // Strict checks and case-sensitive matching are always enabled.

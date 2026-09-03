@@ -19,7 +19,7 @@ The Settings page supports the Windows default, white, and dark themes; adjustab
 ### Method 1 — Import OBS Scene Collection File
 
 1. Expand **Method 1** with its down arrow.
-2. Choose the extracted **Overlay Folder path**.
+2. Choose the extracted **Overlay Folder path**, or browse a **ZIP archive** and the utility extracts it beside the file first.
 3. Click **Run**. The utility finds the OBS scene collection export automatically.
 4. The utility writes a new `_Updated.json` file, installs it into OBS as a new scene collection, and switches to it live when OBS is open.
 
@@ -28,7 +28,7 @@ Original collection is never changed. **Strict file checking and case-sensitive 
 ### Method 2 — Import Streamlabs Scene File
 
 1. Expand **Method 2** with its down arrow.
-2. Choose the Streamlabs `.overlay` package.
+2. Choose the Streamlabs `.overlay` package — or a **ZIP archive** that contains exactly one `.overlay` file, which is extracted first.
 3. Click **Run** in the same Import Overlay window.
 
 The utility validates the archive before extraction (including entry, per-file, total-size, compression-ratio, path, link, encryption, duplicate-name, and free-space limits), then extracts beside the archive into a new `name overlay` folder. It recursively relinks assets in built-in and custom/plugin source and filter settings and converts supported Streamlabs Desktop sources, including display/monitor sources placed without a screen mapping. Known Streamlabs filters (chroma key, color key, color correction, crop, sharpen, LUT, gain, noise suppression/gate, compressor, limiter, expander, invert, delays, scaling, rotate) are converted to the matching OBS filter type; unknown plugin filters are preserved with their relinked settings. The collection is transactionally published together with the extracted folder; a publish failure rolls back both. **Scale layout to my OBS canvas after import (aspect-preserving)** is enabled by default and fits the imported 16:9 layout uniformly to the active OBS profile's base canvas without stretching. Device sources (webcams, audio, displays, compatible custom devices) are auto-matched to locally configured sources with the same OBS source ID when exactly one candidate exists; unmapped sources are imported unconfigured so the user can set them up in OBS later. If the collection name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. When OBS is open, the utility finishes device matching and then switches to the imported collection through OBS's built-in WebSocket server—no restart or collection reload is needed.
