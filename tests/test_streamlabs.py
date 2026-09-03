@@ -488,7 +488,7 @@ class ZipRedirectImportTests(unittest.TestCase):
 
     def test_extract_zip_archive_picks_unique_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             archive = root / "Pack.zip"
             (root / "Pack").mkdir()
             with zipfile.ZipFile(archive, "w") as zip_out:
