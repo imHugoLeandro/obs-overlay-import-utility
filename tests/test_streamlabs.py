@@ -251,5 +251,215 @@ class StreamlabsImportTests(unittest.TestCase):
                 source["filters"][0]["settings"]["nested"]["lut"],
                 str((extracted / "filter.dat").resolve()),
             )
+    def test_malformed_scene_item_numbers_fall_back_to_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "Numbers.overlay"
+            config = sample_config()
+            item = config["scenes"]["items"][0]["slots"]["items"][0]
+            item["scaleX"] = "auto"
+            item["scaleY"] = "auto"
+            item["rotation"] = "sideways"
+            item["crop"] = {"left": "wide"}
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("background.png", b"image")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            scene = next(source for source in converted["sources"] if source["id"] == "scene")
+            item = scene["settings"]["items"][0]
+            self.assertEqual(item["rot"], 0.0)
+            self.assertEqual(item["crop_left"], 0)
+            self.assertEqual(item["scale"], {"x": 1.0, "y": 1.0})
+
+    def test_id_counter_is_above_every_scene_item_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = self._write_package(root)
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            for source in converted["sources"]:
+                if source["id"] != "scene":
+                    continue
+                items = source["settings"]["items"]
+                max_item_id = max((item["id"] for item in items), default=0)
+                self.assertGreater(source["settings"]["id_counter"], max_item_id)
+
+    def test_image_filename_inside_settings_is_relinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "SettingsFile.overlay"
+            config = sample_config()
+            content = config["scenes"]["items"][0]["slots"]["items"][0]["content"]
+            del content["filename"]
+            content["settings"] = {"file": "assets/background.png"}
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("assets/background.png", b"image")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            image_source = next(
+                source for source in converted["sources"] if source["id"] == "image_source"
+            )
+            expected = str(
+                (root / "SettingsFile overlay" / "assets" / "background.png").resolve()
+            )
+            self.assertEqual(image_source["settings"]["file"], expected)
+
+    def test_extraction_folder_uses_windows_safe_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "My:Overlay.overlay"
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(sample_config()))
+                archive.writestr("background.png", b"image")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(result.collection_name, "My Overlay")
+            self.assertEqual(result.extraction_path.name, "My Overlay overlay")
+            self.assertNotIn(":", result.extraction_path.name)
+            self.assertTrue((result.extraction_path / "background.png").is_file())
+
+    def test_scale_to_canvas_off_keeps_streamlabs_canvas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            self._write_active_profile(scenes, 1920, 1080)
+            package = self._write_package(root, name="NoScale.overlay")
+
+            result = import_streamlabs_overlay(
+                package, scenes, scale_to_canvas=False
+            )
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(
+                (result.canvas_width, result.canvas_height, result.profile_name),
+                (2560, 1440, None),
+            )
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            self.assertEqual(converted["resolution"], {"x": 2560, "y": 1440})
+
+    def test_scale_to_canvas_fits_aspect_uniformly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            self._write_active_profile(scenes, 1600, 1200)
+            package = root / "Fit.overlay"
+            config = sample_config()
+            config["scenes"]["items"][0]["slots"]["items"][0]["y"] = 1
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("background.png", b"image")
+
+            result = import_streamlabs_overlay(package, scenes, scale_to_canvas=True)
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual((result.canvas_width, result.canvas_height), (1600, 1200))
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            scene = next(source for source in converted["sources"] if source["id"] == "scene")
+            item = scene["settings"]["items"][0]
+            # 16:9 layout fits inside the 4:3 canvas at uniform 0.625 scale.
+            self.assertEqual(item["scale_ref"], {"x": 1600.0, "y": 900.0})
+            self.assertEqual(item["scale"], {"x": 0.625, "y": 0.625})
+            self.assertEqual(item["pos"], {"x": 0.0, "y": 900.0})
+
+    def test_display_node_imports_as_monitor_capture_without_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "Screen.overlay"
+            config = sample_config()
+            config["scenes"]["items"][0]["slots"]["items"].append(
+                {"name": "Monitor", "content": {"nodeType": "DisplayNode"}}
+            )
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("background.png", b"image")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(result.skipped_sources, [])
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            monitor = next(
+                source for source in converted["sources"] if source["id"] == "monitor_capture"
+            )
+            self.assertEqual(monitor["name"], "Monitor")
+
+    def test_streamlabs_filters_convert_to_obs_and_preserve_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = root / "Filters.overlay"
+            config = sample_config()
+            config["scenes"]["items"][0]["slots"]["items"][0]["filters"] = [
+                {
+                    "name": "Green key",
+                    "type": "ChromaKeyFilter",
+                    "settings": {"similarity": 400},
+                    "enabled": False,
+                },
+                {
+                    "type": "vendor.plugin.filter",
+                    "settings": {"lut": "assets/filter.dat"},
+                },
+            ]
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("config.json", json.dumps(config))
+                archive.writestr("background.png", b"image")
+                archive.writestr("assets/filter.dat", b"lut")
+
+            result = import_streamlabs_overlay(package, scenes)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.collection_path.read_text(encoding="utf-8"))
+            image_source = next(
+                source for source in converted["sources"] if source["id"] == "image_source"
+            )
+            key, plugin = image_source["filters"]
+            self.assertEqual(key["id"], "chroma_key_filter_v2")
+            self.assertEqual(key["settings"], {"similarity": 400})
+            self.assertFalse(key["enabled"])
+            self.assertEqual(plugin["id"], "vendor.plugin.filter")
+            self.assertTrue(plugin["enabled"])
+            self.assertEqual(
+                plugin["settings"]["lut"],
+                str((root / "Filters overlay" / "assets" / "filter.dat").resolve()),
+            )
+
+    def test_unexpected_conversion_failure_returns_error_and_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            package = self._write_package(root)
+
+            def boom(*args: object, **kwargs: object) -> dict:
+                raise ValueError("malformed item")
+
+            with mock.patch.object(streamlabs, "_scene_item", side_effect=boom):
+                result = import_streamlabs_overlay(package, scenes)
+
+            self.assertFalse(result.success)
+            self.assertIn("Could not import the Streamlabs package", result.error)
+            self.assertFalse((root / "Demo overlay").exists())
+            self.assertEqual(list(scenes.glob("*.json")), [])
+            self.assertEqual(list(scenes.glob("*.pending")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

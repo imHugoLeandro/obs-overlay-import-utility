@@ -45,11 +45,9 @@ For planning, research, or review-only requests, do not edit files or build arti
 ## Product Goals
 
 1. **Easy import**
-   - Keep three clearly separated methods on the main Import Overlay page:
-     - **Fix Scene Collection Paths**
+   - Keep two clearly separated methods on the main Import Overlay page:
+     - **Import OBS Scene Collection File**
      - **Import Streamlabs Scene File**
-     - **Automatic Scene Collection**
-   - Automatic mode prefers an OBS export JSON when both OBS and Streamlabs formats are present.
    - Minimize manual setup without hiding unresolved files or unsupported sources.
 
 2. **Portable export**
@@ -154,11 +152,11 @@ Changes to archive limits or validation require acceptance and rejection tests.
 
 ## Import Requirements
 
-### Fix Scene Collection Paths
+### Import OBS Scene Collection File
 
 - The user selects the overlay pack folder.
 - Detect valid OBS collection JSON automatically when possible.
-- Keep strict validation and case-sensitive matching as advanced options, enabled by default unless requirements change.
+- Keep strict validation and case-sensitive matching always enabled.
 - Report matched, missing, and ambiguous assets.
 - Strict mode must prevent output when required references remain unresolved.
 
@@ -171,13 +169,6 @@ Changes to archive limits or validation require acceptance and rejection tests.
 - Install a unique OBS collection name: `Name`, `Name 1`, `Name 2`, and so on.
 - Run the device wizard only when compatible device-like sources exist and the option is enabled.
 - Complete device mapping before live activation.
-
-### Automatic Scene Collection
-
-- Scan the selected pack recursively.
-- Prefer an OBS export JSON over `.overlay` when both are present.
-- Call the existing OBS/Streamlabs engines; do not create a third conversion implementation.
-- Stop on multiple equally valid candidates instead of guessing.
 
 ## Export Requirements
 

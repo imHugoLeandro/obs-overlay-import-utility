@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -22,6 +23,31 @@ from .paths import is_remote_value
 
 STREAMLABS_CANVAS_WIDTH = 2560.0
 STREAMLABS_CANVAS_HEIGHT = 1440.0
+
+
+# Well-known Streamlabs Desktop filter types mapped to the matching OBS
+# built-in filter id so imported filters keep working. Streamlabs is an OBS
+# fork, so scalar settings such as similarity/smoothness/spill survive as-is.
+# Unknown filter types are preserved verbatim per the plugin-preservation rule.
+_STREAMLABS_TO_OBS_FILTERS = {
+    "ChromaKeyFilter": "chroma_key_filter_v2",
+    "ColorKeyFilter": "color_key_filter_v2",
+    "ColorCorrectFilter": "color_filter_v2",
+    "CropFilter": "crop_filter",
+    "SharpenFilter": "sharpen_filter",
+    "LUTFilter": "obs_lut",
+    "GainFilter": "gain_filter",
+    "NoiseSuppressionFilter": "noise_suppress_filter_v2",
+    "NoiseGateFilter": "noise_gate_filter",
+    "CompressorFilter": "compressor_filter",
+    "LimiterFilter": "limiter_filter",
+    "ExpanderFilter": "expander_filter",
+    "InvertFilter": "invert_filter",
+    "DelayFilter": "async_delay_filter",
+    "RenderDelayFilter": "gpu_delay",
+    "ScalingFilter": "scale_filter",
+    "RotateFilter": "rotate_filter",
+}
 MAX_ARCHIVE_FILES = 10_000
 MAX_ARCHIVE_SIZE = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBER_SIZE = 1024 * 1024 * 1024
@@ -159,6 +185,33 @@ def _next_available_directory(parent: Path, base_name: str) -> Path:
     return candidate
 
 
+def _portable_folder_name(value: str) -> str:
+    """Make a Windows-safe folder base name from an archive stem."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", value)
+    cleaned = " ".join(cleaned.split()).rstrip(". ")
+    return cleaned or "Streamlabs Overlay"
+
+
+def _as_float(value: Any, default: float) -> float:
+    """Coerce an untrusted Streamlabs numeric field, tolerating junk values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value: Any, default: int) -> int:
+    """Coerce an untrusted integer field without crashing the whole import."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _unique_name(name: str, used: set[str]) -> str:
     cleaned = " ".join(name.split()).strip() or "Untitled source"
     candidate = cleaned
@@ -247,15 +300,23 @@ def _source_settings(content: dict[str, Any], assets: _AssetIndex) -> tuple[str,
     settings = _relink_asset_values(settings, assets)
 
     if node_type == "ImageNode":
-        settings["file"] = _asset_path(content.get("filename"), assets)
+        filename = _asset_path(content.get("filename"), assets)
+        if filename:
+            settings["file"] = filename
         return "image_source", settings
     if node_type == "VideoNode":
-        settings["local_file"] = _asset_path(content.get("filename"), assets)
-        settings["is_local_file"] = True
+        local_file = _asset_path(content.get("filename"), assets)
+        if local_file:
+            settings["local_file"] = local_file
+            settings["is_local_file"] = True
         return "ffmpeg_source", settings
     if node_type in {"WebcamNode", "CameraNode"}:
         settings["device_id"] = ""
         return "av_capture_input", settings
+    if node_type in {"DisplayNode", "MonitorNode", "ScreenNode"}:
+        # Imported without a monitor mapping when none can be detected; the
+        # user selects the screen in OBS afterwards.
+        return "monitor_capture", settings
     if node_type in {"AudioInputNode", "MicNode", "MicrophoneNode"}:
         settings["device_id"] = "default"
         return "wasapi_input_capture", settings
@@ -293,14 +354,15 @@ def _filters(item: dict[str, Any], assets: _AssetIndex) -> list[dict[str, Any]]:
         if not isinstance(settings, dict):
             settings = {}
         settings = _relink_asset_values(settings, assets)
+        filter_type = filter_data["type"]
         converted.append(
             {
-                "name": str(filter_data.get("name") or filter_data["type"]),
+                "name": str(filter_data.get("name") or filter_type),
                 "uuid": str(uuid.uuid4()),
-                "id": filter_data["type"],
-                "versioned_id": filter_data["type"],
+                "id": _STREAMLABS_TO_OBS_FILTERS.get(filter_type, filter_type),
+                "versioned_id": _STREAMLABS_TO_OBS_FILTERS.get(filter_type, filter_type),
                 "settings": settings,
-                "enabled": True,
+                "enabled": bool(filter_data.get("enabled", True)),
             }
         )
     return converted
@@ -310,30 +372,38 @@ def _scene_item(
     item: dict[str, Any], source: dict[str, Any], identifier: int, canvas_width: float, canvas_height: float
 ) -> dict[str, Any]:
     crop = item.get("crop", {}) if isinstance(item.get("crop"), dict) else {}
+    # Uniform "fit" so an imported 16:9 layout keeps its aspect on any canvas
+    # instead of stretching per axis.
+    fit_ratio = min(
+        canvas_width / STREAMLABS_CANVAS_WIDTH,
+        canvas_height / STREAMLABS_CANVAS_HEIGHT,
+    )
+    fit_width = STREAMLABS_CANVAS_WIDTH * fit_ratio
+    fit_height = STREAMLABS_CANVAS_HEIGHT * fit_ratio
     return {
         "name": source["name"],
         "source_uuid": source["uuid"],
         "visible": bool(item.get("visible", True)),
         "locked": bool(item.get("locked", False)),
-        "rot": float(item.get("rotation", 0) or 0),
-        "scale_ref": {"x": canvas_width, "y": canvas_height},
+        "rot": _as_float(item.get("rotation"), 0.0),
+        "scale_ref": {"x": fit_width, "y": fit_height},
         "align": 5,
         "bounds_type": 0,
         "bounds_align": 0,
         "bounds_crop": False,
-        "crop_left": int(crop.get("left", 0) or 0),
-        "crop_top": int(crop.get("top", 0) or 0),
-        "crop_right": int(crop.get("right", 0) or 0),
-        "crop_bottom": int(crop.get("bottom", 0) or 0),
+        "crop_left": _as_int(crop.get("left"), 0),
+        "crop_top": _as_int(crop.get("top"), 0),
+        "crop_right": _as_int(crop.get("right"), 0),
+        "crop_bottom": _as_int(crop.get("bottom"), 0),
         "id": identifier,
         "group_item_backup": False,
         "pos": {
-            "x": float(item.get("x", 0) or 0) * canvas_width,
-            "y": float(item.get("y", 0) or 0) * canvas_height,
+            "x": _as_float(item.get("x"), 0.0) * fit_width,
+            "y": _as_float(item.get("y"), 0.0) * fit_height,
         },
         "scale": {
-            "x": float(item.get("scaleX", 1 / canvas_width) or 0) * canvas_width,
-            "y": float(item.get("scaleY", 1 / canvas_height) or 0) * canvas_height,
+            "x": _as_float(item.get("scaleX"), 1.0 / canvas_width) * fit_width,
+            "y": _as_float(item.get("scaleY"), 1.0 / canvas_height) * fit_height,
         },
         "bounds": {"x": 0.0, "y": 0.0},
         "scale_filter": "disable",
@@ -416,7 +486,7 @@ def convert_streamlabs_config(
                 _scene_item(item, child, identifier, canvas_width, canvas_height)
             )
             imported_sources += 1
-        target_scene["settings"]["id_counter"] = len(entries)
+        target_scene["settings"]["id_counter"] = len(entries) + 1
 
     scene_order = [{"name": source["name"]} for source in scene_by_id.values()]
     first_scene = scene_order[0]["name"] if scene_order else "Scene"
@@ -444,7 +514,12 @@ def convert_streamlabs_config(
     return converted, imported_sources, skipped
 
 
-def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) -> StreamlabsImportResult:
+def import_streamlabs_overlay(
+    archive_path: Path,
+    obs_scenes_directory: Path,
+    *,
+    scale_to_canvas: bool = True,
+) -> StreamlabsImportResult:
     """Extract and install a Streamlabs package with rollback on publish failure."""
     result = StreamlabsImportResult()
     temporary_root: Path | None = None
@@ -455,6 +530,7 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
         archive_path = archive_path.expanduser().resolve()
         if not archive_path.is_file() or archive_path.suffix.casefold() != ".overlay":
             raise UtilityError("Choose a valid Streamlabs .overlay file.")
+        package_base = _portable_folder_name(archive_path.stem)
         with zipfile.ZipFile(archive_path) as archive:
             members = _safe_archive_members(archive)
             _ensure_extraction_space(archive_path.parent, members)
@@ -467,7 +543,7 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
                 raise UtilityError("The Streamlabs package must contain exactly one config.json file.")
             config_member_path = _archive_member_path(config_members[0])
             temporary_root = Path(
-                tempfile.mkdtemp(prefix=f".{archive_path.stem}-", dir=archive_path.parent)
+                tempfile.mkdtemp(prefix=f".{package_base}-", dir=archive_path.parent)
             )
             for member in members:
                 if member.is_dir():
@@ -487,13 +563,17 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
         obs_scenes_directory = obs_scenes_directory.expanduser().resolve()
         obs_scenes_directory.mkdir(parents=True, exist_ok=True)
         profile_canvas = active_profile_canvas(obs_scenes_directory)
-        canvas_width = float(profile_canvas.width) if profile_canvas else STREAMLABS_CANVAS_WIDTH
-        canvas_height = float(profile_canvas.height) if profile_canvas else STREAMLABS_CANVAS_HEIGHT
+        if scale_to_canvas and profile_canvas:
+            canvas_width = float(profile_canvas.width)
+            canvas_height = float(profile_canvas.height)
+        else:
+            canvas_width = STREAMLABS_CANVAS_WIDTH
+            canvas_height = STREAMLABS_CANVAS_HEIGHT
         collection_name, collection_path = next_obs_collection_path(
             obs_scenes_directory, archive_path.stem
         )
         extraction_path = _next_available_directory(
-            archive_path.parent, f"{archive_path.stem} overlay"
+            archive_path.parent, f"{package_base} overlay"
         )
         converted, imported, skipped = convert_streamlabs_config(
             config,
@@ -536,10 +616,21 @@ def import_streamlabs_overlay(archive_path: Path, obs_scenes_directory: Path) ->
         result.collection_name = collection_name
         result.canvas_width = int(canvas_width)
         result.canvas_height = int(canvas_height)
-        result.profile_name = profile_canvas.profile_name if profile_canvas else None
+        result.profile_name = (
+            profile_canvas.profile_name if scale_to_canvas and profile_canvas else None
+        )
         result.imported_sources = imported
         result.skipped_sources = skipped
-    except (OSError, zipfile.BadZipFile, UtilityError) as exc:
+    except (
+        OSError,
+        zipfile.BadZipFile,
+        UtilityError,
+        ValueError,
+        TypeError,
+        NotImplementedError,
+        OverflowError,
+        RuntimeError,
+    ) as exc:
         result.error = (
             str(exc)
             if isinstance(exc, UtilityError)

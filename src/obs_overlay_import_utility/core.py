@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterator
 
-from .constants import GENERATED_JSON_RE, SUPPORTED_EXTENSIONS, TRACKING_FILENAME
+from .constants import GENERATED_JSON_RE, TRACKING_FILENAME
 from .models import (
     AmbiguousMatch,
     ConversionResult,
@@ -20,6 +20,7 @@ from .models import (
 )
 from .paths import (
     find_file_match,
+    has_supported_extension,
     is_local_media_path,
     normalized_key,
     normalized_output_path,
@@ -97,7 +98,12 @@ def find_scene_collections(root: Path) -> list[Path]:
     return sorted(collections, key=lambda path: str(path).casefold())
 
 
-def build_file_index(root: Path, *, case_sensitive: bool = False) -> FileIndex:
+def build_file_index(
+    root: Path,
+    *,
+    case_sensitive: bool = False,
+    include_plugin_files: bool = False,
+) -> FileIndex:
     root = root.expanduser().resolve()
     index = FileIndex()
     try:
@@ -105,7 +111,9 @@ def build_file_index(root: Path, *, case_sensitive: bool = False) -> FileIndex:
             _prune_directories(current, directories)
             for filename in files:
                 path = Path(current, filename)
-                if path.suffix.casefold() not in SUPPORTED_EXTENSIONS:
+                if not has_supported_extension(
+                    filename, include_plugin_files=include_plugin_files
+                ):
                     continue
                 resolved = str(path.resolve())
                 name_key = normalized_key(filename, case_sensitive)
@@ -121,23 +129,37 @@ def build_file_index(root: Path, *, case_sensitive: bool = False) -> FileIndex:
 
 
 def iter_path_references(
-    value: Any, *, source_name: str = "Scene collection"
+    value: Any,
+    *,
+    source_name: str = "Scene collection",
+    include_plugin_files: bool = False,
 ) -> Iterator[PathReference]:
     if isinstance(value, dict):
-        current_source = (
-            value.get("name") if isinstance(value.get("name"), str) else source_name
-        )
+        raw_name = value.get("name")
+        current_source: str = raw_name if isinstance(raw_name, str) else source_name
         for key, child in value.items():
-            if isinstance(child, str) and is_local_media_path(child):
+            if isinstance(child, str) and is_local_media_path(
+                child, include_plugin_files=include_plugin_files
+            ):
                 yield PathReference(value, key, key, child, current_source)
             elif isinstance(child, (dict, list)):
-                yield from iter_path_references(child, source_name=current_source)
+                yield from iter_path_references(
+                    child,
+                    source_name=current_source,
+                    include_plugin_files=include_plugin_files,
+                )
     elif isinstance(value, list):
         for position, child in enumerate(value):
-            if isinstance(child, str) and is_local_media_path(child):
+            if isinstance(child, str) and is_local_media_path(
+                child, include_plugin_files=include_plugin_files
+            ):
                 yield PathReference(value, position, position, child, source_name)
             elif isinstance(child, (dict, list)):
-                yield from iter_path_references(child, source_name=source_name)
+                yield from iter_path_references(
+                    child,
+                    source_name=source_name,
+                    include_plugin_files=include_plugin_files,
+                )
 
 
 def path_exists_on_this_platform(value: str) -> bool:
@@ -145,13 +167,13 @@ def path_exists_on_this_platform(value: str) -> bool:
 
 
 def next_output_path(collection_path: Path) -> Path:
-    base = collection_path.with_name(f"{collection_path.stem}_ImportReady.json")
+    base = collection_path.with_name(f"{collection_path.stem}_Updated.json")
     if not base.exists():
         return base
     number = 2
     while True:
         candidate = collection_path.with_name(
-            f"{collection_path.stem}_ImportReady_{number}.json"
+            f"{collection_path.stem}_Updated{number}.json"
         )
         if not candidate.exists():
             return candidate
@@ -356,6 +378,112 @@ def resize_scene_collection(data: Any, width: int, height: int) -> bool:
     return can_scale
 
 
+# ponytail: built-in OBS source/filter ids recognized so the import report can
+# flag plugin dependencies. New OBS source types will show up as "plugin"
+# false positives; update these sets when a future OBS version ships new ids.
+_BUILTIN_SOURCE_IDS = frozenset(
+    {
+        "av_capture_input",
+        "browser_source",
+        "color_source_v2",
+        "color_source_v3",
+        "display_capture",
+        "dshow_capture_input",
+        "dshow_input",
+        "ffmpeg_source",
+        "game_capture",
+        "group",
+        "image_source",
+        "linux_v4l2_input",
+        "media_source",
+        "monitor_capture",
+        "obs_browser_source",
+        "pipewire_source",
+        "scene",
+        "scene_source",
+        "screen_capture_source",
+        "slideshow",
+        "text_ft2_source",
+        "text_ft2_source_v2",
+        "text_gdiplus",
+        "text_gdiplus_v2",
+        "wasapi_input_capture",
+        "wasapi_output_capture",
+        "window_capture",
+        "xshm_input",
+    }
+)
+
+_BUILTIN_FILTER_TYPES = frozenset(
+    {
+        "advanced_masks_filter_v2",
+        "async_delay_filter",
+        "async_sync_filter",
+        "chroma_key_filter_v2",
+        "color_filter_v2",
+        "color_key_filter_v2",
+        "compressor_filter",
+        "crop_filter",
+        "expander_filter",
+        "face_track_filter",
+        "gain_filter",
+        "invert_polarity_filter",
+        "limiter_filter",
+        "loudness_filter",
+        "mask_filter",
+        "noise_gate_filter",
+        "noise_suppress_filter_v2",
+        "padding_filter",
+        "render_blur_filter",
+        "scale_filter",
+        "scroll_filter",
+        "sharpness_filter",
+        "vst_filter",
+    }
+)
+
+_BROWSER_SOURCE_IDS = frozenset({"browser_source", "obs_browser_source"})
+
+
+def summarize_collection(data: Any) -> tuple[int, list[str]]:
+    """Count internet browser overlays and unknown (plugin) source/filter types.
+
+    Sources and filters whose ids are not recognized built-ins are reported as
+    plugin types so the importer can warn that they only render when the plugin
+    is installed on the target machine.
+    """
+
+    remote_browser = 0
+    plugin_ids: set[str] = set()
+    sources = data.get("sources") if isinstance(data, dict) else None
+    if not isinstance(sources, list):
+        return 0, []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_id = source.get("id")
+        if isinstance(source_id, str):
+            if source_id in _BROWSER_SOURCE_IDS:
+                settings = source.get("settings")
+                url = settings.get("url") if isinstance(settings, dict) else None
+                if isinstance(url, str) and url.casefold().startswith(
+                    ("http://", "https://")
+                ):
+                    remote_browser += 1
+            elif source_id not in _BUILTIN_SOURCE_IDS:
+                plugin_ids.add(source_id)
+        filters = source.get("filters")
+        if not isinstance(filters, list):
+            continue
+        for filter_data in filters:
+            if not isinstance(filter_data, dict):
+                continue
+            filter_type = filter_data.get("type")
+            if isinstance(filter_type, str) and filter_type not in _BUILTIN_FILTER_TYPES:
+                plugin_ids.add(filter_type)
+    return remote_browser, sorted(plugin_ids)
+
+
 def convert_collection(
     collection_path: Path,
     overlay_root: Path,
@@ -377,9 +505,16 @@ def convert_collection(
             )
 
         converted = copy.deepcopy(data)
-        references = list(iter_path_references(converted))
+        references = list(iter_path_references(converted, include_plugin_files=True))
         result.candidate_paths = len(references)
-        index = build_file_index(overlay_root, case_sensitive=case_sensitive)
+        result.remote_browser_urls, result.plugin_source_ids = summarize_collection(
+            converted
+        )
+        index = build_file_index(
+            overlay_root,
+            case_sensitive=case_sensitive,
+            include_plugin_files=True,
+        )
         result.indexed_files = index.file_count
 
         for reference in references:

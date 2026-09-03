@@ -92,6 +92,137 @@ class CoreTests(unittest.TestCase):
                 ],
             )
 
+    def test_plugin_and_script_file_references_are_relinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "magic.lua").write_text("-- script", encoding="utf-8")
+            (root / "voice.ttf").write_bytes(b"font")
+            (root / "vertical.json").write_text("{}", encoding="utf-8")
+            (root / "mask.png").write_bytes(b"mask")
+            source = root / "collection.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "current_scene": "Starting Soon",
+                        "scene_order": [
+                            {"name": "Starting Soon"},
+                            {"name": "v-Starting Soon"},
+                            {"name": "BRB"},
+                        ],
+                        "sources": [
+                            {
+                                "id": "aitum.vertical.source",
+                                "name": "Vertical Scene",
+                                "type": "aitum_vertical_scene",
+                                "uuid": "8f9a-plugin-0001",
+                                "settings": {
+                                    "layout_mode": "vertical",
+                                    "vertical_scene_id": "v-Starting Soon",
+                                    "script_path": r"C:\Creator\Pack\scripts\magic.lua",
+                                    "font_file": r"C:\Creator\Pack\fonts\voice.ttf",
+                                    "nested": {
+                                        "layout_file": r"C:\Creator\Pack\config\vertical.json"
+                                    },
+                                },
+                                "filters": [
+                                    {
+                                        "name": "Plugin filter",
+                                        "type": "aitum.filter",
+                                        "settings": {
+                                            "extra_path": r"C:\Creator\Pack\scripts\magic.lua"
+                                        },
+                                    },
+                                    {
+                                        "name": "Blend mask",
+                                        "type": "mask_filter",
+                                        "settings": {
+                                            "mask_path": r"C:\Creator\Pack\media\mask.png"
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                        "scenes": [
+                            {
+                                "name": "Starting Soon",
+                                "items": [
+                                    {
+                                        "source_uuid": "8f9a-plugin-0001",
+                                        "transform": {"pos": {"x": 0, "y": 0}},
+                                    }
+                                ],
+                            },
+                            {"name": "v-Starting Soon", "items": []},
+                            {"name": "BRB", "items": []},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = core.convert_collection(source, root)
+
+            self.assertTrue(result.success, result.error)
+            converted = json.loads(result.output_path.read_text(encoding="utf-8"))
+            settings = converted["sources"][0]["settings"]
+            self.assertEqual(
+                settings["script_path"], str((root / "magic.lua").resolve())
+            )
+            self.assertEqual(
+                settings["font_file"], str((root / "voice.ttf").resolve())
+            )
+            self.assertEqual(
+                settings["nested"]["layout_file"],
+                str((root / "vertical.json").resolve()),
+            )
+            self.assertEqual(
+                converted["sources"][0]["filters"][0]["settings"]["extra_path"],
+                str((root / "magic.lua").resolve()),
+            )
+            # Image Mask/Blend filter paths are relinked too (OBS #11257).
+            self.assertEqual(
+                converted["sources"][0]["filters"][1]["settings"]["mask_path"],
+                str((root / "mask.png").resolve()),
+            )
+            # Import health report inputs.
+            self.assertEqual(result.plugin_source_ids, ["aitum.filter", "aitum.vertical.source"])
+            self.assertEqual(result.remote_browser_urls, 0)
+            # Unknown plugin fields, UUIDs, and extra/vertical scenes are preserved.
+            self.assertEqual(converted["sources"][0]["id"], "aitum.vertical.source")
+            self.assertEqual(converted["sources"][0]["uuid"], "8f9a-plugin-0001")
+            self.assertEqual(settings["layout_mode"], "vertical")
+            self.assertEqual(settings["vertical_scene_id"], "v-Starting Soon")
+            self.assertEqual(
+                [s["name"] for s in converted["scenes"]],
+                ["Starting Soon", "v-Starting Soon", "BRB"],
+            )
+
+    def test_summary_counts_browser_urls_and_plugin_types(self) -> None:
+        data = {
+            "sources": [
+                {
+                    "id": "obs_browser_source",
+                    "settings": {"url": "https://streamelements.com/overlay/abc"},
+                },
+                {
+                    "id": "browser_source",
+                    "settings": {"url": "file:///C:/local/widget.html"},
+                },
+                {"id": "image_source", "settings": {"file": r"C:\a\b.png"}},
+                {"id": "aitum.vertical.source", "settings": {}},
+                {
+                    "id": "ffmpeg_source",
+                    "filters": [
+                        {"type": "chroma_key_filter_v2"},
+                        {"type": "vendor.shader.filter"},
+                    ],
+                },
+            ]
+        }
+        remote_browser, plugin_ids = core.summarize_collection(data)
+        self.assertEqual(remote_browser, 1)  # https URL counts; file:// does not
+        self.assertEqual(plugin_ids, ["aitum.vertical.source", "vendor.shader.filter"])
+
     def test_missing_file_prevents_output_in_strict_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -194,8 +325,8 @@ class CoreTests(unittest.TestCase):
             )
             first = core.convert_collection(source, root)
             second = core.convert_collection(source, root)
-            self.assertEqual(first.output_path.name, "collection_ImportReady.json")
-            self.assertEqual(second.output_path.name, "collection_ImportReady_2.json")
+            self.assertEqual(first.output_path.name, "collection_Updated.json")
+            self.assertEqual(second.output_path.name, "collection_Updated2.json")
 
     def test_atomic_failure_leaves_no_temporary_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

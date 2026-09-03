@@ -44,6 +44,37 @@ SUPPORTED_EXTENSIONS = frozenset(
     }
 )
 
+# Non-media local files plugins, scripts, and browser sources may reference
+# beyond plain media: layouts, scripts, configs, fonts, and web assets. Kept
+# separate from SUPPORTED_EXTENSIONS so the exporter's media inventory stays
+# accurate while the importer can still relink these references.
+PLUGIN_FILE_EXTENSIONS = frozenset(
+    {
+        ".cfg",
+        ".conf",
+        ".css",
+        ".dat",
+        ".db",
+        ".eot",
+        ".ini",
+        ".js",
+        ".json",
+        ".lua",
+        ".mjs",
+        ".otf",
+        ".py",
+        ".sqlite",
+        ".toml",
+        ".ttf",
+        ".txt",
+        ".woff",
+        ".woff2",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+
 LOCAL_PATH_KEYS = frozenset(
     {
         "file",
@@ -71,6 +102,6 @@ REMOTE_PREFIXES = (
 )
 
 GENERATED_JSON_RE = re.compile(
-    r"_(?:converted|importready)(?:_\d+)?\.json$",
+    r"_(?:converted|importready|updated)(?:_?\d+)?\.json$",
     re.IGNORECASE,
 )

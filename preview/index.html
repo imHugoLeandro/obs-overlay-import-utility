@@ -66,7 +66,7 @@
     width:214px; flex:0 0 auto; background:var(--sidebar); color:var(--sidebar-fg);
     display:flex; flex-direction:column; padding:22px 18px 22px;
   }
-  .sidebar .logo { display:block; width:160px; margin:0 auto 18px; user-select:none; }
+  .sidebar .logo { display:block; width:160px; margin:0 0 18px; user-select:none; }
   .sidebar .caption {
     color:var(--sidebar-muted); font-size:calc(12px * var(--uz));
     font-weight:700; letter-spacing:.1em; margin-bottom:8px;
@@ -94,7 +94,7 @@
 
   /* Collapsed sidebar (mirrors the app's collapse state) */
   body.sidebar-collapsed .sidebar { width:96px; padding-left:10px; padding-right:10px; }
-  body.sidebar-collapsed .sidebar .logo { width:75px; } /* 30% taller than the 24px icons (75px = 1.3×24×480/200); rail widened so it stays centered */
+  body.sidebar-collapsed .sidebar .logo { width:75px; margin:0 auto 18px; } /* 30% taller than the 24px icons (75px = 1.3×24×480/200); rail widened so it stays centered */
   body.sidebar-collapsed .sidebar .caption,
   body.sidebar-collapsed .sidebar .bottom span:first-child { display:none; }
   body.sidebar-collapsed .nav-item { font-size:0; padding:10px 0; justify-content:center; gap:0; }
@@ -267,7 +267,7 @@
 
     <div class="method expanded" data-method="obs">
       <div class="method-head">
-        <div class="method-title">Fix Scene Collection Paths</div>
+        <div class="method-title">Import OBS Scene Collection File</div>
         <button class="method-arrow">▾</button>
       </div>
       <div class="method-body">
@@ -276,12 +276,8 @@
           <input class="grow" type="text" placeholder="C:\Users\You\Downloads\MyOverlayPack" value="">
           <button class="btn">Browse…</button>
         </div>
-        <div class="hint">The scene collection export is found automatically inside this folder.</div>
-        <button class="btn" id="advBtn" style="margin-top:8px;">Advanced options ▸</button>
-        <div id="advOptions" style="display:none; margin-top:8px;">
-          <label class="check"><input type="checkbox" checked> Require every referenced file</label>
-          <label class="check"><input type="checkbox" checked> Case-sensitive filename matching</label>
-        </div>
+        <div class="hint">The scene collection export is found automatically inside this folder. Strict file checks and case-sensitive matching are always enabled.</div>
+        <label class="check" style="margin-top:8px;"><input type="checkbox" id="scaleCanvas" checked> Scale layout to my OBS canvas after import (aspect-preserving)</label>
       </div>
     </div>
 
@@ -296,29 +292,13 @@
           <input class="grow" type="text" placeholder="C:\Users\You\Downloads\Pack.overlay" value="">
           <button class="btn">Browse…</button>
         </div>
-        <div class="hint">Files are extracted beside the selected package and a new OBS collection is created automatically.</div>
-        <label class="check"><input type="checkbox" checked> Run device setup wizard after import</label>
-      </div>
-    </div>
-
-    <div class="method" data-method="automatic">
-      <div class="method-head">
-        <div class="method-title">Automatic Scene Collection</div>
-        <button class="method-arrow">▸</button>
-      </div>
-      <div class="method-body">
-        <label class="field">Scene collection pack folder</label>
-        <div class="row">
-          <input class="grow" type="text" placeholder="C:\Users\You\Downloads\MyOverlayPack" value="">
-          <button class="btn">Browse…</button>
-        </div>
-        <div class="hint">The utility looks for exactly one .overlay package first, then one OBS scene collection export. It converts the detected pack and installs it in OBS with a new collection name.</div>
-        <label class="check"><input type="checkbox" checked> Run device setup wizard after import</label>
+        <div class="hint">Files are extracted beside the selected package and a new OBS collection is created automatically. Device sources are auto-matched to local devices; unmatched sources stay unconfigured for manual setup.</div>
+        <label class="check" style="margin-top:8px;"><input type="checkbox" id="scaleCanvasStreamlabs" checked> Scale layout to my OBS canvas after import (aspect-preserving)</label>
       </div>
     </div>
 
     <div class="run-row">
-      <span class="status">Selected: Fix Scene Collection Paths</span>
+      <span class="status">Selected: Import OBS Scene Collection File</span>
       <button class="btn primary">Run Import</button>
     </div>
 
@@ -469,8 +449,6 @@
       <div class="card-head">Import behavior</div>
       <div class="card-body">
         <label class="check"><input type="checkbox" checked> Remember the last overlay folder</label>
-        <label class="check"><input type="checkbox" checked> Require every referenced file by default</label>
-        <label class="check"><input type="checkbox" checked> Use case-sensitive filename matching by default</label>
         <label class="check"><input type="checkbox" checked> Open the output folder after a successful conversion</label>
       </div>
     </div>
@@ -600,7 +578,7 @@
       }
       function assertImportStrict() {
         var c = document.querySelector('[data-page=import] .console');
-        return c.textContent.indexOf('Strict mode') !== -1;
+        return c.textContent.indexOf('Strict matching') !== -1;
       }
       function assertLogHeadings() {
         var hs = document.querySelectorAll('.log-title');
@@ -662,10 +640,27 @@
       wait(100, assertLogHeadings);
       wait(100, function () {
         document.querySelector('[data-method=obs] .method-body input[type=text]').value = 'C:\\Users\\Streamer\\Downloads\\MyPack';
-        fire(document.getElementById('advBtn')); // expand advanced (strict is on)
+        assert('import scale-to-canvas checkbox defaults on', document.getElementById('scaleCanvas').checked);
         fire(document.querySelector('[data-page=import] .run-row .btn.primary'));
       });
       waitUntil(30000, assertImportStrict, 'import run + strict-mode block');
+      wait(100, function () {
+        document.querySelector('[data-method=obs] .method-body input[type=text]').value =
+          document.querySelector('[data-method=obs] .method-body input[type=text]').value.replace('MyPack', 'CleanPack');
+        fire(document.querySelector('[data-page=import] .run-row .btn.primary'));
+      });
+      waitUntil(30000, function () {
+        var c = document.querySelector('[data-page=import] .console');
+        return c.textContent.indexOf('Installed as OBS scene collection') !== -1;
+      }, 'import clean run installs collection');
+      wait(100, function () {
+        fire(document.querySelector('[data-method=streamlabs] .method-head'));
+        var expanded = document.querySelectorAll('.method.expanded');
+        var status = document.querySelector('[data-page=import] .run-row .status').textContent;
+        assert('import accordion: switching collapses the other card', expanded.length === 1 && expanded[0].dataset.method === 'streamlabs');
+        assert('import selection updates status', status.indexOf('Import Streamlabs Scene File') !== -1);
+        fire(document.querySelector('[data-method=obs] .method-head')); // switch back to OBS
+      });
       wait(100, function () {
         nav('settings');
         fire(document.querySelector('[data-page=settings] .run-row .btn.primary'));
@@ -722,7 +717,7 @@
         s.value = 'theme-light';
         s.dispatchEvent(new Event('change'));
       });
-      // Sidebar logo: centered horizontally in both states (key rule).
+      // Sidebar logo: centered when collapsed, left-aligned when expanded (mirrors ui.py).
       var lastGap = null;
       function logoGaps() {
         var lg = document.getElementById('logoImg').getBoundingClientRect();
@@ -732,6 +727,11 @@
       function isLogoCentered(tol) {
         lastGap = logoGaps();
         return Math.abs(lastGap.left - lastGap.right) <= tol;
+      }
+      function isLogoLeftAligned(padTol) {
+        lastGap = logoGaps();
+        var padL = parseFloat(getComputedStyle(document.querySelector('.sidebar')).paddingLeft) || 0;
+        return Math.abs(lastGap.left - padL) <= padTol && lastGap.right > lastGap.left + padTol;
       }
       wait(100, function () {
         document.getElementById('collapseArrow').click();
@@ -768,7 +768,7 @@
       wait(100, function () {
         document.getElementById('collapseArrow').click();
       });
-      waitUntil(3000, function () { return isLogoCentered(1); }, 'expanded logo centered');
+      waitUntil(3000, function () { return isLogoLeftAligned(1); }, 'expanded logo left-aligned');
       wait(100, function () {
         results.push('INFO expanded gap left=' + lastGap.left.toFixed(1) + ' right=' + lastGap.right.toFixed(1) + ' width=' + lastGap.w.toFixed(1));
       });

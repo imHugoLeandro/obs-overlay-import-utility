@@ -36,6 +36,13 @@ class ConversionResult:
     indexed_files: int = 0
     candidate_paths: int = 0
     error: str | None = None
+    installed_name: str = ""
+    installed_path: Path | None = None
+    install_error: str | None = None
+    remote_browser_urls: int = 0
+    plugin_source_ids: list[str] = field(default_factory=list)
+    scaled: bool = False
+    scale_note: str = ""
 
 
 @dataclass

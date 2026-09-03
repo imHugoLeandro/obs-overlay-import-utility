@@ -171,6 +171,36 @@ def available_device_candidates(
     return candidates
 
 
+def auto_apply_device_choices(
+    collection_path: Path,
+    obs_scenes_directory: Path,
+    *,
+    exclude_collection: Path | None = None,
+) -> tuple[int, int]:
+    """Map each device source to the single local candidate of its exact type.
+
+    Sources with no candidate, or several equally plausible candidates, are
+    left unconfigured so the user can set them up manually in OBS. Returns
+    ``(auto_matched, left_unconfigured)``.
+    """
+    requirements = collection_device_requirements(collection_path)
+    if not requirements:
+        return 0, 0
+    candidates = available_device_candidates(
+        obs_scenes_directory, exclude_collection=exclude_collection
+    )
+    choices: dict[str, DeviceCandidate | None | str] = {}
+    for requirement in requirements:
+        entries = candidates.get(requirement.source_id.casefold(), [])
+        if len(entries) == 1:
+            choices[requirement.key] = entries[0]
+    if choices:
+        error = apply_device_choices(collection_path, choices)
+        if error:
+            raise UtilityError(error)
+    return len(choices), len(requirements) - len(choices)
+
+
 def apply_device_choices(
     collection_path: Path, choices: dict[str, DeviceCandidate | None | str]
 ) -> str | None:

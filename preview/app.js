@@ -103,22 +103,32 @@
     this.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
   });
 
-  /* ---------------- Import method cards / advanced options --------------- */
-  var methods = document.querySelectorAll('.method');
-  methods.forEach(function (m) {
+  /* ---------------- Import method cards: selection + accordion ------------ */
+  var importSelected = 'obs'; // mirrors app import_method_var
+  function importTitle(key) {
+    return key === 'streamlabs' ? 'Import Streamlabs Scene File' : 'Import OBS Scene Collection File';
+  }
+  function selectImportMethod(key) {
+    importSelected = key;
+    document.querySelectorAll('.method').forEach(function (m) {
+      var on = m.dataset.method === key;
+      m.classList.toggle('expanded', on);
+      m.querySelector('.method-arrow').textContent = on ? '▾' : '▸';
+    });
+    setStatus(importStatus, 'Selected: ' + importTitle(key));
+  }
+  document.querySelectorAll('.method').forEach(function (m) {
     m.querySelector('.method-head').addEventListener('click', function () {
-      var expanded = m.classList.toggle('expanded');
-      m.querySelector('.method-arrow').textContent = expanded ? '▾' : '▸';
+      var key = m.dataset.method;
+      if (importSelected !== key) {
+        selectImportMethod(key); // accordion: expand this one, collapse the rest
+      } else {
+        m.classList.toggle('expanded');
+        m.querySelector('.method-arrow').textContent =
+          m.classList.contains('expanded') ? '▾' : '▸';
+      }
     });
   });
-  var advBtn = document.getElementById('advBtn');
-  var advOptions = document.getElementById('advOptions');
-  advBtn.addEventListener('click', function () {
-    var open = advOptions.style.display !== 'none';
-    advOptions.style.display = open ? 'none' : 'block';
-    advBtn.textContent = open ? 'Advanced options ▸' : 'Hide advanced options ▾';
-  });
-
   /* ---------------- Sample data (Windows-style) -------------------------- */
   var MOCK_COLLECTIONS = ['Main Scene Collection', 'Streamer Setup (imported)', 'Gaming Overlay', 'Just Chatting - New'];
   var MOCK_SCENES = ['Intro', 'Gameplay', 'BRB', 'Ending'];
@@ -160,64 +170,61 @@
 
   wirePicker(methodBrowse('obs'), methodInput('obs'), { dir: true });
   wirePicker(methodBrowse('streamlabs'), methodInput('streamlabs'), { accept: '.overlay' });
-  wirePicker(methodBrowse('automatic'), methodInput('automatic'), { dir: true });
-
-  function methodName() {
-    var expanded = document.querySelector('.method.expanded .method-title');
-    return expanded ? expanded.textContent : 'Fix Scene Collection Paths';
-  }
 
   importRun.addEventListener('click', function () {
-    var folder = (methodInput('obs').value || '').trim();
-    var file = (methodInput('streamlabs').value || '').trim();
-    var auto = (methodInput('automatic').value || '').trim();
-    var chosen = methodName();
-    var picked = '';
-    if (chosen.indexOf('Streamlabs') !== -1) picked = file;
-    else if (chosen.indexOf('Automatic') !== -1) picked = auto;
-    else picked = folder;
+    var streamlabs = importSelected === 'streamlabs';
+    var picked = ((streamlabs ? methodInput('streamlabs') : methodInput('obs')).value || '').trim();
+    var chosen = importTitle(importSelected);
 
     if (!picked) {
-      log(importConsole, 'Error: choose a ' +
-        (chosen.indexOf('Streamlabs') !== -1 ? '.overlay file' : 'folder') + ' first.', true);
+      log(importConsole, 'Error: choose a ' + (streamlabs ? '.overlay file' : 'folder') + ' first.', true);
       setStatus(importStatus, 'Nothing selected yet.');
       return;
     }
     clear(importConsole);
     setStatus(importStatus, 'Selected: ' + chosen);
-    var strict = advOptions.style.display !== 'none' &&
-      advOptions.querySelectorAll('input')[0].checked;
     var folderName = picked.split('\\').pop();
 
-    if (chosen === 'Fix Scene Collection Paths') {
-      runSteps(importRun, [
-        { fn: function () { log(importConsole, 'Scanning overlay folder: ' + picked); } },
-        { fn: function () { log(importConsole, 'Detected scene_collection.json (OBS export)'); } },
-        { fn: function () { log(importConsole, 'Relinked 42/48 local asset references (6 missing)'); } },
-        { fn: function () {
-            if (strict) {
-              log(importConsole, 'Strict mode: 6 references remain unresolved. Output blocked.', true);
-            } else {
-              log(importConsole, 'Wrote collection "' + folderName + ' (repair)" with a unique name.');
-              log(importConsole, 'Original export untouched. Done.', false);
-            }
-          } }
-      ], 'Simulation finished — real import runs in the Windows app.');
-    } else if (chosen === 'Import Streamlabs Scene File') {
+    if (streamlabs) {
       var packageName = methodInput('streamlabs').dataset.picked || folderName;
+      var scaleCanvasS = document.getElementById('scaleCanvasStreamlabs');
+      var scaleChecked = scaleCanvasS && scaleCanvasS.checked;
       runSteps(importRun, [
         { fn: function () { log(importConsole, 'Validating archive ' + picked + ' (traversal / size limits OK)'); } },
         { fn: function () { log(importConsole, 'Extracted to ' + demoPath(packageName + '_extracted')); } },
         { fn: function () { log(importConsole, 'Converted 5/6 sources; 1 plugin source preserved as-is'); } },
+        { fn: function () { log(importConsole, scaleChecked
+            ? 'Scaled layout to the active OBS canvas (1920 × 1080), aspect preserved.'
+            : 'Canvas left at Streamlabs 2560 × 1440 (scale-to-canvas off).'); } },
+        { fn: function () { log(importConsole, 'Device sources auto-matched to local devices; unmatched screens/devices left for manual setup in OBS.'); } },
         { fn: function () { log(importConsole, 'Collection installed as "' + packageName + '" (no name collision).'); } }
       ], 'Simulation finished — real import runs in the Windows app.');
-    } else {
-      runSteps(importRun, [
-        { fn: function () { log(importConsole, 'Scanning pack: ' + picked); } },
-        { fn: function () { log(importConsole, 'Found exactly one OBS scene collection export (preferred over .overlay)'); } },
-        { fn: function () { log(importConsole, 'Imported and installed as "' + folderName + ' 1".'); } }
-      ], 'Simulation finished — real import runs in the Windows app.');
+      return;
     }
+    runSteps(importRun, [
+      { fn: function () { log(importConsole, 'Scanning overlay folder: ' + picked); } },
+      { fn: function () { log(importConsole, 'Detected scene_collection.json (OBS export)'); } },
+      { fn: function () {
+          // Strict checks and case-sensitive matching are always enabled.
+          var clean = folderName.toLowerCase().indexOf('clean') !== -1;
+          if (clean) {
+            log(importConsole, 'Relinked all 48 local asset references (0 missing).');
+            log(importConsole, 'Created ' + folderName + '_Updated.json with corrected paths.');
+            log(importConsole, 'Installed as OBS scene collection "' + folderName + '" (no name collision).');
+            log(importConsole, 'Local file references: 48 online · 0 missing.', false);
+            if (document.getElementById('scaleCanvas').checked) {
+              log(importConsole, 'Scaled layout to the active OBS canvas (1920 × 1080), aspect preserved.');
+            } else {
+              log(importConsole, 'Canvas left as-is (scale-to-canvas off).', true);
+            }
+            log(importConsole, 'Plugin sources/filters: none — all built-in OBS types.', false);
+            log(importConsole, 'OBS open: switched to it live. Original export untouched.', false);
+          } else {
+            log(importConsole, 'Relinked 42/48 local asset references (6 missing).');
+            log(importConsole, 'Strict matching is always enabled: output blocked until every referenced file is found.', true);
+          }
+        } }
+    ], 'Simulation finished — real import runs in the Windows app.');
   });
 
   /* ---------------- Export page ------------------------------------------ */
@@ -413,9 +420,7 @@
       customPy: customPy.checked,
       customObs: customObs.checked,
       rememberFolder: behavior[0].checked,
-      strict: behavior[1].checked,
-      caseSensitive: behavior[2].checked,
-      openOutput: behavior[3].checked,
+      openOutput: behavior[1].checked,
       showToolLogs: document.getElementById('showToolLogs').checked
     };
   }
@@ -431,7 +436,7 @@
     customPy.checked = !!s.customPy;
     customObs.checked = !!s.customObs;
     var behavior = document.querySelectorAll('#cardBehavior input[type=checkbox]');
-    ['rememberFolder', 'strict', 'caseSensitive', 'openOutput'].forEach(function (key, i) {
+    ['rememberFolder', 'openOutput'].forEach(function (key, i) {
       behavior[i].checked = !!s[key];
     });
     document.getElementById('showToolLogs').checked = s.showToolLogs !== false;

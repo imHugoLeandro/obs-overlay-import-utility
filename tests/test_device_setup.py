@@ -13,6 +13,7 @@ from obs_overlay_import_utility.models import UtilityError  # noqa: E402
 from obs_overlay_import_utility.device_setup import (  # noqa: E402
     DeviceCandidate,
     apply_device_choices,
+    auto_apply_device_choices,
     available_device_candidates,
     collection_device_requirements,
 )
@@ -133,6 +134,89 @@ class DeviceSetupTests(unittest.TestCase):
             updated = json.loads(path.read_text(encoding="utf-8"))
             self.assertFalse(updated["sources"][1]["enabled"])
 
+
+    def test_auto_apply_device_choices_maps_unique_and_leaves_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "obs" / "basic" / "scenes"
+            scenes.mkdir(parents=True)
+            (scenes / "Local.json").write_text(
+                json.dumps(
+                    {
+                        "name": "Local",
+                        "current_scene": "Main",
+                        "scene_order": [{"name": "Main"}],
+                        "sources": [
+                            {"name": "Main", "id": "scene", "settings": {"items": []}},
+                            {
+                                "name": "Cam",
+                                "id": "av_capture_input",
+                                "settings": {"device_id": "cam-1"},
+                                "enabled": True,
+                            },
+                            {
+                                "name": "Window A",
+                                "id": "window_capture",
+                                "settings": {"window": "a"},
+                                "enabled": True,
+                            },
+                            {
+                                "name": "Window B",
+                                "id": "window_capture",
+                                "settings": {"window": "b"},
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            imported = scenes / "Imported.json"
+            imported.write_text(
+                json.dumps(
+                    {
+                        "name": "Imported",
+                        "current_scene": "Main",
+                        "scene_order": [{"name": "Main"}],
+                        "sources": [
+                            {"name": "Main", "id": "scene", "settings": {"items": []}},
+                            {
+                                "name": "Cam",
+                                "uuid": "imported-cam",
+                                "id": "av_capture_input",
+                                "settings": {"device_id": ""},
+                                "enabled": True,
+                            },
+                            {
+                                "name": "Window",
+                                "uuid": "imported-window",
+                                "id": "window_capture",
+                                "settings": {"window": ""},
+                                "enabled": True,
+                            },
+                            {
+                                "name": "Screen",
+                                "uuid": "imported-screen",
+                                "id": "monitor_capture",
+                                "settings": {},
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            mapped, unconfigured = auto_apply_device_choices(
+                imported, scenes, exclude_collection=imported
+            )
+
+            self.assertEqual((mapped, unconfigured), (1, 2))
+            updated = json.loads(imported.read_text(encoding="utf-8"))
+            sources = {source["name"]: source for source in updated["sources"]}
+            self.assertEqual(sources["Cam"]["settings"]["device_id"], "cam-1")
+            self.assertEqual(sources["Window"]["settings"]["window"], "")
+            self.assertEqual(sources["Screen"]["settings"], {})
 
     def test_invalid_collection_is_reported_instead_of_silently_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

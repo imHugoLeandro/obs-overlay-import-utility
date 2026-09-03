@@ -1,6 +1,6 @@
 # Project Handoff
 
-Last updated: 2026-07-16
+Last updated: 2026-09-03
 
 ## Project
 
@@ -11,6 +11,9 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 ## Current state
 
 - Branch: `main`
+- 2026-09-03 (dev): Import Overlay reduced to two methods — **Import OBS Scene Collection File** and **Import Streamlabs Scene File**. The Automatic Scene Collection card, its ui.py handlers, and the `"automatic"` event branch were removed; `automatic.py` and `tests/test_automatic.py` remain intact.
+- 2026-09-03 (dev): Streamlabs import hardened — malformed numeric transform fields fall back to defaults, unexpected conversion failures return a rolled-back error instead of hanging the UI worker, extraction folder names are Windows-sanitized, image/video settings are preserved when the top-level filename is missing, and scene `id_counter` is kept above every item id.
+- 2026-09-03 (dev): Streamlabs import UX — added the shared "Scale layout to my OBS canvas after import (aspect-preserving)" checkbox (uniform fit to the active profile canvas), removed the interactive device-setup wizard and its checkbox in favor of silent auto-matching (`auto_apply_device_choices` maps each device source to the unique local candidate of its exact OBS source id, leaving ambiguous/none unconfigured), display nodes import as `monitor_capture`, and known Streamlabs filter types map to OBS filter ids while unknown filters/enabled state are preserved.
 - Latest pushed commit before these working changes: `333e1ea` — `fix: adjust indicator margins and sizes for better UI consistency`
 - Working tree has uncommitted vertical-scrollbar thickness enhancement.
 - Latest GitHub Actions test run passed: <https://github.com/imHugoLeandro/obs-overlay-import-utility/actions/runs/29268864090>
@@ -29,7 +32,7 @@ Repository: <https://github.com/imHugoLeandro/obs-overlay-import-utility>
 - Refuses ambiguous matches instead of guessing.
 - Requires all referenced files by default.
 - Never edits the original collection.
-- Writes a new `_ImportReady.json` atomically.
+- Writes a new `_Updated.json` atomically and installs it into OBS as a new scene collection.
 - Never overwrites an earlier converted output.
 
 ### Navigation

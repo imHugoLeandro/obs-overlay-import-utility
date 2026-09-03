@@ -13,9 +13,8 @@ import tkinter.font as tkfont
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Callable
 
-from .automatic import AutomaticImportResult, automatically_import_overlay
+
 from .appearance import (
     Palette,
     enable_high_dpi_awareness,
@@ -23,14 +22,13 @@ from .appearance import (
     window_dpi,
 )
 from .constants import APP_TITLE, TOOL_LOG_HEIGHT, TOOL_LOG_HEADING, __version__
-from .core import convert_collection, find_scene_collections, load_json
-from .device_setup import (
-    DeviceCandidate,
-    DeviceRequirement,
-    apply_device_choices,
-    available_device_candidates,
-    collection_device_requirements,
+from .core import (
+    convert_collection,
+    find_scene_collections,
+    install_scene_collection,
+    load_json,
 )
+from .device_setup import auto_apply_device_choices
 from .exporter import (
     ExportResult,
     ExportInventory,
@@ -215,13 +213,9 @@ class ImportUtilityApp:
         self.folder_var = tk.StringVar(value=initial_folder)
         self.collection_var = tk.StringVar()
         self.import_method_var = tk.StringVar(value="obs")
-        self.obs_advanced_visible = False
         self.pending_obs_conversion = False
-        self.strict_var = tk.BooleanVar(value=self.settings.strict_validation)
-        self.case_var = tk.BooleanVar(value=self.settings.case_sensitive_matching)
+        self.scale_to_canvas_var = tk.BooleanVar(value=True)
         self.streamlabs_file_var = tk.StringVar()
-        self.device_setup_var = tk.BooleanVar(value=True)
-        self.automatic_folder_var = tk.StringVar(value=initial_folder)
         self.export_collection_var = tk.StringVar()
         self.export_destination_var = tk.StringVar()
         self.export_compress_var = tk.BooleanVar(value=True)
@@ -463,7 +457,7 @@ class ImportUtilityApp:
         try:
             self.logo_source = tk.PhotoImage(file=logo_path)
             self.logo_label = ttk.Label(navigation, style="Sidebar.TLabel")
-            self.logo_label.grid(row=0, column=0, sticky="", pady=(0, 18))
+            self.logo_label.grid(row=0, column=0, sticky="w", pady=(0, 18))
         except tk.TclError:
             self.logo_label = None
         self.sidebar_caption_label = ttk.Label(
@@ -585,11 +579,11 @@ class ImportUtilityApp:
         self.method_arrows: dict[str, ttk.Button] = {}
         self.method_accents: dict[str, tk.Frame] = {}
         self.method_labels: dict[str, ttk.Label] = {}
-        self.method_expanded = {"obs": True, "streamlabs": False, "automatic": False}
+        self.method_expanded = {"obs": True, "streamlabs": False}
 
         obs_card = ttk.LabelFrame(
             methods,
-            text="Fix Scene Collection Paths",
+            text="Import OBS Scene Collection File",
             padding=14,
             style="Card.TLabelframe",
         )
@@ -644,26 +638,13 @@ class ImportUtilityApp:
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.advanced_obs_button = ttk.Button(
-            obs_options, text="Advanced options ▸", command=self._toggle_obs_advanced
+        self.scale_to_canvas_check = ttk.Checkbutton(
+            obs_options,
+            text="Scale layout to my OBS canvas after import (aspect-preserving)",
+            variable=self.scale_to_canvas_var,
         )
-        self.advanced_obs_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.method_controls.append(self.advanced_obs_button)
-        self.advanced_obs_options = ttk.Frame(obs_options)
-        self.advanced_obs_options.columnconfigure(0, weight=1)
-        self.strict_check = ttk.Checkbutton(
-            self.advanced_obs_options,
-            text="Require every referenced file",
-            variable=self.strict_var,
-        )
-        self.strict_check.grid(row=0, column=0, sticky="w")
-        self.case_check = ttk.Checkbutton(
-            self.advanced_obs_options,
-            text="Case-sensitive filename matching",
-            variable=self.case_var,
-        )
-        self.case_check.grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.method_controls.extend((self.strict_check, self.case_check))
+        self.scale_to_canvas_check.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.method_controls.append(self.scale_to_canvas_check)
 
         streamlabs_card = ttk.LabelFrame(
             methods,
@@ -726,93 +707,22 @@ class ImportUtilityApp:
             style="Muted.TLabel",
             wraplength=700,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.streamlabs_device_setup_check = ttk.Checkbutton(
+        self.streamlabs_scale_check = ttk.Checkbutton(
             streamlabs_options,
-            text="Run device setup wizard after import",
-            variable=self.device_setup_var,
+            text="Scale layout to my OBS canvas after import (aspect-preserving)",
+            variable=self.scale_to_canvas_var,
         )
-        self.streamlabs_device_setup_check.grid(
+        self.streamlabs_scale_check.grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
-        self.method_controls.append(self.streamlabs_device_setup_check)
+        self.method_controls.append(self.streamlabs_scale_check)
 
-        automatic_card = ttk.LabelFrame(
-            methods,
-            text="Automatic Scene Collection",
-            padding=14,
-            style="Card.TLabelframe",
-        )
-        automatic_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        automatic_card.columnconfigure(0, weight=1)
-        automatic_header = tk.Frame(automatic_card, bg=self.current_palette.surface, cursor="hand2")
-        automatic_header.grid(row=0, column=0, sticky="ew")
-        automatic_header.columnconfigure(1, weight=1)
-        self.automatic_accent = tk.Frame(automatic_header, width=4, bg=self.current_palette.border)
-        self.automatic_accent.grid(row=0, column=0, sticky="ns")
-        self.method_accents["automatic"] = self.automatic_accent
-        self.automatic_label = ttk.Label(
-            automatic_header,
-            text="Detect a Streamlabs package or OBS export and import it into OBS automatically",
-            wraplength=600,
-            style="MethodSelector.TLabel",
-        )
-        self.automatic_label.grid(row=0, column=1, sticky="w", padx=(10, 8), pady=14)
-        self.method_labels["automatic"] = self.automatic_label
-        self.automatic_arrow = ttk.Button(
-            automatic_header,
-            text="▸",
-            width=3,
-            command=lambda: self._toggle_import_method("automatic"),
-            style="Arrow.TButton",
-        )
-        self.automatic_arrow.grid(row=0, column=2, sticky="e")
-        self.method_arrows["automatic"] = self.automatic_arrow
-        self.method_controls.append(self.automatic_arrow)
-        automatic_header.bind("<Button-1>", lambda e: self._select_import_method("automatic"))
-        self.automatic_label.bind("<Button-1>", lambda e: self._select_import_method("automatic"))
-        automatic_options = ttk.Frame(automatic_card)
-        automatic_options.columnconfigure(0, weight=1)
-        self.method_options["automatic"] = automatic_options
-        automatic_options.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        ttk.Label(automatic_options, text="Scene collection pack folder").grid(
-            row=0, column=0, sticky="w"
-        )
-        automatic_folder_row = ttk.Frame(automatic_options)
-        automatic_folder_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        automatic_folder_row.columnconfigure(0, weight=1)
-        self.automatic_folder_entry = ttk.Entry(
-            automatic_folder_row, textvariable=self.automatic_folder_var
-        )
-        self.automatic_folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.automatic_browse_button = ttk.Button(
-            automatic_folder_row, text="Browse…", command=self._browse_automatic
-        )
-        self.automatic_browse_button.grid(row=0, column=1)
-        self.method_controls.extend(
-            (self.automatic_folder_entry, self.automatic_browse_button)
-        )
-        ttk.Label(
-            automatic_options,
-            text=(
-                "The utility looks for exactly one .overlay package first, then one OBS scene collection export. "
-                "It converts the detected pack and installs it in OBS with a new collection name."
-            ),
-            style="Muted.TLabel",
-            wraplength=700,
-        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.automatic_device_setup_check = ttk.Checkbutton(
-            automatic_options,
-            text="Run device setup wizard after import",
-            variable=self.device_setup_var,
-        )
-        self.automatic_device_setup_check.grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.method_controls.append(self.automatic_device_setup_check)
         run_row = ttk.Frame(frame)
         run_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         run_row.columnconfigure(0, weight=1)
         self.selected_method_label = ttk.Label(
             run_row,
-            text="Selected: Fix Scene Collection Paths",
+            text="Selected: Import OBS Scene Collection File",
             style="PageMuted.TLabel",
         )
         self.selected_method_label.grid(row=0, column=0, sticky="w")
@@ -1305,19 +1215,9 @@ class ImportUtilityApp:
         ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
             behavior,
-            text="Require every referenced file by default",
-            variable=self.strict_var,
-        ).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Checkbutton(
-            behavior,
-            text="Use case-sensitive filename matching by default",
-            variable=self.case_var,
-        ).grid(row=2, column=0, sticky="w", pady=(5, 0))
-        ttk.Checkbutton(
-            behavior,
             text="Open the output folder after a successful conversion",
             variable=self.open_output_var,
-        ).grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(5, 0))
 
         program = ttk.LabelFrame(
             page, text="Program settings", padding=16, style="Card.TLabelframe"
@@ -1543,7 +1443,7 @@ class ImportUtilityApp:
             ))))
         )
         if self.logo_label:
-            self.logo_label.grid_configure(sticky="")
+            self.logo_label.grid_configure(sticky="w")
             scale = (
                 max(1.0, getattr(self, "current_dpi", 96) / 96.0)
                 * max(0.75, min(1.5, self.ui_scale_var.get() / 100.0))
@@ -2233,8 +2133,6 @@ class ImportUtilityApp:
             remember_last_folder=self.remember_folder_var.get(),
             last_overlay_folder=remembered_folder,
             open_output_after_conversion=self.open_output_var.get(),
-            strict_validation=self.strict_var.get(),
-            case_sensitive_matching=self.case_var.get(),
             show_tool_logs=self.tool_logs_var.get(),
         )
 
@@ -2270,8 +2168,6 @@ class ImportUtilityApp:
         self.obs_path_var.set(defaults.obs_path)
         self.remember_folder_var.set(defaults.remember_last_folder)
         self.open_output_var.set(defaults.open_output_after_conversion)
-        self.strict_var.set(defaults.strict_validation)
-        self.case_var.set(defaults.case_sensitive_matching)
         self.tool_logs_var.set(defaults.show_tool_logs)
         self._update_custom_path_states()
         self._apply_theme()
@@ -2312,9 +2208,8 @@ class ImportUtilityApp:
 
     def _update_import_method_panels(self) -> None:
         labels = {
-            "obs": "Fix Scene Collection Paths",
+            "obs": "Import OBS Scene Collection File",
             "streamlabs": "Import Streamlabs Scene File",
-            "automatic": "Automatic Scene Collection",
         }
         for method, options in self.method_options.items():
             if self.method_expanded[method]:
@@ -2328,26 +2223,12 @@ class ImportUtilityApp:
         self.selected_method_label.configure(text=f"Selected: {labels[selected]}")
         self.run_button.configure(state="disabled" if self.busy else "normal")
 
-    def _toggle_obs_advanced(self) -> None:
-        self.obs_advanced_visible = not self.obs_advanced_visible
-        if self.obs_advanced_visible:
-            self.advanced_obs_options.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        else:
-            self.advanced_obs_options.grid_remove()
-        self.advanced_obs_button.configure(
-            text="Hide advanced options ▾"
-            if self.obs_advanced_visible
-            else "Advanced options ▸"
-        )
-
     def _run_selected_method(self) -> None:
         method = self.import_method_var.get()
         if method == "obs":
             self._convert()
-        elif method == "streamlabs":
-            self._import_streamlabs()
         else:
-            self._import_automatic()
+            self._import_streamlabs()
 
     def _configured_obs_scenes_directory(self) -> Path:
         executable: Path | None = None
@@ -2358,169 +2239,6 @@ class ImportUtilityApp:
         if executable is None:
             executable = self.detected_obs_path
         return default_obs_scenes_directory(executable)
-
-    def _maybe_open_device_setup_wizard(
-        self,
-        collection_path: Path | None,
-        on_complete: Callable[[], None] | None = None,
-    ) -> None:
-        if not self.device_setup_var.get() or collection_path is None:
-            if on_complete:
-                self.root.after_idle(on_complete)
-            return
-        try:
-            requirements = collection_device_requirements(collection_path)
-            if not requirements:
-                if on_complete:
-                    self.root.after_idle(on_complete)
-                return
-            candidates = available_device_candidates(
-                self._configured_obs_scenes_directory(),
-                exclude_collection=collection_path,
-            )
-        except UtilityError as exc:
-            message = f"Device setup could not read the imported collection: {exc}"
-            self._append_import_results(f"\n\n{message}")
-            messagebox.showwarning(APP_TITLE, message, parent=self.root)
-            if on_complete:
-                self.root.after_idle(on_complete)
-            return
-        self._open_device_setup_wizard(
-            collection_path, requirements, candidates, on_complete
-        )
-
-    def _open_device_setup_wizard(
-        self,
-        collection_path: Path,
-        requirements: list[DeviceRequirement],
-        candidates_by_source_id: dict[str, list[DeviceCandidate]],
-        on_complete: Callable[[], None] | None = None,
-    ) -> None:
-        palette = self.current_palette
-        zoom = self.ui_zoom
-        space = dlgs.scaled_space(zoom)
-        met = dlgs.dialog_metrics(ui_zoom=zoom, base_width=800, base_height=520,
-                                  base_min_width=640, base_min_height=380)
-        dlg = dlgs.ThemedDialog(
-            self.root, "Overlay Device Setup", palette,
-            ui_zoom=zoom, width=800, height=520,
-            min_width=640, min_height=380, modal=True,
-        )
-        dlg.header(
-            "Overlay Device Setup",
-            "Choose an exact-type device source already configured in OBS. "
-            "Only device-selector values are copied; imported filters and "
-            "capture settings remain intact.",
-        )
-
-        body = dlg.body
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
-
-        canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
-                           background=palette.background)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        sb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview,
-                           style="Dialog.Vertical.TScrollbar")
-        sb.grid(row=0, column=1, sticky="ns")
-        canvas.configure(yscrollcommand=sb.set)
-
-        form = ttk.Frame(canvas, style="DialogBody.TFrame")
-        form.columnconfigure(0, weight=1)
-        form_window = canvas.create_window((0, 0), window=form, anchor="nw")
-
-        def _on_form_conf(_e: tk.Event | None = None) -> None:
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_conf(ev: tk.Event) -> None:
-            w = ev.width - space.LG
-            if w > 0:
-                canvas.itemconfigure(form_window, width=w)
-
-        form.bind("<Configure>", _on_form_conf)
-        canvas.bind("<Configure>", _on_canvas_conf)
-
-        # Scroll with mouse wheel
-        def _on_mwheel(ev: tk.Event) -> None:
-            canvas.yview_scroll(-1 * int(ev.delta / 120), "units")
-        dlg.dialog.bind("<MouseWheel>", _on_mwheel)
-
-        choice_vars: dict[str, tk.StringVar] = {}
-        choice_maps: dict[str, dict[str, DeviceCandidate | str | None]] = {}
-        for idx, req in enumerate(requirements):
-            # Device card — name on its own line, type muted below, combobox full-width
-            name_lbl = ttk.Label(
-                form, text=req.name,
-                style="DialogSection.TLabel",
-            )
-            name_lbl.grid(row=idx * 3, column=0, sticky="w",
-                          pady=(space.SM if idx > 0 else 0, 0))
-
-            kind_lbl = ttk.Label(
-                form, text=req.kind,
-                style="DialogMuted.TLabel",
-            )
-            kind_lbl.grid(row=idx * 3 + 1, column=0, sticky="w",
-                          pady=(space.XS, space.MD))
-
-            opts: dict[str, DeviceCandidate | str | None] = {
-                "Keep imported setting": None,
-                "Disable this source": "disable",
-            }
-            for c in candidates_by_source_id.get(req.source_id.casefold(), []):
-                label = c.label
-                n = 2
-                while label in opts:
-                    label = f"{c.label} ({n})"
-                    n += 1
-                opts[label] = c
-            var = tk.StringVar(value="Keep imported setting")
-            combo = ttk.Combobox(
-                form, textvariable=var, values=list(opts),
-                state="readonly", style="Dialog.TCombobox",
-            )
-            combo.grid(row=idx * 3 + 2, column=0, sticky="ew",
-                       padx=(0, space.LG))
-
-            choice_vars[req.key] = var
-            choice_maps[req.key] = opts
-
-        has_candidates = any(
-            candidates_by_source_id.get(it.source_id.casefold())
-            for it in requirements
-        )
-        info_row = len(requirements) * 3
-        if not has_candidates:
-            ttk.Label(
-                form,
-                text="No exact-type local device sources were found. Keep each "
-                     "placeholder or disable it, then configure the source "
-                     "manually in OBS.",
-                style="DialogMuted.TLabel",
-                wraplength=met.body_wraplength,
-            ).grid(row=info_row, column=0, sticky="w",
-                   pady=(space.XL, 0))
-
-        # Footer
-        def _apply() -> None:
-            choices = {k: choice_maps[k][v.get()] for k, v in choice_vars.items()}
-            err = apply_device_choices(collection_path, choices)
-            if err:
-                messagebox.showerror(APP_TITLE, err, parent=dlg.dialog)
-                return
-            self._append_import_results(
-                "\n\nDevice setup choices were applied to the imported collection."
-            )
-            dlg.close()
-            if on_complete:
-                self.root.after_idle(on_complete)
-
-        dlg.set_on_close(lambda: on_complete and self.root.after_idle(on_complete) if not dlg._completed else None)
-        dlg.footer_buttons([
-            ("Skip for now", dlg.cancel, False),
-            ("Apply Setup", _apply, True),
-        ])
-        dlg.show()
 
     def _refresh_export_collections(self) -> None:
         if self.busy:
@@ -2710,6 +2428,32 @@ class ImportUtilityApp:
                 return None, "", str(exc)
         except ObsLiveError as exc:
             return None, "", str(exc)
+
+    def _auto_device_setup(
+        self, collection_path: Path | None, collection_name: str
+    ) -> None:
+        """Auto-match device sources to local devices, then activate live."""
+        if collection_path is None:
+            self._activate_imported_collection(collection_name)
+            return
+        try:
+            mapped, unconfigured = auto_apply_device_choices(
+                collection_path,
+                self._configured_obs_scenes_directory(),
+                exclude_collection=collection_path,
+            )
+        except UtilityError as exc:
+            self._append_import_results(
+                f"\n\nDevice setup could not be completed: {exc}"
+            )
+        else:
+            if mapped or unconfigured:
+                self._append_import_results(
+                    "\n\nDevice setup: "
+                    f"{mapped} auto-matched to local devices; "
+                    f"{unconfigured} left unconfigured for manual setup in OBS."
+                )
+        self._activate_imported_collection(collection_name)
 
     def _activate_imported_collection(self, name: str) -> None:
         if not is_obs_running():
@@ -2934,54 +2678,20 @@ class ImportUtilityApp:
         self._write_results("")
         target = default_obs_scenes_directory(executable)
         threading.Thread(
-            target=self._streamlabs_worker, args=(archive, target), daemon=True
-        ).start()
-
-    def _streamlabs_worker(self, archive: Path, target: Path) -> None:
-        self.events.put(("streamlabs", import_streamlabs_overlay(archive, target)))
-
-    def _browse_automatic(self) -> None:
-        selected = filedialog.askdirectory(
-            title="Choose the scene collection pack folder"
-        )
-        if selected:
-            self.automatic_folder_var.set(selected)
-
-    def _import_automatic(self) -> None:
-        if self.busy:
-            return
-        folder = Path(self.automatic_folder_var.get().strip())
-        if not folder.is_dir():
-            messagebox.showerror(
-                APP_TITLE, "Choose a valid scene collection pack folder."
-            )
-            return
-        if self.use_custom_obs_var.get():
-            configured_path = Path(self.obs_path_var.get().strip())
-            if not configured_path.is_file():
-                messagebox.showerror(
-                    APP_TITLE, "Choose a valid custom OBS executable in Settings first."
-                )
-                return
-            executable: Path | None = configured_path
-        else:
-            executable = self.detected_obs_path
-        self._set_busy(True, "Detecting and importing the scene collection pack…")
-        self._write_results("")
-        target = default_obs_scenes_directory(executable)
-        threading.Thread(
-            target=self._automatic_worker,
-            args=(folder, target, self.strict_var.get(), self.case_var.get()),
+            target=self._streamlabs_worker,
+            args=(archive, target, self.scale_to_canvas_var.get()),
             daemon=True,
         ).start()
 
-    def _automatic_worker(
-        self, folder: Path, target: Path, strict: bool, case_sensitive: bool
-    ) -> None:
-        result = automatically_import_overlay(
-            folder, target, strict=strict, case_sensitive=case_sensitive
+    def _streamlabs_worker(self, archive: Path, target: Path, scale_to_canvas: bool) -> None:
+        self.events.put(
+            (
+                "streamlabs",
+                import_streamlabs_overlay(
+                    archive, target, scale_to_canvas=scale_to_canvas
+                ),
+            )
         )
-        self.events.put(("automatic", result))
 
     def _scan(self) -> None:
         if self.busy:
@@ -3020,18 +2730,62 @@ class ImportUtilityApp:
             return
         self._set_busy(True, "Checking and matching overlay files…")
         self._write_results("")
+        target = self._configured_obs_scenes_directory()
         threading.Thread(
             target=self._convert_worker,
-            args=(collection, folder, self.strict_var.get(), self.case_var.get()),
+            args=(
+                collection,
+                folder,
+                True,
+                True,
+                target,
+                self.scale_to_canvas_var.get(),
+            ),
             daemon=True,
         ).start()
 
     def _convert_worker(
-        self, collection: Path, folder: Path, strict: bool, case_sensitive: bool
+        self,
+        collection: Path,
+        folder: Path,
+        strict: bool,
+        case_sensitive: bool,
+        target: Path,
+        scale_to_canvas: bool,
     ) -> None:
         result = convert_collection(
             collection, folder, strict=strict, case_sensitive=case_sensitive
         )
+        if result.success and result.output_path:
+            try:
+                name, path = install_scene_collection(result.output_path, target)
+                result.installed_name = name
+                result.installed_path = path
+            except UtilityError as exc:
+                result.install_error = str(exc)
+            if scale_to_canvas and result.installed_path and not result.install_error:
+                canvas = active_profile_canvas(target)
+                if canvas is None:
+                    result.scale_note = (
+                        "OBS profile canvas could not be read; layout left unchanged."
+                    )
+                else:
+                    try:
+                        resize_collection(
+                            result.installed_path,
+                            scope=SCOPE_COLLECTION,
+                            selected_name=None,
+                            selected_uuid=None,
+                            mode=MODE_SCALE_RATIO,
+                            target_width=canvas.width,
+                            target_height=canvas.height,
+                        )
+                        result.scaled = True
+                        result.scale_note = f"{canvas.width} × {canvas.height}"
+                    except UtilityError as exc:
+                        result.scale_note = (
+                            f"Could not scale to the OBS canvas ({exc})."
+                        )
         self.events.put(("conversion", result))
 
     def _process_events(self) -> None:
@@ -3044,8 +2798,6 @@ class ImportUtilityApp:
                     self._finish_conversion(payload)  # type: ignore[arg-type]
                 elif event == "streamlabs":
                     self._finish_streamlabs(payload)  # type: ignore[arg-type]
-                elif event == "automatic":
-                    self._finish_automatic(payload)  # type: ignore[arg-type]
                 elif event == "export_inventory":
                     self._finish_export_inventory(payload)  # type: ignore[arg-type]
                 elif event == "export":
@@ -3122,21 +2874,63 @@ class ImportUtilityApp:
 
         if result.success and result.output_path:
             self.last_output = result.output_path
+            healthy = result.changed + result.unchanged
             lines.extend(
                 (
                     "",
-                    f"Created: {result.output_path}",
-                    "Import it in OBS with Scene Collection → Import.",
+                    f"Local file references: {healthy} online · {len(result.missing)} missing.",
                 )
             )
-            self._set_busy(False, "Import-ready collection created successfully.")
-            if self.open_output_var.get():
-                self._open_output()
+            if result.missing:
+                lines.append(
+                    "IMPORTANT: the missing references above will appear offline "
+                    "in OBS until the missing files exist."
+                )
+            if result.plugin_source_ids:
+                lines.append(
+                    "Plugin sources/filters: "
+                    + ", ".join(result.plugin_source_ids)
+                    + " — install those plugins on this PC or they stay blank."
+                )
+            if result.remote_browser_urls:
+                lines.append(
+                    f"Browser overlays using the internet: {result.remote_browser_urls} "
+                    "(e.g. StreamElements) — they only load while online."
+                )
+            if result.scaled:
+                lines.append(
+                    f"Scaled the layout to the active OBS canvas ({result.scale_note}), "
+                    "aspect preserved."
+                )
+            elif result.scale_note:
+                lines.append(f"Note: {result.scale_note}")
+            lines.extend(("", f"Created: {result.output_path}"))
+            if result.installed_name:
+                lines.append(
+                    f"Installed as OBS scene collection: {result.installed_name}"
+                )
+            if result.install_error:
+                lines.append(
+                    "Note: the collection could not be installed into OBS "
+                    f"({result.install_error}). Import the file manually with "
+                    "Scene Collection → Import."
+                )
+            self._set_busy(
+                False,
+                "Updated collection installed into OBS."
+                if result.installed_name
+                else "Updated collection created, but not installed into OBS.",
+            )
         else:
             self._set_busy(
                 False, "No file was written. Resolve the items below and try again."
             )
         self._write_results("\n".join(lines))
+        if result.success and result.output_path:
+            if self.open_output_var.get():
+                self._open_output()
+            if result.installed_name:
+                self._activate_imported_collection(result.installed_name)
 
     def _finish_resize(self, result: ResizeResult) -> None:
         if result.error:
@@ -3574,64 +3368,14 @@ class ImportUtilityApp:
             ),
             f"Supported sources imported: {result.imported_sources}",
             "",
-            "Finalizing device setup, then activating the collection in live OBS…",
+            "Matching device sources, then activating the collection in live OBS…",
         ]
         if result.skipped_sources:
             lines.extend(("", "Sources that need manual setup:"))
             lines.extend(f"• {item}" for item in result.skipped_sources)
         self._write_results("\n".join(lines))
         self._set_busy(False, "Streamlabs package imported into OBS successfully.")
-        self._maybe_open_device_setup_wizard(
-            result.collection_path,
-            lambda: self._activate_imported_collection(result.collection_name),
-        )
-
-    def _finish_automatic(self, result: AutomaticImportResult) -> None:
-        if result.error:
-            self._write_results(result.error)
-            self._set_busy(False, "Automatic scene collection import failed safely.")
-            return
-
-        lines = [
-            f"Detected format: {'Streamlabs .overlay' if result.kind == 'streamlabs' else 'OBS scene collection export'}",
-            f"OBS collection: {result.collection_name}",
-            f"Collection file: {result.collection_path}",
-        ]
-        if result.extraction_path:
-            lines.append(f"Extracted package: {result.extraction_path}")
-        if result.canvas_width and result.canvas_height:
-            profile_detail = (
-                f" (active OBS profile: {result.profile_name})"
-                if result.profile_name
-                else ""
-            )
-            lines.append(
-                f"Canvas resized to: {result.canvas_width} × {result.canvas_height}{profile_detail}"
-            )
-        if result.conversion:
-            lines.extend(
-                (
-                    f"Paths updated: {result.conversion.changed}",
-                    f"Paths already valid: {result.conversion.unchanged}",
-                )
-            )
-        if result.streamlabs and result.streamlabs.skipped_sources:
-            lines.extend(("", "Sources that need manual setup:"))
-            lines.extend(f"• {item}" for item in result.streamlabs.skipped_sources)
-        lines.extend(
-            (
-                "",
-                "Finalizing device setup, then activating the collection in live OBS…",
-            )
-        )
-        self._write_results("\n".join(lines))
-        self._set_busy(
-            False, "Scene collection detected and imported into OBS successfully."
-        )
-        self._maybe_open_device_setup_wizard(
-            result.collection_path,
-            lambda: self._activate_imported_collection(result.collection_name),
-        )
+        self._auto_device_setup(result.collection_path, result.collection_name)
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self.busy = busy

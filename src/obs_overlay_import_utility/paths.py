@@ -6,7 +6,11 @@ import os
 import re
 from pathlib import Path
 
-from .constants import REMOTE_PREFIXES, SUPPORTED_EXTENSIONS
+from .constants import (
+    PLUGIN_FILE_EXTENSIONS,
+    REMOTE_PREFIXES,
+    SUPPORTED_EXTENSIONS,
+)
 from .models import FileIndex
 
 
@@ -35,8 +39,15 @@ def normalized_key(value: str, case_sensitive: bool = False) -> str:
     return value if case_sensitive else value.casefold()
 
 
-def has_supported_extension(value: str) -> bool:
-    return Path(portable_filename(value)).suffix.casefold() in SUPPORTED_EXTENSIONS
+def has_supported_extension(
+    value: str, *, include_plugin_files: bool = False
+) -> bool:
+    suffixes = (
+        SUPPORTED_EXTENSIONS | PLUGIN_FILE_EXTENSIONS
+        if include_plugin_files
+        else SUPPORTED_EXTENSIONS
+    )
+    return Path(portable_filename(value)).suffix.casefold() in suffixes
 
 
 def is_remote_value(value: str) -> bool:
@@ -56,11 +67,13 @@ def looks_absolute_local_path(value: str) -> bool:
     )
 
 
-def is_local_media_path(value: str) -> bool:
+def is_local_media_path(
+    value: str, *, include_plugin_files: bool = False
+) -> bool:
     return bool(
         value
         and not is_remote_value(value)
-        and has_supported_extension(value)
+        and has_supported_extension(value, include_plugin_files=include_plugin_files)
         and looks_absolute_local_path(value)
     )
 

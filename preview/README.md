@@ -23,7 +23,7 @@ Works on Windows and Linux — standard library only.
 | Control | Behavior |
 | --- | --- |
 | Navigation | Switches between Import / Export / Auto Resizer / Settings |
-| Import method cards | Expand/collapse with ▸ / ▾; advanced options toggle |
+| Import method cards | Expand/collapse with ▸ / ▾; strict checks and case-sensitive matching always enabled |
 | Browse… buttons | Real file/folder pickers (demo path shown, real dialogs are Windows-only) |
 | Run Import | Simulated scan → detect → relink → install flow, console log, strict-mode block |
 | Run Export | Inventory modal → simulated publish + ZIP, console log |
@@ -40,7 +40,8 @@ Open `index.html?selftest` in any browser: every flow runs automatically via
 dom events and the page renders a **SELFTEST** report (PASS/FAIL per flow,
 "ALL GREEN" at the end). Pane webviews throttle background timers heavily
 (mock steps take ~3–4 s each), so the suite takes ~1 minute and uses
-poll-based asserts — no clicks needed. Current status: 10/10 passing.
+poll-based asserts — no clicks needed. Re-run `index.html?selftest` after any
+UI change and update the pass count in this file.
 
 ## Files
 

@@ -16,14 +16,14 @@ The Settings page supports the Windows default, white, and dark themes; adjustab
 - The Social Space logo is scaled from its packaged high-resolution source, and the initial window is centered and bounded to the available display.
 ## Customer workflow
 
-### Method 1 — Fix Scene Collection Paths
+### Method 1 — Import OBS Scene Collection File
 
 1. Expand **Method 1** with its down arrow.
 2. Choose the extracted **Overlay Folder path**.
 3. Click **Run**. The utility finds the OBS scene collection export automatically.
-4. In OBS, open **Scene Collection → Import** and select the new `_ImportReady.json` file.
+4. The utility writes a new `_Updated.json` file, installs it into OBS as a new scene collection, and switches to it live when OBS is open.
 
-The original collection is never changed. **Advanced options** is collapsed by default and contains the enabled-by-default strict file check and case-sensitive matching option.
+Original collection is never changed. **Strict file checking and case-sensitive filename matching are always enabled** — no user toggle can weaken them. By default the import also scales the layout to your active OBS canvas (aspect-preserving) and finishes with a health report that tells you exactly what is online, what is missing, which plugin sources need a locally installed plugin, and which browser overlays need internet.
 
 ### Method 2 — Import Streamlabs Scene File
 
@@ -31,15 +31,7 @@ The original collection is never changed. **Advanced options** is collapsed by d
 2. Choose the Streamlabs `.overlay` package.
 3. Click **Run** in the same Import Overlay window.
 
-The utility validates the archive before extraction (including entry, per-file, total-size, compression-ratio, path, link, encryption, duplicate-name, and free-space limits), then extracts beside the archive into a new `name overlay` folder. It recursively relinks assets in built-in and custom/plugin source and filter settings, converts supported Streamlabs Desktop sources, and transactionally publishes the extracted folder together with a new OBS collection. A publish failure rolls back the extracted folder and pending JSON. **Run device setup wizard after import** is enabled by default: when the package contains camera, audio, display, capture, or compatible custom device sources, a setup window lets the user map them only to locally configured sources with the same OBS source ID. The wizard copies device-selector fields while preserving the imported resolution, FPS, filters, source type, and other settings. It reads the active OBS profile and sizes the collection to that profile's base canvas. If that name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. When OBS is open, the utility finishes device setup and then switches to the imported collection through OBS's built-in WebSocket server—no restart or collection reload is needed.
-
-### Method 3 — Automatic Scene Collection
-
-1. Expand **Method 3** with its down arrow.
-2. Choose the folder containing the scene collection pack.
-3. Click **Run**.
-
-The utility recursively searches the selected folder for all supported pack files and asset folders. **Run device setup wizard after import** is enabled by default and appears only when the detected collection includes device sources that can be mapped locally. It prioritizes exactly one OBS scene collection export when both that export and a Streamlabs `.overlay` package are present; otherwise it uses exactly one `.overlay` package. It matches local assets safely, sizes the imported collection to the active OBS profile's base canvas, installs it without overwriting an existing collection, and reports what it detected. If several candidates of the preferred format are found, it stops safely and asks you to use the specific method instead.
+The utility validates the archive before extraction (including entry, per-file, total-size, compression-ratio, path, link, encryption, duplicate-name, and free-space limits), then extracts beside the archive into a new `name overlay` folder. It recursively relinks assets in built-in and custom/plugin source and filter settings and converts supported Streamlabs Desktop sources, including display/monitor sources placed without a screen mapping. Known Streamlabs filters (chroma key, color key, color correction, crop, sharpen, LUT, gain, noise suppression/gate, compressor, limiter, expander, invert, delays, scaling, rotate) are converted to the matching OBS filter type; unknown plugin filters are preserved with their relinked settings. The collection is transactionally published together with the extracted folder; a publish failure rolls back both. **Scale layout to my OBS canvas after import (aspect-preserving)** is enabled by default and fits the imported 16:9 layout uniformly to the active OBS profile's base canvas without stretching. Device sources (webcams, audio, displays, compatible custom devices) are auto-matched to locally configured sources with the same OBS source ID when exactly one candidate exists; unmapped sources are imported unconfigured so the user can set them up in OBS later. If the collection name already exists, it uses `name 1`, then `name 2`, without overwriting a collection. When OBS is open, the utility finishes device matching and then switches to the imported collection through OBS's built-in WebSocket server—no restart or collection reload is needed.
 
 ## Export Overlay workflow
 
@@ -63,19 +55,19 @@ When the selected collection is active in an open OBS session, Auto Resizer chan
 
 ## Running tools while OBS is open
 
-OBS Studio 28 and newer includes obs-websocket. Leave **Tools → WebSocket Server Settings → Enable WebSocket server** enabled on the default local port `4455`. If authentication is enabled, the app asks for the password only when live control is needed and keeps it in memory only until the app closes. Method 1 and Export Overlay are always safe while OBS is open. Methods 2 and 3 activate their imported collection live after device setup. Auto Resizer uses live requests for the active collection and file backups only for inactive collections. If the server is disabled, uses a non-default port, or is unavailable, imports remain installed but cannot be selected automatically; the active collection is never overwritten as a fallback.
+OBS Studio 28 and newer includes obs-websocket. Leave **Tools → WebSocket Server Settings → Enable WebSocket server** enabled on the default local port `4455`. If authentication is enabled, the app asks for the password only when live control is needed and keeps it in memory only until the app closes. Method 1 and Export Overlay are always safe while OBS is open. Method 2 activates its imported collection live after device setup. Auto Resizer uses live requests for the active collection and file backups only for inactive collections. If the server is disabled, uses a non-default port, or is unavailable, imports remain installed but cannot be selected automatically; the active collection is never overwritten as a fallback.
 ## Safety behavior
 
 - Reads only JSON files that look like OBS scene collections.
 - Ignores remote URLs, data URLs, unrelated text, and unsupported file types.
-- Supports common images, video, audio, SVG, and local HTML files.
+- Supports common images, video, audio, SVG, and local HTML files, plus local plugin/script/config/font files (`.lua`, `.py`, `.json`, `.js`, `.ttf`, and similar) referenced from plugin sources and filter settings, so plugin scenes, filters, and scripts keep working after the move.
 - Stops when two files are equally plausible rather than guessing.
 - Requires every referenced local file by default.
 - Writes through a temporary file and atomically renames it.
 - Never overwrites an earlier converted file.
 - Follows neither directory symlinks nor generated/build folders while scanning.
 - Validates Streamlabs ZIP paths (including Windows backslash traversal), duplicate entries, links/special files, encryption, entry count, per-file and total size, compression ratio, and available disk space before extraction.
-- Streamlabs and automatic imports use a new OBS collection name and never overwrite an existing collection file.
+- Streamlabs imports use a new OBS collection name and never overwrite an existing collection file.
 - Export creates a new package folder and never edits the source OBS collection or overwrites an earlier package.
 - Browser-overlay export is bounded, rejects broad or recursively nested roots, skips links and Windows reparse points, and leaves no partial package after failure.
 - Device setup requires the exact OBS source ID and copies only recognized device-selector values.
