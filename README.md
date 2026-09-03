@@ -19,7 +19,7 @@ The Settings page supports the Windows default, white, and dark themes; adjustab
 ### Method 1 — Import OBS Scene Collection File
 
 1. Expand **Method 1** with its down arrow.
-2. Choose the extracted **Overlay Folder path**, or browse a **ZIP archive** and the utility extracts it beside the file first.
+2. Choose the extracted **Overlay Folder path** via Browse… (a normal folder), or pick a **ZIP archive** the same way and the utility extracts it beside the file first.
 3. Click **Run**. The utility finds the OBS scene collection export automatically.
 4. The utility writes a new `_Updated.json` file, installs it into OBS as a new scene collection, and switches to it live when OBS is open.
 

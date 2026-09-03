@@ -636,13 +636,7 @@ class ImportUtilityApp:
             obs_folder_row, text="Browse…", command=self._browse
         )
         self.browse_button.grid(row=0, column=1)
-        self.zip_browse_button = ttk.Button(
-            obs_folder_row, text="ZIP…", command=self._browse_zip
-        )
-        self.zip_browse_button.grid(row=0, column=2, padx=(4, 0))
-        self.method_controls.extend(
-            (self.folder_entry, self.browse_button, self.zip_browse_button)
-        )
+        self.method_controls.extend((self.folder_entry, self.browse_button))
         ttk.Label(
             obs_options,
             text="The scene collection export is found automatically inside this folder, or inside a ZIP archive if one is selected.",
@@ -2189,26 +2183,19 @@ class ImportUtilityApp:
             self.settings_status_var.set("Default settings restored.")
 
     def _browse(self) -> None:
-        selected = filedialog.askdirectory(title="Choose the extracted overlay folder")
-        if selected:
-            self.folder_var.set(selected)
-            if self.remember_folder_var.get():
-                self.settings.last_overlay_folder = selected
-                self.settings.remember_last_folder = True
-                try:
-                    self.settings_store.save(self.settings)
-                except OSError:
-                    pass
-            self._scan()
-
-    def _browse_zip(self) -> None:
-        selected = filedialog.askopenfilename(
-            title="Choose a ZIP overlay package",
-            filetypes=(
-                ("ZIP archives", "*.zip"),
-                ("All files", "*.*"),
-            ),
+        # One browse entry for both flows: pick a normal folder, or a ZIP
+        # archive that is extracted beside itself before scanning.
+        selected = filedialog.askdirectory(
+            title="Choose the extracted overlay folder (or cancel to pick a ZIP archive)"
         )
+        if not selected:
+            selected = filedialog.askopenfilename(
+                title="Choose a ZIP overlay package",
+                filetypes=(
+                    ("ZIP archives", "*.zip"),
+                    ("All files", "*.*"),
+                ),
+            )
         if selected:
             self.folder_var.set(selected)
             if self.remember_folder_var.get():

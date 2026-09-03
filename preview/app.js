@@ -169,7 +169,6 @@
   var importRun = pageSelector('import', '.run-row .btn.primary');
 
   wirePicker(methodBrowse('obs'), methodInput('obs'), { dir: true });
-  wirePicker(document.getElementById('zipBrowse'), methodInput('obs'), { accept: '.zip' });
   wirePicker(methodBrowse('streamlabs'), methodInput('streamlabs'), { accept: '.overlay,.zip' });
 
   importRun.addEventListener('click', function () {
